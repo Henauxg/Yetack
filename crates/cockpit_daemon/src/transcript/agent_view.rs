@@ -200,6 +200,8 @@ pub(crate) struct AgentView {
     awaited_echoes: VecDeque<String>,
     /// The prompts the hub sent without an item, such as `/rename`, whose `result` has not come.
     hidden_prompts: u32,
+    /// For each of those, oldest first: whether its output shows no notice either.
+    quiet_hidden: VecDeque<bool>,
     next_prompt: PromptId,
     /// Calls per tool name, for the MCP servers' tool counts.
     tool_counts: HashMap<String, u32>,
@@ -235,6 +237,7 @@ impl AgentView {
             sign_in_failed_at: None,
             awaited_echoes: VecDeque::new(),
             hidden_prompts: 0,
+            quiet_hidden: VecDeque::new(),
             next_prompt: PromptId::new(1),
             tool_counts: HashMap::new(),
             skills: BTreeSet::new(),
@@ -583,6 +586,16 @@ impl AgentView {
     pub(crate) fn hidden_prompt_sent(&mut self, text: String) {
         self.expect_echo(text);
         self.hidden_prompts = self.hidden_prompts.saturating_add(1);
+        self.quiet_hidden.push_back(false);
+    }
+
+    /// A hidden prompt whose output shows no notice either, such as the `/rename` that gives a
+    /// new agent's session the name it started with: the user renamed nothing.
+    pub(crate) fn quiet_prompt_sent(&mut self, text: String) {
+        self.hidden_prompt_sent(text);
+        if let Some(quiet) = self.quiet_hidden.back_mut() {
+            *quiet = true;
+        }
     }
 
     /// A prompt whose echo must not show.
@@ -729,6 +742,7 @@ impl AgentView {
         self.takes_session_titles = false;
         self.restated_title = None;
         self.hidden_prompts = 0;
+        self.quiet_hidden.clear();
         self.expected_context = None;
         self.sign_in_failed = false;
         self.pending.clear();
@@ -1047,6 +1061,9 @@ impl AgentView {
                         },
                     );
                 }
+                // A quiet hidden prompt's answer, such as a new agent's `/rename`: Claude Code runs
+                // hidden prompts in order, so the oldest one not answered yet wrote it.
+                ContentBlock::Text(_) if synthetic && self.quiet_hidden.front() == Some(&true) => {}
                 ContentBlock::Text(text) if synthetic && !text.text.trim().is_empty() => {
                     self.push_item(
                         parent,
@@ -1215,7 +1232,7 @@ impl AgentView {
         }
         if let Some(output) = claude_protocol::local_command_output(&text) {
             // Shown as `/effort`'s output is, which comes as a synthetic assistant message.
-            if !output.is_empty() {
+            if !output.is_empty() && self.quiet_hidden.front() != Some(&true) {
                 self.push_item(
                     parent,
                     ItemBody::Notice {
@@ -1361,6 +1378,7 @@ impl AgentView {
         self.summary.cost = CostUsd::new(self.cost_before_process + total);
         if self.hidden_prompts > 0 && result.num_turns == 0 {
             self.hidden_prompts -= 1;
+            self.quiet_hidden.pop_front();
             // A prompt sent after the hidden one started a turn, which goes on.
             if self.working {
                 return false;
@@ -4490,6 +4508,29 @@ mod tests {
         assert_eq!(view.summary().turns, 0);
         assert_eq!(view.summary().status, AgentStatus::Idle);
         assert_eq!(view.summary().cache_expires_at, None);
+    }
+
+    #[test]
+    fn a_quiet_prompt_shows_no_notice_and_the_next_hidden_one_does() {
+        let mut view = view();
+        view.quiet_prompt_sent("/rename Cart total".to_owned());
+        view.hidden_prompt_sent("/rename Checkout".to_owned());
+
+        apply(&mut view, init());
+        apply(&mut view, local_answer("Session renamed to: Cart total"));
+        let _ = apply(&mut view, local_result());
+        apply(&mut view, local_answer("Session renamed to: Checkout"));
+        let _ = apply(&mut view, local_result());
+
+        assert_eq!(
+            bodies(&view),
+            [&ItemBody::Notice {
+                text: "Session renamed to: Checkout".to_owned(),
+                detail: None,
+                kind: NoticeKind::Plain,
+            }]
+        );
+        assert_eq!(view.summary().status, AgentStatus::Idle);
     }
 
     #[test]

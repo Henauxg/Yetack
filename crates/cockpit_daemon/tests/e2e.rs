@@ -144,6 +144,30 @@ impl Setup {
         cockpit_daemon::socket_path(&self.state())
     }
 
+    /// The name `/rename` gave `session`, as the fake keeps it.
+    fn session_name(&self, session: Option<&ClaudeSessionId>) -> Option<String> {
+        let session = session?;
+        std::fs::read_to_string(
+            self.temp
+                .path()
+                .join("session-names")
+                .join(session.as_str()),
+        )
+        .ok()
+        .map(|name| name.trim().to_owned())
+    }
+
+    /// Waits until `/rename` gave `session` the name `title`.
+    async fn wait_for_session_name(&self, session: Option<&ClaudeSessionId>, title: &str) {
+        for _ in 0..200 {
+            if self.session_name(session).as_deref() == Some(title) {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        panic!("the session never took the name {title}");
+    }
+
     fn args_file(&self) -> PathBuf {
         self.temp.path().join("claude-args.jsonl")
     }
@@ -825,19 +849,31 @@ async fn a_start_reads_its_title_as_a_rename_does() {
     else {
         panic!("expected AgentStarted");
     };
-    let named = client.summary_with(titled, |_| true).await;
-    // The Claude session takes the name too, once the first turn ends.
-    client
-        .item_with(titled, |body| session_renamed(body, "Cart total"))
+    let named = client
+        .summary_with(titled, |summary| {
+            summary.turns == 1 && summary.status == AgentStatus::Idle
+        })
         .await;
     let ResponseBody::AgentStarted { agent: untitled } = client.ok(start(None)).await else {
         panic!("expected AgentStarted");
     };
     let unnamed = client.summary_with(untitled, |_| true).await;
+    let notices = client
+        .history(titled)
+        .await
+        .iter()
+        .filter(|item| session_renamed(&item.body, "Cart total"))
+        .count();
 
     assert_eq!(blank, ErrorCode::InvalidRequest);
     assert_eq!(named.title, "Cart total");
     assert_eq!(unnamed.title, "Fix the cart", "the prompt's first line");
+    // The Claude session takes the name too, with no notice: the user renamed nothing.
+    assert_eq!(
+        setup.session_name(named.session.as_ref()).as_deref(),
+        Some("Cart total")
+    );
+    assert_eq!(notices, 0);
 }
 
 /// The statuses of an agent started with a name, each once in a row, until it answers a prompt
@@ -867,12 +903,25 @@ async fn named_start_statuses(prompt: Option<&str>) -> Vec<AgentStatus> {
             statuses.push(summary.status);
         }
     };
-    client
+    let first_turns = turns - 1;
+    let ready = client
         .wait_for(|event| {
             note(event);
-            matches!(event, Event::TranscriptAppended { item, .. } if session_renamed(&item.body, "Cart total"))
-                .then_some(())
+            match event {
+                Event::AgentAdded(summary) | Event::AgentUpdated(summary)
+                    if summary.id == agent
+                        && summary.turns == first_turns
+                        && summary.status == AgentStatus::Idle
+                        && summary.session.is_some() =>
+                {
+                    Some(summary.session.clone())
+                }
+                _ => None,
+            }
         })
+        .await;
+    setup
+        .wait_for_session_name(ready.as_ref(), "Cart total")
         .await;
     client.prompt(agent, "ping").await;
     client

@@ -76,9 +76,15 @@ impl Hub {
             mark: Mark::Unmarked,
             resume_as: ResumeAs::Same,
         };
-        let agent = self.add_agent(record, params.prompt, None)?;
-        if named {
-            self.rename_session(agent);
+        let agent = self.add_agent(record, None, None)?;
+        // Before the first message: the session has the name even if the agent stops before its
+        // first turn ends.
+        if named && let Some(started) = self.agents.get_mut(&agent) {
+            let text = prompts::rename_command(&started.record.title);
+            send_quiet_prompt(started, text);
+        }
+        if let Some(prompt) = params.prompt {
+            self.prompt(agent, prompt, PromptDelivery::Steer)?;
         }
         Ok(ResponseBody::AgentStarted { agent })
     }
@@ -757,6 +763,18 @@ fn send_hidden_prompt(agent: &mut Agent, text: String) {
     } else {
         process.write(line);
         agent.view.hidden_prompt_sent(text);
+    }
+}
+
+/// Sends a hidden prompt whose output shows no notice, now if the agent is idle. Queued behind a
+/// turn, it goes as any hidden prompt does, and its output shows.
+fn send_quiet_prompt(agent: &mut Agent, text: String) {
+    match &agent.process {
+        Some(process) if !agent.view.is_busy() && agent.queue.is_empty() => {
+            process.write(InputLine::prompt(text.clone()));
+            agent.view.quiet_prompt_sent(text);
+        }
+        Some(_) | None => send_hidden_prompt(agent, text),
     }
 }
 
