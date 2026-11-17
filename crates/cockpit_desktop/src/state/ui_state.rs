@@ -18,6 +18,7 @@ use super::find::FindFocus;
 use super::mcp_reconnect::Reconnects;
 use super::projects::{ProjectKey, RuleKind};
 use super::terminals::Screen;
+use super::transcript::{KEPT_ITEMS_AWAY, KEPT_ITEMS_SCROLLED_UP};
 use crate::keymap::{Chord, Command, Refusal};
 use crate::machine::MachineId;
 use crate::prefs::ProjectId;
@@ -655,6 +656,15 @@ impl Default for UiState {
 }
 
 impl UiState {
+    /// The most items the app keeps of `agent` while it is not looked at.
+    pub fn kept_items_away(&self, agent: AgentId) -> usize {
+        if self.chat_scrolled_up.contains_key(&agent) {
+            KEPT_ITEMS_SCROLLED_UP
+        } else {
+            KEPT_ITEMS_AWAY
+        }
+    }
+
     /// Scrolls `agent`'s chat to the entry of the top-level `item`, puts it at `place`, and
     /// highlights it.
     pub fn reveal_in_chat(&mut self, agent: AgentId, item: ItemId, place: RevealPlace) {

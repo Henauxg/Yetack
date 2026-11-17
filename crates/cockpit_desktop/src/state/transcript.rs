@@ -13,6 +13,9 @@ use cockpit_protocol::{
 /// up loads the older ones again. Each item the app holds costs the chat a little at each render,
 /// and a morning of work gives an agent thousands.
 pub const KEPT_ITEMS_AWAY: usize = 300;
+/// The most items the app keeps of an agent left with its chat scrolled up: the chat goes back to
+/// the reader's place, which can be far above the latest items.
+pub const KEPT_ITEMS_SCROLLED_UP: usize = 2_000;
 
 /// How much of the history the app holds.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]

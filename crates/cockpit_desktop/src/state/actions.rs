@@ -24,7 +24,7 @@ use super::apply::forget_agent;
 use super::drafts::{Drafts, NewAgentDraft, Palette, QuestionDraft, SlashWord, SwitcherDraft};
 use super::projects::ProjectKey;
 use super::requests::{Outgoing, Purpose, Shift, history_request};
-use super::transcript::{HistoryState, KEPT_ITEMS_AWAY};
+use super::transcript::HistoryState;
 use super::ui_state::{
     Block, Dialog, FileView, NewAgentForm, NewAgentTab, PaletteOrigin, Popover, Reopening,
     TitleEdit, TitlePlace, ViewMode, is_markdown,
@@ -121,7 +121,7 @@ pub fn select_agent(state: &mut AppState, agent: AgentId) {
     if let Some(left) = state.ui.selected.filter(|_| back)
         && let Some(entry) = state.agents.get_mut(&left)
     {
-        entry.transcript.trim(KEPT_ITEMS_AWAY);
+        entry.transcript.trim(state.ui.kept_items_away(left));
     }
     state.ui.selected = Some(agent);
     state.ui.chat_new_from.clear();
@@ -2570,6 +2570,7 @@ mod tests {
     use crate::state::app_state::tests::{ids, placed, state_with, summary};
     use crate::state::grouping::GroupKey;
     use crate::state::requests::{apply_response, needed_requests};
+    use crate::state::transcript::KEPT_ITEMS_AWAY;
     use crate::state::ui_state::{ClosedAgent, NoteKind};
 
     const AGENT: u32 = 1;
@@ -3865,10 +3866,8 @@ mod tests {
         );
     }
 
-    /// A notification selects another agent without a click in the window, which would have
-    /// saved the edit: a hidden edit would then take the first Esc meant to stop that agent.
-    #[test]
-    fn the_agent_left_keeps_as_many_items_as_any_agent_away() {
+    /// Gives the selected agent `AGENT` five more items than an agent away keeps.
+    fn agent_holding_more_than_kept_away() -> AppState {
         let mut state = state_with(vec![
             summary(AGENT, AgentStatus::Working),
             summary(2, AgentStatus::Idle),
@@ -3895,6 +3894,12 @@ mod tests {
             .transcript
             .merge_page(page);
         state.ui.selected = Some(agent());
+        state
+    }
+
+    #[test]
+    fn the_agent_left_keeps_as_many_items_as_any_agent_away() {
+        let mut state = agent_holding_more_than_kept_away();
 
         select_agent(&mut state, agent());
         let while_looked_at = state.agents[&agent()].transcript.items().count();
@@ -3907,6 +3912,25 @@ mod tests {
         assert_eq!(left.history(), &HistoryState::Loaded { has_older: true });
     }
 
+    /// The chat goes back to the place of an agent left scrolled up, which can be among its
+    /// oldest items.
+    #[test]
+    fn the_agent_left_scrolled_up_keeps_the_items_the_reader_was_at() {
+        let mut state = agent_holding_more_than_kept_away();
+        state
+            .ui
+            .chat_scrolled_up
+            .insert(agent(), Some(ItemId::new(300)));
+
+        select_agent(&mut state, AgentId::new(2));
+
+        let left = &state.agents[&agent()].transcript;
+        assert_eq!(left.items().count(), KEPT_ITEMS_AWAY + 5);
+        assert_eq!(left.first_id(), Some(ItemId::new(1)));
+    }
+
+    /// A notification selects another agent without a click in the window, which would have
+    /// saved the edit: a hidden edit would then take the first Esc meant to stop that agent.
     #[test]
     fn selecting_another_agent_cancels_a_rename_the_window_left_open() {
         let mut state = state_with(vec![
