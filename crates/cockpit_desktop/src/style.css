@@ -12090,3 +12090,12 @@ html.splitting .sidebar {
   border-bottom: 1px solid var(--line-strong);
   color: var(--amber);
 }
+
+/* On a short window, the new agent dialog's first message gets two lines in place of three, so
+   its folder field and some recent folders stay in view above the name field. */
+@media (max-height: 760px) {
+  .dialog-footer .prompt-input {
+    min-height: 0;
+    height: calc(2lh + 8px);
+  }
+}
