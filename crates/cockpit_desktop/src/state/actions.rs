@@ -3734,7 +3734,7 @@ mod tests {
             ))
         );
         assert_eq!(part.window, Some(WindowAction::Copy(copied)));
-        // Only the button loads older messages: the note names it.
+        // The note says how to load the older messages.
         assert!(part_note.is_some_and(|(_, text)| {
             text.contains("without the older messages") && text.contains("Scroll to the top")
         }));

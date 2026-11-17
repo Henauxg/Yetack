@@ -430,7 +430,7 @@ pub fn TranscriptView(in_view: Signal<Option<InView>>) -> Element {
     let top_items = top_items(&items, &loaded, sign_in_notice);
     let divider = actions::new_divider(&state, agent);
     let top_rows = tool_rows::rows(&top_items, &awaiting, divider);
-    let started = top_items
+    let started: Option<String> = top_items
         .first()
         .and_then(|item| match &item.body {
             ItemBody::UserMessage(message) => message.sent_at,
@@ -505,7 +505,7 @@ pub fn TranscriptView(in_view: Signal<Option<InView>>) -> Element {
             // The chat's scroll script keeps each agent's place. It goes back to that place once
             // the chat draws all the agent's rows.
             "data-agent": (shown == ShownRows::All).then(|| agent.get().to_string()),
-            // The script asks for older messages near the top only while this mark is on.
+            // `chat_scroll::LOADS_OLDER_ATTRIBUTE`, written out: an attribute name takes no constant.
             "data-loads-older": loads_older.then_some("true"),
             div { class: "chat-column",
                 if shown == ShownRows::Skeleton {
