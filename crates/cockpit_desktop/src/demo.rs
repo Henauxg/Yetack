@@ -241,6 +241,12 @@ const LIVE_PAGE_FIRST_ID: u32 = 100;
 const LIVE_PAGE_LAST_ID: u32 = 239;
 const LIVE_TICK_FIRST_ID: u32 = 1000;
 
+/// Names the number of entries the demo adds to two agents, to check how the chat copes with a
+/// long morning of work.
+const DEMO_FILL_VARIABLE: &str = "YETACK_DEMO_FILL";
+/// The first id of those entries, after every other demo entry.
+const FILL_FIRST_ID: u32 = 10_000;
+
 /// Other git worktrees of the parser, beside its folder, where the parser agent also edited files.
 const PARSER_COLUMNS_WORKTREE: &str =
     "/home/dev/projects/calc-parser_GH42Q-report-the-column-of-every-unexpected-token";
@@ -1690,7 +1696,18 @@ pub fn state(daemon: DaemonLabel) -> AppState {
         map_agent(now),
         sign_in_agent(now),
     ];
+    // `YETACK_DEMO_FILL=2000` gives the parser agent and the invoice export agent that many more
+    // entries, as a morning of work leaves agents in the app: a check of how the chat copes.
+    let fill: u32 = std::env::var(DEMO_FILL_VARIABLE)
+        .ok()
+        .and_then(|count| count.parse().ok())
+        .unwrap_or(0);
     for mut sample in agents {
+        if [1, SIGN_IN_AGENT].contains(&sample.summary.id.get()) {
+            sample
+                .items
+                .extend((FILL_FIRST_ID..FILL_FIRST_ID + fill).map(filled_entry));
+        }
         date_messages(&mut sample.items, now);
         let mut entry = AgentEntry::new(sample.summary);
         if entry.id() != AgentId::new(LIVE_AGENT) {
@@ -3946,6 +3963,19 @@ const LIVE_READ: u32 = 2;
 const LIVE_KINDS: u32 = 6;
 
 /// A made-up entry of the live agent, picked by its id.
+/// One of the entries `YETACK_DEMO_FILL` adds: the live agent's, with a test output a dozen
+/// times longer, as real ones are.
+fn filled_entry(id: u32) -> TranscriptItem {
+    let body = match live_entry(id) {
+        ItemBody::ToolCall(call) if call.tool == "Bash" => ItemBody::ToolCall(ToolCall {
+            output: Some(live_test_output(id).repeat(12)),
+            ..call
+        }),
+        other => other,
+    };
+    item(id, None, body)
+}
+
 fn live_entry(id: u32) -> ItemBody {
     live_entry_of(id % LIVE_KINDS, id)
 }

@@ -11891,3 +11891,33 @@ html.splitting .sidebar {
 .machine-trouble .link-button:not(:last-child) {
   margin-right: 8px;
 }
+
+/* The performance info (`perf.rs`): over everything, blind to the pointer, so it never takes a
+   click from what lies under it. */
+.perf-box {
+  position: fixed;
+  right: 8px;
+  bottom: 8px;
+  z-index: 10000;
+  width: 500px;
+  padding: 6px 8px;
+  overflow: hidden;
+  border: 1px solid var(--line-strong);
+  border-radius: 6px;
+  background: rgb(0 0 0 / 88%);
+  color: #9fe8c0;
+  font: 11px/1.4 var(--mono);
+  white-space: pre;
+  pointer-events: none;
+}
+
+.perf-rates {
+  color: var(--text-bright);
+}
+
+.perf-pinned {
+  margin-bottom: 3px;
+  padding-bottom: 3px;
+  border-bottom: 1px solid var(--line-strong);
+  color: var(--amber);
+}

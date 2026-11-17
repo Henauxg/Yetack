@@ -593,6 +593,8 @@ pub struct UiState {
     /// The first entry that arrived while the agent's chat was scrolled up, once the chat went
     /// back down: the "New" divider sits above it until a message is sent or another agent opens.
     pub chat_new_from: BTreeMap<AgentId, ItemId>,
+    /// The performance info's box shows (`perf.rs`).
+    pub perf_info: bool,
     /// Counts the sends that take the chat to its bottom: the chat's scroll script jumps at each.
     pub chat_jumps: u64,
     /// The next id of a message on its way, one count for every agent.
@@ -638,6 +640,7 @@ impl Default for UiState {
             next_error: 0,
             chat_scrolled_up: BTreeMap::new(),
             chat_new_from: BTreeMap::new(),
+            perf_info: false,
             chat_jumps: 0,
             next_sending: 0,
             chat_reveal: None,

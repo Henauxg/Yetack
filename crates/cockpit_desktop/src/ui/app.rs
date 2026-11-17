@@ -55,6 +55,8 @@ pub fn App() -> Element {
     use_page_copies(cockpit);
     // The entries in the chat's view: the bubble and the Messages block follow them.
     let in_view = use_signal(|| None::<InView>);
+    let perf_info = use_memo(move || cockpit.state.read().ui.perf_info);
+    use_effect(move || crate::perf::set_on(perf_info()));
     let state = cockpit.state.read();
     let selected = state.ui.selected;
     let switching = use_switching(cockpit, selected);
@@ -135,6 +137,9 @@ pub fn App() -> Element {
     );
     rsx! {
         div { id: APP_ID, class: app_class, style: "{SHARE_PROPERTY}: {share}; {SIDEBAR_WIDTH_PROPERTY}: {sidebar_width}px; {FILES_WIDTH_PROPERTY}: {files_width}px",
+            if perf_info() {
+                crate::perf::PerfBox {}
+            }
             Sidebar {}
             SidebarSplitter { width: sidebar_width }
             main { class: if file_view_open { "center narrow-chat" } else { "center" },

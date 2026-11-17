@@ -20,6 +20,7 @@ mod machine;
 mod notifications;
 mod page_files;
 mod path_style;
+mod perf;
 mod prefs;
 mod reach;
 mod release_daemon;

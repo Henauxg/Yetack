@@ -24,7 +24,7 @@ use super::apply::forget_agent;
 use super::drafts::{Drafts, NewAgentDraft, Palette, QuestionDraft, SlashWord, SwitcherDraft};
 use super::projects::ProjectKey;
 use super::requests::{Outgoing, Purpose, Shift, history_request};
-use super::transcript::HistoryState;
+use super::transcript::{HistoryState, KEPT_ITEMS_AWAY};
 use super::ui_state::{
     Block, Dialog, FileView, NewAgentForm, NewAgentTab, PaletteOrigin, Popover, Reopening,
     TitleEdit, TitlePlace, ViewMode, is_markdown,
@@ -114,6 +114,15 @@ pub fn select_agent(state: &mut AppState, agent: AgentId) {
         _ => false,
     });
     let back = state.ui.selected != Some(agent);
+    if back && let Some(entry) = state.agents.get(&agent) {
+        crate::perf::switched(&entry.summary.title);
+    }
+    // The agent left keeps no more items than any other agent not looked at.
+    if let Some(left) = state.ui.selected.filter(|_| back)
+        && let Some(entry) = state.agents.get_mut(&left)
+    {
+        entry.transcript.trim(KEPT_ITEMS_AWAY);
+    }
     state.ui.selected = Some(agent);
     state.ui.chat_new_from.clear();
     state.ui.unread.remove(&agent);
@@ -424,6 +433,8 @@ pub enum MenuAction {
     /// Opens the "Open file" dialog.
     OpenFile,
     CloseAgent,
+    /// Shows or hides the box that times each switch of agent.
+    PerformanceInfo,
     /// A setting: its row holds its choices, which Left and Right move through.
     Model,
     Effort,
@@ -449,6 +460,7 @@ impl MenuAction {
             Self::SetEmoji => "Set emoji",
             Self::OpenFile => "Open file",
             Self::CloseAgent => "Close agent",
+            Self::PerformanceInfo => "Performance info",
             Self::Model => "Model",
             Self::Effort => "Effort",
             Self::Mode => "Permission mode",
@@ -464,7 +476,8 @@ impl MenuAction {
             | Self::Rename
             | Self::SetEmoji
             | Self::OpenFile
-            | Self::CloseAgent => MenuSection::Context,
+            | Self::CloseAgent
+            | Self::PerformanceInfo => MenuSection::Context,
             Self::Model | Self::Effort | Self::Mode => MenuSection::Model,
         }
     }
@@ -484,6 +497,7 @@ impl MenuAction {
             | Self::SetEmoji
             | Self::OpenFile
             | Self::CloseAgent
+            | Self::PerformanceInfo
             | Self::Model
             | Self::Effort
             | Self::Mode => {
@@ -522,7 +536,8 @@ impl MenuAction {
             | Self::Rename
             | Self::SetEmoji
             | Self::OpenFile
-            | Self::CloseAgent => Vec::new(),
+            | Self::CloseAgent
+            | Self::PerformanceInfo => Vec::new(),
         };
         let mut words = words.into_iter().chain([self.label()]);
         words.any(|word| word.to_lowercase().contains(query))
@@ -718,6 +733,16 @@ pub fn palette_pick(
             requests: request_close(state, drafts, agent),
             window: None,
         },
+        MenuAction::PerformanceInfo => {
+            state.ui.perf_info = !state.ui.perf_info;
+            let note = if state.ui.perf_info {
+                "Performance info is on: the box at the bottom right times each switch of agent. Pick \"Performance info\" again to hide it."
+            } else {
+                "Performance info is off."
+            };
+            state.ui.inform(note.to_owned());
+            Picked::default()
+        }
         MenuAction::Model | MenuAction::Effort | MenuAction::Mode => Picked::default(),
     };
     state.ui.popover = None;
@@ -947,7 +972,8 @@ pub fn setting_choices(summary: &AgentSummary, action: MenuAction) -> Vec<Settin
         | MenuAction::Rename
         | MenuAction::SetEmoji
         | MenuAction::OpenFile
-        | MenuAction::CloseAgent => Vec::new(),
+        | MenuAction::CloseAgent
+        | MenuAction::PerformanceInfo => Vec::new(),
     }
 }
 
@@ -978,7 +1004,8 @@ pub fn choose_setting(
         | MenuAction::Rename
         | MenuAction::SetEmoji
         | MenuAction::OpenFile
-        | MenuAction::CloseAgent => None,
+        | MenuAction::CloseAgent
+        | MenuAction::PerformanceInfo => None,
     };
     requests.unwrap_or_default()
 }
@@ -1041,7 +1068,8 @@ fn unknown_value_choice(action: MenuAction) -> Option<usize> {
         | MenuAction::Rename
         | MenuAction::SetEmoji
         | MenuAction::OpenFile
-        | MenuAction::CloseAgent => None,
+        | MenuAction::CloseAgent
+        | MenuAction::PerformanceInfo => None,
     }
 }
 
@@ -3543,6 +3571,7 @@ mod tests {
                 "Set emoji",
                 "Open file",
                 "Close agent",
+                "Performance info",
                 "Model",
                 "Effort",
                 "Permission mode",
@@ -3629,7 +3658,7 @@ mod tests {
         };
 
         let up_at_the_top = press(Direction::Up, 1);
-        let on_the_first_command = press(Direction::Down, 11);
+        let on_the_first_command = press(Direction::Down, 12);
         let at_the_bottom = press(Direction::Down, 5);
         let back_on_the_settings = press(Direction::Up, 3);
 
@@ -3640,7 +3669,7 @@ mod tests {
                 at_the_bottom,
                 back_on_the_settings
             ),
-            (0, 11, 12, 9)
+            (0, 12, 13, 10)
         );
     }
 
@@ -3838,6 +3867,46 @@ mod tests {
 
     /// A notification selects another agent without a click in the window, which would have
     /// saved the edit: a hidden edit would then take the first Esc meant to stop that agent.
+    #[test]
+    fn the_agent_left_keeps_as_many_items_as_any_agent_away() {
+        let mut state = state_with(vec![
+            summary(AGENT, AgentStatus::Working),
+            summary(2, AgentStatus::Idle),
+        ]);
+        let held = u32::try_from(KEPT_ITEMS_AWAY).unwrap() + 5;
+        let page = HistoryPage {
+            items: (1..=held)
+                .map(|id| TranscriptItem {
+                    id: ItemId::new(id),
+                    parent: None,
+                    body: ItemBody::Notice {
+                        text: "compacted".to_owned(),
+                        detail: None,
+                        kind: NoticeKind::Plain,
+                    },
+                })
+                .collect(),
+            older_items: OlderItems::None,
+        };
+        state
+            .agents
+            .get_mut(&agent())
+            .unwrap()
+            .transcript
+            .merge_page(page);
+        state.ui.selected = Some(agent());
+
+        select_agent(&mut state, agent());
+        let while_looked_at = state.agents[&agent()].transcript.items().count();
+        select_agent(&mut state, AgentId::new(2));
+
+        let left = &state.agents[&agent()].transcript;
+        assert_eq!(while_looked_at, KEPT_ITEMS_AWAY + 5);
+        assert_eq!(left.items().count(), KEPT_ITEMS_AWAY);
+        assert_eq!(left.first_id(), Some(ItemId::new(6)));
+        assert_eq!(left.history(), &HistoryState::Loaded { has_older: true });
+    }
+
     #[test]
     fn selecting_another_agent_cancels_a_rename_the_window_left_open() {
         let mut state = state_with(vec![

@@ -10,7 +10,7 @@ use cockpit_client::{
     Backoff, RequestError, Requester, Session, SessionError, SessionUpdate, Transport,
 };
 use cockpit_daemon::PROGRAM;
-use cockpit_protocol::{AgentId, Request, TerminalChange, TerminalUpdate};
+use cockpit_protocol::{AgentId, Catchup, Request, TerminalChange, TerminalUpdate};
 use dioxus::desktop::DesktopContext;
 use dioxus::prelude::*;
 use tokio::sync::mpsc;
@@ -1563,6 +1563,20 @@ async fn serve(
                     continue;
                 }
                 match &update {
+                    SessionUpdate::Connected(welcome) => {
+                        crate::perf::connection(match welcome.catchup {
+                            Catchup::Snapshot(_) => "connected: snapshot, every transcript reloads",
+                            Catchup::Replay => "connected: replay, transcripts kept",
+                        });
+                    }
+                    SessionUpdate::Disconnected { error, .. } => {
+                        crate::perf::connection(format_args!("disconnected: {error}"));
+                    }
+                    SessionUpdate::Connecting { .. }
+                    | SessionUpdate::Event(_)
+                    | SessionUpdate::Terminal(_) => {}
+                }
+                match &update {
                     SessionUpdate::Connected(_) => connected_once = true,
                     SessionUpdate::Disconnected { error: error @ SessionError::Connect(_), .. }
                         if !connected_once =>
@@ -1581,6 +1595,7 @@ async fn serve(
                     | SessionUpdate::Event(_)
                     | SessionUpdate::Terminal(_) => {}
                 }
+                let applying = Instant::now();
                 let (alerts, follow_up, idle_update) = {
                     let mut state = state.write();
                     let mut drafts = drafts.write();
@@ -1590,6 +1605,7 @@ async fn serve(
                     let wait_probe = daemon_update::probe_for_wait(&mut state, machine);
                     (alerts, state::needed_requests(&mut state), (idle_update, wait_probe))
                 };
+                crate::perf::event(applying.elapsed());
                 let (idle_update, wait_probe) = idle_update;
                 // The window closed: nothing runs the update or the probe.
                 if let Some(run) = idle_update {
@@ -1699,6 +1715,7 @@ fn send(
         } = outgoing;
         let method = request.method();
         MachineId::request_to_daemon(&mut request);
+        let sent = Instant::now();
         let result = requester.request(request).await.map(|mut body| {
             machine.answer_to_app(&mut body);
             body
@@ -1709,6 +1726,8 @@ fn send(
             }
             return;
         }
+        crate::perf::answered(method, sent.elapsed(), &result);
+        let applying = Instant::now();
         let follow_up = {
             let mut state = state.write();
             state::apply_response(
@@ -1721,6 +1740,7 @@ fn send(
             );
             state::needed_requests(&mut state)
         };
+        crate::perf::applied(method, applying.elapsed());
         send_all(state, drafts, &requester, &task, follow_up);
     });
 }
