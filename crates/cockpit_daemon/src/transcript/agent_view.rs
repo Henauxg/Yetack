@@ -4533,6 +4533,42 @@ mod tests {
         assert_eq!(view.summary().status, AgentStatus::Idle);
     }
 
+    /// A new agent's first message goes right after its quiet `/rename`: Claude Code's text in
+    /// that message's turn still shows.
+    #[test]
+    fn the_turn_after_a_quiet_prompt_shows_claude_codes_text() {
+        let mut view = view();
+        view.quiet_prompt_sent("/rename Cart total".to_owned());
+        view.add_prompt(&prompt("Fix the cart"), now());
+
+        apply(&mut view, init());
+        apply(&mut view, local_answer("Session renamed to: Cart total"));
+        let _ = apply(&mut view, local_result());
+        apply(&mut view, echo("Fix the cart"));
+        apply(
+            &mut view,
+            local_answer("API Error: 500 Internal server error"),
+        );
+        let follow_ups = apply(
+            &mut view,
+            json!({
+                "type": "result", "subtype": "success", "is_error": true, "num_turns": 1,
+                "result": "API Error: 500 Internal server error"
+            }),
+        );
+
+        let notices: Vec<&ItemBody> = bodies(&view)
+            .into_iter()
+            .filter(|body| matches!(body, ItemBody::Notice { .. }))
+            .collect();
+        assert_eq!(
+            notices,
+            [&notice("API Error: 500 Internal server error", None)]
+        );
+        assert_eq!(follow_ups, [FollowUp::TurnEnded]);
+        assert_eq!(view.summary().turns, 1);
+    }
+
     #[test]
     fn a_prompt_sent_while_a_hidden_one_runs_works_until_its_own_result() {
         let mut view = view();
