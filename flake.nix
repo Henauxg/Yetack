@@ -24,7 +24,6 @@
         libsoup_3
         glib
         xdotool
-        openssl
       ];
     in
     {
@@ -35,7 +34,11 @@
           common = {
             version = (builtins.fromTOML (builtins.readFile ./Cargo.toml)).workspace.package.version;
             src = ./.;
-            cargoLock.lockFile = ./Cargo.lock;
+            cargoLock = {
+              lockFile = ./Cargo.lock;
+              # Dioxus from the fork that Cargo.lock names (docs/todos.md, "Dioxus from crates.io again").
+              outputHashes."dioxus-0.7.10" = "sha256-7YvuUyYdj7PF0M3QAxipo6r+1atNvLhH1fuPJkeBJEU=";
+            };
             # The tests run in the dev shell: some start processes the build sandbox forbids.
             doCheck = false;
             # The commit the tree comes from, which the daemon tells the app, and which the app's

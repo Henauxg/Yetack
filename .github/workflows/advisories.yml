@@ -1,0 +1,27 @@
+# Checks every crate of Cargo.lock against RustSec's advisories, with all features on.
+# An advisory can come out between two pushes, so it also runs each Monday.
+# An advisory for the TLS crates calls for a release: see docs/releasing.md.
+
+name: Advisories
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: "17 6 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  cargo-deny:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: EmbarkStudios/cargo-deny-action@70f81531115945ba6eb6b941ec9d39d063438eb9 # v2.1.2
+        with:
+          command: check advisories
+          # The action's image has Rust 1.85, older than the workspace needs.
+          rust-version: stable

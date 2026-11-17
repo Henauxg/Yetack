@@ -17,7 +17,7 @@ A release has up to nine files:
 
 The Windows zip and app are built on a Windows machine, the other files on a Linux machine with Docker. A release can go out without them: the README sends Windows users to [install-from-source.md](./install-from-source.md) until a release has one, and the Windows app's update says the release has no Windows app.
 
-The release builds in Ubuntu 22.04, which has `libssl.so.3` and `libxdo.so.3`. Newer distributions renamed both to `.so.4`, and a program built against `.so.3` does not start there. So the tarball's app has its own OpenSSL, built from source by the release, and the tarball and the `.rpm` carry their own libxdo. Their fixes reach users only with a Yetack release. So when OpenSSL publishes a security fix that concerns TLS clients, make a release soon after, even one with nothing else in it: `cargo update -p openssl-src` takes the fixed source.
+The release builds in Ubuntu 22.04, which has `libxdo.so.3`. Newer distributions renamed it `libxdo.so.4`, and a program built against `.so.3` does not start there. So the tarball and the `.rpm` carry their own libxdo, which Dioxus's menus link and the app never calls. The app's HTTPS requests go through rustls, with ring for its cryptography, and no OpenSSL. Both are compiled into the app, so their fixes reach users only with a Yetack release. CI runs `cargo deny check advisories` on each push and each Monday (`.github/workflows/advisories.yml`). When it reports an advisory for `rustls`, `rustls-webpki`, `rustls-platform-verifier` or `ring`, update the crate and make a release soon after, even one with nothing else in it.
 
 ## 1. Set the version
 

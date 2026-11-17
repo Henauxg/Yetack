@@ -56,11 +56,9 @@ patchelf --set-rpath '$ORIGIN/../lib/yetack' dist/rpm/yetack-desktop
 cp -L "$libxdo" dist/rpm/
 cargo generate-rpm -p crates/cockpit_desktop -o /out/
 
-# The tarball's app finds the daemon beside itself, as the Windows zip's does. It runs on distros
-# whose OpenSSL no longer has the soname of Ubuntu 22.04 (Arch has libssl.so.4), so OpenSSL is
-# linked in. It finds libxdo in lib/ beside it in the tarball, and in lib/yetack/ once install.sh
-# has copied it.
-YETACK_PACKAGE=tarball cargo build -q --release --locked -p cockpit_desktop --features static-openssl
+# The tarball's app finds the daemon beside itself, as the Windows zip's does. It finds libxdo in
+# lib/ beside it in the tarball, and in lib/yetack/ once install.sh has copied it.
+YETACK_PACKAGE=tarball cargo build -q --release --locked -p cockpit_desktop
 folder=yetack-desktop-$version-x86_64-linux
 rm -rf "dist/$folder"
 mkdir -p "dist/$folder"

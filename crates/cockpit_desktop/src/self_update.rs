@@ -121,13 +121,13 @@ pub enum ReplaceError {
     },
 }
 
-/// The client every request goes through: the system's TLS and its root certificates, HTTPS
+/// The client every request goes through: rustls with the system's root certificates, HTTPS
 /// only, and a name that says which app asks. `body_time` bounds the reading of a whole answer.
 pub fn http_client(body_time: Option<Duration>) -> ureq::Agent {
     use ureq::tls::{RootCerts, TlsConfig, TlsProvider};
 
     let tls = TlsConfig::builder()
-        .provider(TlsProvider::NativeTls)
+        .provider(TlsProvider::Rustls)
         .root_certs(RootCerts::PlatformVerifier)
         .build();
     ureq::Agent::config_builder()

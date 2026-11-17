@@ -1,0 +1,6 @@
+# cargo-deny's settings, for `cargo deny check advisories` (.github/workflows/advisories.yml).
+
+[advisories]
+# An unmaintained crate fails the check only when a crate of this workspace depends on it
+# directly. One deeper in the tree is for the crate that pulls it in to replace.
+unmaintained = "workspace"

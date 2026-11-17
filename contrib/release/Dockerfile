@@ -9,8 +9,8 @@ ARG CARGO_GENERATE_RPM_VERSION=0.21.1
 
 ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        build-essential ca-certificates curl dpkg-dev file git musl-tools patchelf perl pkg-config \
-        libgtk-3-dev libjavascriptcoregtk-4.1-dev libsoup-3.0-dev libssl-dev \
+        build-essential ca-certificates curl dpkg-dev file git musl-tools patchelf pkg-config \
+        libgtk-3-dev libjavascriptcoregtk-4.1-dev libsoup-3.0-dev \
         libwebkit2gtk-4.1-dev libxdo-dev \
     && rm -rf /var/lib/apt/lists/*
 

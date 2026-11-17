@@ -18,7 +18,9 @@ chrono = { version = "0.4.42", default-features = false, features = ["clock", "s
 cockpit_client.workspace = true
 cockpit_daemon.workspace = true
 cockpit_protocol.workspace = true
-dioxus = { version = "0.7.10", default-features = false, features = ["desktop", "launch", "lib"] }
+# Dioxus 0.7.10 with one change: dioxus-desktop builds its websockets without native-tls, which
+# linked OpenSSL into the app though they are plain TCP. Back to crates.io once Dioxus has it.
+dioxus = { git = "https://github.com/Henauxg/dioxus-fork", rev = "32d8a256298e21a7212b46a7d5268f4d224857b4", version = "0.7.10", default-features = false, features = ["desktop", "launch", "lib"] }
 futures-util = "0.3.31"
 # Reads the size of an image a message shows, with the formats dioxus-desktop already builds.
 image = { version = "0.25.10", default-features = false, features = ["gif", "jpeg", "png", "webp"] }
@@ -46,9 +48,9 @@ tracing-subscriber.workspace = true
 # Syntect's syntaxes with the ones it lacks (Protobuf, TypeScript, TOML, ...), for the same
 # regex engine.
 two-face = { version = "0.5.2", default-features = false, features = ["syntect-fancy"] }
-# Asks GitHub for the latest release and downloads it, over the TLS that dioxus-desktop already
-# brings.
-ureq = { version = "3.5.2", default-features = false, features = ["native-tls"] }
+# Asks GitHub for the latest release and downloads it, over rustls: native-tls would link OpenSSL
+# on Linux. The platform verifier trusts the system's root certificates.
+ureq = { version = "3.5.2", default-features = false, features = ["rustls", "platform-verifier"] }
 # The parser Dioxus opens links with: an address it cannot parse would open as a local file.
 url = "2.5.8"
 # The browser opener Dioxus uses, where the app does not run `xdg-open` itself.
@@ -57,14 +59,6 @@ webbrowser = "1.2.6"
 # The web view's settings, from the binding and the version wry brings.
 [target.'cfg(target_os = "linux")'.dependencies]
 webkit2gtk = "2.0.1"
-# Only for `static-openssl`: OpenSSL built from source and linked into the app.
-openssl-sys = { version = "0.9.118", optional = true, features = ["vendored"] }
-
-[features]
-# For the release's tarball, which runs on distros whose OpenSSL is not libssl.so.3 (Arch has
-# moved to OpenSSL 4). The app still links the system's OpenSSL in the .deb and the .rpm, whose
-# package managers check it.
-static-openssl = ["dep:openssl-sys"]
 
 # Waits for the app that started an updated one to end.
 [target.'cfg(windows)'.dependencies]
@@ -136,8 +130,6 @@ assets = [
 "libgio-2.0.so.0()(64bit)" = "*"
 "libgobject-2.0.so.0()(64bit)" = "*"
 "libglib-2.0.so.0()(64bit)" = "*"
-"libssl.so.3()(64bit)" = "*"
-"libcrypto.so.3()(64bit)" = "*"
 "libgcc_s.so.1()(64bit)" = "*"
 "libX11.so.6()(64bit)" = "*"
 "libXtst.so.6()(64bit)" = "*"
