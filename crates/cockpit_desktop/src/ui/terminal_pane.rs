@@ -11,6 +11,7 @@ use dioxus::prelude::*;
 use serde::{Deserialize, Serialize};
 
 use crate::connection::Cockpit;
+use crate::keymap::{Chord, Command};
 use crate::machine::MachineId;
 use crate::prefs::{
     DEFAULT_TERMINAL_HEIGHT, DEFAULT_TERMINAL_WIDTH, MAX_TERMINAL_SIZE, MIN_TERMINAL_SIZE,
@@ -45,6 +46,22 @@ const terminals = new Map();
 const key = (agent, terminal) => `${agent}:${terminal}`;
 const bytes = (base64) => Uint8Array.from(atob(base64), (character) => character.charCodeAt(0));
 
+// How many times each terminal started again, after a gap or a failure. Past a few, it stays as it
+// is, rather than asking the daemon for its output again and again. A screen that draws clears it.
+const restarts = new Map();
+const MAX_RESTARTS = 3;
+
+// Starts a terminal again from the output the daemon kept, unless it did too often.
+function restart(entry) {
+  const count = restarts.get(entry.name) ?? 0;
+  if (count >= MAX_RESTARTS) {
+    return;
+  }
+  restarts.set(entry.name, count + 1);
+  forget(entry);
+  place();
+}
+
 // Writes output that starts at byte `offset`, past what the terminal shows already. Before the
 // kept output came, it waits. After a gap, the terminal starts again from the kept output.
 function write(entry, offset, data) {
@@ -56,8 +73,7 @@ function write(entry, offset, data) {
     return;
   }
   if (offset > entry.end) {
-    forget(entry);
-    place();
+    restart(entry);
     return;
   }
   const end = offset + data.length;
@@ -78,6 +94,15 @@ function fitWhenSettled(entry) {
     }
   }, settings.settle_ms);
 }
+
+// The pane's shortcut, as the app's settings set it. Ctrl stands for Cmd on macOS too, as in
+// the page's other script.
+let shortcut = null;
+const isShortcut = (event) => shortcut !== null
+  && (event.ctrlKey || event.metaKey) === shortcut.ctrl
+  && event.altKey === shortcut.alt
+  && event.shiftKey === shortcut.shift
+  && (event.key.length === 1 ? event.key.toLowerCase() : event.key) === shortcut.key;
 
 function terminalFor(agent, terminal) {
   const found = terminals.get(key(agent, terminal));
@@ -107,7 +132,7 @@ function terminalFor(agent, terminal) {
   // The pane's shortcut shows and hides it from inside the terminal too. Unlike xterm.js,
   // ghostty-web skips a key the handler returns `true` for.
   term.attachCustomKeyEventHandler((event) => {
-    if (event.type === "keydown" && event.ctrlKey && !event.altKey && !event.metaKey && event.key === "`") {
+    if (event.type === "keydown" && isShortcut(event)) {
       event.preventDefault();
       send({ type: "toggle" });
       return true;
@@ -217,33 +242,52 @@ document.addEventListener("pointerdown", (event) => {
   event.preventDefault();
 });
 
-for (;;) {
-  const message = await dioxus.recv();
-  try {
+// Acts on one message from the app.
+function receive(message) {
   const entry = terminals.get(key(message.agent, message.terminal));
   if (message.type === "output" && entry !== undefined) {
     write(entry, message.offset, bytes(message.data));
   } else if (message.type === "screen" && entry !== undefined && entry.end === null) {
     const data = bytes(message.data);
-    // ghostty-web throws on an empty write, as when the shell has written nothing yet.
-    if (data.length > 0) {
-      entry.term.write(data);
-    }
     entry.end = message.offset + data.length;
-    for (const [offset, pending] of entry.pending.splice(0)) {
-      write(entry, offset, pending);
+    const pending = entry.pending.splice(0);
+    try {
+      // ghostty-web throws on an empty write, as when the shell has written nothing yet.
+      if (data.length > 0) {
+        entry.term.write(data);
+      }
+      restarts.delete(entry.name);
+    } finally {
+      // The output that waited goes on even if the screen fails to draw.
+      for (const [offset, waited] of pending) {
+        write(entry, offset, waited);
+      }
     }
+  } else if (message.type === "shortcut") {
+    shortcut = message;
   } else if (message.type === "focus" && entry !== undefined) {
     entry.term.focus();
   } else if (message.type === "live") {
     const live = new Set(message.terminals.map(({ agent, terminal }) => key(agent, terminal)));
     for (const gone of [...terminals.values()].filter((entry) => !live.has(entry.name))) {
       forget(gone);
+      restarts.delete(gone.name);
     }
   }
+}
+
+for (;;) {
+  const message = await dioxus.recv();
+  try {
+    receive(message);
   } catch (error) {
-    // One message that fails leaves the loop to the next ones.
+    // A failed message must not stop the loop. The terminal it was for starts again from the
+    // output the daemon kept.
     send({ type: "problem", text: `${message.type}: ${error}` });
+    const entry = terminals.get(key(message.agent, message.terminal));
+    if (entry !== undefined) {
+      restart(entry);
+    }
   }
 }
 "##;
@@ -296,6 +340,13 @@ enum FromPage {
 #[derive(Debug, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 enum ToPage {
+    /// The pane's shortcut, which also works inside a terminal.
+    Shortcut {
+        ctrl: bool,
+        alt: bool,
+        shift: bool,
+        key: String,
+    },
     Output {
         agent: AgentId,
         terminal: TerminalId,
@@ -364,6 +415,24 @@ pub fn use_terminal_script(cockpit: Cockpit) {
         let terminals = live();
         if let Err(error) = script.send(ToPage::Live { terminals }) {
             tracing::warn!("cannot drop the closed terminals: {error}");
+        }
+    });
+    let shortcut = use_memo(move || cockpit.state.read().prefs.keys.chord(Command::Terminal));
+    use_effect(move || {
+        let Chord {
+            ctrl,
+            alt,
+            shift,
+            key,
+        } = shortcut();
+        let message = ToPage::Shortcut {
+            ctrl,
+            alt,
+            shift,
+            key,
+        };
+        if let Err(error) = script.send(message) {
+            tracing::warn!("cannot give the terminal script its shortcut: {error}");
         }
     });
     // The output a terminal kept goes to the page once, as it comes.

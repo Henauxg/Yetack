@@ -200,6 +200,10 @@ pub fn apply_catchup(
     state.ui.unread.retain(|agent| agents.contains_key(agent));
     state
         .ui
+        .terminal_panes
+        .retain(|agent| agents.contains_key(agent));
+    state
+        .ui
         .mcp_reconnects
         .retain(|(agent, _), _| agents.contains_key(agent));
     state

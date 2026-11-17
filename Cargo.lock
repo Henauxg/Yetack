@@ -535,6 +535,7 @@ dependencies = [
  "claude_protocol",
  "cockpit_client",
  "cockpit_protocol",
+ "nix",
  "portable-pty",
  "rustix",
  "serde",

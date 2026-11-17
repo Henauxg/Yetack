@@ -34,6 +34,7 @@ tracing-subscriber.workspace = true
 
 [target.'cfg(unix)'.dependencies]
 rustix = { version = "1", features = ["event", "fs", "param", "process"] }
+nix = { version = "0.28", default-features = false, features = ["user"] }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = [

@@ -8,7 +8,9 @@ use dioxus::prelude::*;
 use crate::bridge::use_bridge;
 use crate::connection::{Cockpit, Startup, use_clock, use_cockpit};
 use crate::prefs::{TerminalPlace, use_prefs_saver};
-use crate::state::{ConnectionState, NoteKind, actions, daemon_update, file_tree, sending};
+use crate::state::{
+    ConnectionState, NoteKind, actions, daemon_update, file_tree, sending, terminals,
+};
 use crate::ui::app_update::use_release_checks;
 use crate::ui::blocks::FloatingBlocks;
 use crate::ui::chat_scroll::InView;
@@ -66,8 +68,11 @@ pub fn App() -> Element {
     let files_agent = selected.filter(|agent| file_tree::pane_open(&state, *agent));
     let files_open = files_agent.is_some();
     let files_pane = use_presence(files_agent);
-    // The terminal pane folds away as it closes, wherever it was.
-    let terminal_pane = use_presence(state.ui.terminal_open.then_some(state.prefs.terminal.place));
+    // The terminal pane folds away as it closes, wherever it was. As the files pane, it leaves
+    // with a fold only for the agent that closed it.
+    let terminal_agent = selected.filter(|_| terminals::pane_open(&state));
+    let terminal_pane =
+        use_presence(terminal_agent.map(|agent| (agent, state.prefs.terminal.place)));
     let files_leaving = files_pane
         .as_ref()
         .is_some_and(|shown| shown.leaving && Some(shown.value) == selected);
@@ -126,7 +131,10 @@ pub fn App() -> Element {
     let terminal_at = |place| {
         terminal_pane
             .as_ref()
-            .filter(|shown| shown.value == place)
+            .filter(|shown| {
+                let (agent, at) = shown.value;
+                at == place && (!shown.leaving || Some(agent) == selected)
+            })
             .map(|shown| shown.leaving)
     };
     let (terminal_bottom, terminal_right) = (

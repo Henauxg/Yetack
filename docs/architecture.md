@@ -313,7 +313,7 @@ It checks that the process is the agent's, then acts through the same pidfd on U
 
 ### Terminals
 
-`agent.terminal_open` starts the user's shell (`YETACK_SHELL`, else the login shell of `/etc/passwd`, else `$SHELL`, else `/bin/sh`; `%COMSPEC%` on Windows) on a PTY in the agent's folder, with `TERM=xterm-256color` (module `hub::terminals`, crate `portable-pty`).
+`agent.terminal_open` starts the user's shell on a PTY in the agent's folder, with `TERM=xterm-256color` (module `hub::terminals`, crate `portable-pty`). The shell is `YETACK_SHELL`, else the user's login shell from the system's user database, else `$SHELL`, else `/bin/sh` (`%COMSPEC%` on Windows), and `SHELL` is set to it in its environment. `$SHELL` comes after the login shell because a `nix develop` shell sets it to a bash built without readline. The release daemon is a static musl build: its user database is `/etc/passwd`, or `nscd` where it runs.
 Three threads serve each shell, since a PTY's reads, writes and wait block: one reads the output, one writes what the user types (`terminal.input`), and one waits for the shell to end.
 The hub keeps each terminal's last 512 KB of output, and sends what comes to every client as `ServerMessage::Terminal`.
 That message has no `Seq` and no log: a shell can write megabytes a second, and an old screen is worth nothing in a replay.

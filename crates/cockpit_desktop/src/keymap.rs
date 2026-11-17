@@ -193,7 +193,7 @@ impl Command {
             Self::NewAgent => Chord::ctrl("n"),
             Self::OpenFile => Chord::ctrl("o"),
             Self::FilesPane => Chord::ctrl("b"),
-            Self::Terminal => Chord::ctrl("`"),
+            Self::Terminal => Chord::ctrl("ù"),
             Self::AgentMap => Chord::ctrl("m"),
             Self::Find => Chord::ctrl("f"),
             Self::Rename => Chord::plain("F2"),

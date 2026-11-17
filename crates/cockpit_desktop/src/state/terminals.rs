@@ -123,21 +123,40 @@ fn outgoing(request: Request, purpose: Purpose) -> Outgoing {
     }
 }
 
-/// The header's button and its shortcut.
+/// Whether the selected agent's pane shows.
+pub fn pane_open(state: &AppState) -> bool {
+    state
+        .ui
+        .selected
+        .is_some_and(|agent| state.ui.terminal_panes.contains(&agent))
+}
+
+fn set_pane(state: &mut AppState, open: impl FnOnce(bool) -> bool) {
+    let Some(agent) = state.ui.selected else {
+        return;
+    };
+    if open(state.ui.terminal_panes.contains(&agent)) {
+        state.ui.terminal_panes.insert(agent);
+    } else {
+        state.ui.terminal_panes.remove(&agent);
+    }
+}
+
+/// The header's button and its shortcut, for the selected agent.
 pub fn toggle_pane(state: &mut AppState) -> Vec<Outgoing> {
-    state.ui.terminal_open = !state.ui.terminal_open;
+    set_pane(state, |open| !open);
     Vec::new()
 }
 
 pub fn move_to(state: &mut AppState, place: TerminalPlace) {
     state.prefs.terminal.place = place;
-    state.ui.terminal_open = true;
+    set_pane(state, |_| true);
 }
 
 /// While the pane shows, the selected agent's terminals are listed, and an agent with none gets
 /// one.
 pub fn needed_requests(state: &mut AppState) -> Vec<Outgoing> {
-    if !state.ui.terminal_open {
+    if !pane_open(state) {
         return Vec::new();
     }
     let Some(agent) = state.ui.selected else {
@@ -263,7 +282,7 @@ pub fn close(state: &mut AppState, agent: AgentId, terminal: TerminalId) -> Vec<
     terminals.remove(terminal);
     // The last tab closed: the pane closes with it, rather than opening another.
     if terminals.tabs.is_empty() {
-        state.ui.terminal_open = false;
+        state.ui.terminal_panes.remove(&agent);
     }
     vec![outgoing(
         Request::TerminalClose(TerminalParams { agent, terminal }),
@@ -412,7 +431,7 @@ mod tests {
 
         close(&mut state, agent(), TerminalId::new(2));
 
-        assert!(!state.ui.terminal_open);
+        assert!(!pane_open(&state));
         assert!(needed_requests(&mut state).is_empty());
     }
 

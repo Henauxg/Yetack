@@ -23,7 +23,7 @@ use tokio::sync::mpsc::error::TrySendError;
 use crate::hub::input::HubInput;
 use crate::hub::state::{CLIENT_QUEUE, Hub};
 
-/// Names the shell terminals run, over the account's login shell.
+/// The shell terminals run. It wins over the account's login shell.
 const SHELL_ENV: &str = "YETACK_SHELL";
 
 /// The output a terminal keeps for a client that shows it again: a few screens of a busy build.
@@ -74,6 +74,9 @@ impl Terminals {
         command.cwd(folder);
         command.env("TERM", "xterm-256color");
         command.env("COLORTERM", "truecolor");
+        // As login(1) does: what the terminal starts, as tmux or vim's `:sh`, runs the same shell.
+        #[cfg(unix)]
+        command.env("SHELL", &program);
         // The shell is the user's, not one Claude Code runs.
         command.env_remove("CLAUDECODE");
         let mut child = pair
@@ -293,26 +296,13 @@ fn shell() -> (String, String) {
     (program, title)
 }
 
-/// The login shell `/etc/passwd` gives the daemon's user, when it names a file that exists. A
-/// user known only to a directory service has none there.
+/// The daemon's user's login shell, as the system's user database gives it (`/etc/passwd`, a
+/// directory service, or macOS's), when it names a file that exists.
 #[cfg(unix)]
 fn login_shell() -> Option<String> {
-    let passwd = std::fs::read_to_string("/etc/passwd").ok()?;
-    let uid = rustix::process::getuid().as_raw();
-    passwd_shell(&passwd, uid).filter(|shell| Path::new(shell).is_file())
-}
-
-/// The shell of the `/etc/passwd` line of user `uid`: its seventh field.
-#[cfg(unix)]
-fn passwd_shell(passwd: &str, uid: u32) -> Option<String> {
-    passwd.lines().find_map(|line| {
-        let fields: Vec<&str> = line.split(':').collect();
-        let (Some(line_uid), Some(shell)) = (fields.get(2), fields.get(6)) else {
-            return None;
-        };
-        (line_uid.parse::<u32>().ok() == Some(uid) && !shell.is_empty())
-            .then(|| (*shell).to_owned())
-    })
+    let user = nix::unistd::User::from_uid(nix::unistd::getuid()).ok()??;
+    let shell = user.shell.into_os_string().into_string().ok()?;
+    Path::new(&shell).is_file().then_some(shell)
 }
 
 fn spawn_thread(name: &str, run: impl FnOnce() + Send + 'static) -> Result<(), String> {
@@ -496,17 +486,13 @@ fn not_found(message: String) -> ErrorBody {
 mod tests {
     use super::*;
 
+    /// The daemon's user has a login shell on any machine that runs the tests.
     #[cfg(unix)]
     #[test]
-    fn the_login_shell_is_the_seventh_field_of_the_users_line() {
-        let passwd = "root:x:0:0::/root:/bin/sh\nana:x:1000:100:Ana:/home/ana:/run/current-system/sw/bin/bash\nbo:x:1001:100::/home/bo:\n";
+    fn the_users_login_shell_is_a_file() {
+        let shell = login_shell();
 
-        assert_eq!(
-            passwd_shell(passwd, 1000).as_deref(),
-            Some("/run/current-system/sw/bin/bash")
-        );
-        assert_eq!(passwd_shell(passwd, 1001), None, "an empty shell field");
-        assert_eq!(passwd_shell(passwd, 1002), None, "no line");
+        assert!(shell.is_some(), "no login shell: {shell:?}");
     }
 
     /// A terminal of agent 3 whose shell already ended.

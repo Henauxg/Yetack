@@ -50,3 +50,7 @@ The daemon the app starts records its process, so the next update stops it by it
 ## The update says another build still answers
 
 The app stopped the daemon and started its own version, but another program started the old daemon again, such as a systemd unit that restarts it whenever it stops. Stop that program, or point it at the app's version, then retry. For the systemd unit: `systemctl --user disable --now yetack`.
+
+## A terminal starts the wrong shell
+
+A terminal runs the shell your account logs in with, on the machine of the agent. To run another one, set `YETACK_SHELL` to its full path in the daemon's environment, then restart the daemon. For the background service on Linux, put `Environment=YETACK_SHELL=/run/current-system/sw/bin/zsh` in a drop-in file (`systemctl --user edit yetack`).

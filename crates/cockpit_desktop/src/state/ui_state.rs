@@ -548,8 +548,9 @@ pub enum TitlePlace {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UiState {
     pub selected: Option<AgentId>,
-    /// The terminal pane shows, for the selected agent.
-    pub terminal_open: bool,
+    /// The agents whose terminal pane shows while they are selected. It outlives a reconnection,
+    /// which makes the agents' entries again.
+    pub terminal_panes: BTreeSet<AgentId>,
     /// Terminal output the daemon kept, which the page writes before what comes next.
     pub terminal_screens: Vec<Screen>,
     /// Agents that finished while another one was selected, or that their row's menu marked
@@ -615,7 +616,7 @@ impl Default for UiState {
     fn default() -> Self {
         Self {
             selected: None,
-            terminal_open: false,
+            terminal_panes: BTreeSet::new(),
             terminal_screens: Vec::new(),
             unread: BTreeSet::new(),
             folded_machines: BTreeSet::new(),
