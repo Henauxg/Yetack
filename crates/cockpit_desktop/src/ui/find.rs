@@ -567,6 +567,10 @@ document.addEventListener("keydown", (event) => guarded(() => {
     return;
   }
   const target = event.target;
+  // A key typed in a terminal is the shell's, F3 included.
+  if (target instanceof Element && target.closest(settings.records_keys_selector) !== null) {
+    return;
+  }
   if (event.key === "Enter" && target instanceof HTMLInputElement) {
     const finder = target.id === settings.chat_field_id ? finders.chat : target.id === settings.file_field_id ? finders.file : null;
     if (finder !== null) {
@@ -621,6 +625,8 @@ struct Settings {
     chat_covers: String,
     /// An open dialog, behind which F3 moves no find.
     dialog_selector: String,
+    /// An element whose keys go to it alone, as a terminal.
+    records_keys_selector: String,
     /// The part of a row that its fold cuts.
     clip_selector: String,
     fold_button_class: &'static str,
@@ -653,6 +659,7 @@ impl Settings {
             chip_class: CHIP_CLASS,
             chat_covers: format!(".{LAST_INSTRUCTION_CLASS}"),
             dialog_selector: format!(".{OVERLAY_CLASS}"),
+            records_keys_selector: format!("[{}]", bridge::RECORDS_KEYS_ATTRIBUTE),
             clip_selector: format!(".{IO_CLIP_CLASS}, .{MESSAGE_CLIP_CLASS}"),
             fold_button_class: FOLD_BUTTON_CLASS,
             current_attribute: "data-find-current",
@@ -1037,6 +1044,7 @@ mod tests {
             "chip_class": "find-chip",
             "chat_covers": ".last-instruction-message",
             "dialog_selector": ".overlay",
+            "records_keys_selector": "[data-records-keys]",
             "clip_selector": ".io-clip, .message-clip",
             "fold_button_class": "fold-lines",
             "current_attribute": "data-find-current",

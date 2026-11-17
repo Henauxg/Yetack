@@ -1490,6 +1490,21 @@ pub fn open_file(state: &mut AppState, agent: AgentId, path: PathBuf, line: Opti
         .take_if(|dialog| matches!(dialog, Dialog::AgentMap(_)));
 }
 
+/// A file's tab, or its row in the list of open files. The file under the terminal's tab shows
+/// as it was: opening it again would read it again and reset its mode, its line and its scroll.
+pub fn show_file(state: &mut AppState, agent: AgentId, path: PathBuf) {
+    if state
+        .ui
+        .file_view(agent)
+        .is_some_and(|view| view.path == path)
+    {
+        state.ui.terminal_tab_shown.remove(&agent);
+        state.ui.popover = None;
+    } else {
+        open_file(state, agent, path, None);
+    }
+}
+
 /// The mode a file opens in, given the mode of the file shown before it, if any:
 /// - with a `line` to mark, the whole file;
 /// - a markdown file, rendered, unless the agent changed it: then rendered only when the file

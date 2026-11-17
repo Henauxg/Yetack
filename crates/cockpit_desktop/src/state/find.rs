@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 
 use super::app_state::AppState;
 use super::drafts::Drafts;
+use super::terminals;
 
 /// A selection longer than this, in characters, is no text to look for: Ctrl+F leaves the find's
 /// text as it was.
@@ -135,11 +136,16 @@ pub fn is_open(state: &AppState, pane: FindPane, agent: AgentId) -> bool {
 }
 
 /// Ctrl+F: opens the find of the pane that has the focus, the file view's while the selected
-/// agent has one, and gives its field the focus with its text selected. A selection on one line
-/// becomes the text to look for.
+/// agent has one that shows a file, and gives its field the focus with its text selected. A
+/// selection on one line becomes the text to look for.
 pub fn open(state: &mut AppState, drafts: &mut Drafts, pane: FindPane, selection: &str) {
     let Some(agent) = state.ui.selected else {
         return;
+    };
+    let pane = if terminals::file_view_shows_terminal(state, agent) {
+        FindPane::Chat
+    } else {
+        pane
     };
     let pane = match state.ui.file_views.get_mut(&agent) {
         Some(view) if pane == FindPane::File => {

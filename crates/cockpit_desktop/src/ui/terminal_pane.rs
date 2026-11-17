@@ -1,5 +1,5 @@
 //! The terminal pane: tabs for the selected agent's terminals over a ghostty-web terminal, in the
-//! bottom panel or at the right edge.
+//! bottom panel, at the right edge, or as a tab of the file view.
 //!
 //! The page owns the terminals. Its script keeps one ghostty-web terminal per shell, each in a box
 //! of its own, and puts the shown one's box in the pane's screen wherever the pane is: moving the
@@ -50,6 +50,8 @@ const bytes = (base64) => Uint8Array.from(atob(base64), (character) => character
 // is, rather than asking the daemon for its output again and again. A screen that draws clears it.
 const restarts = new Map();
 const MAX_RESTARTS = 3;
+// The terminal that starts again, while it did not have the focus.
+let unfocused = null;
 
 // Starts a terminal again from the output the daemon kept, unless it did too often.
 function restart(entry) {
@@ -58,8 +60,14 @@ function restart(entry) {
     return;
   }
   restarts.set(entry.name, count + 1);
-  forget(entry);
-  place();
+  // Without the focus, it does not take it from the composer.
+  unfocused = entry.box.contains(document.activeElement) ? null : entry.name;
+  try {
+    forget(entry);
+    place();
+  } finally {
+    unfocused = null;
+  }
 }
 
 // Writes output that starts at byte `offset`, past what the terminal shows already. Before the
@@ -209,7 +217,9 @@ function place() {
   if (now !== shown || moved) {
     shown = now;
     fitWhenSettled(entry);
-    requestAnimationFrame(() => entry.term.focus());
+    if (now !== unfocused) {
+      requestAnimationFrame(() => entry.term.focus());
+    }
   }
 }
 new MutationObserver(place).observe(document.body, {

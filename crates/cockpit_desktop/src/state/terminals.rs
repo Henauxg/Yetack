@@ -1,5 +1,5 @@
-//! The terminal pane: each agent's terminals, the tab it shows, and the requests that list, open
-//! and close them. The output does not pass here: it goes from the connection to the page, see
+//! The terminal pane: each agent's terminals, the tab it shows, its tab in the file view, and the
+//! requests that list, open and close them. The output does not pass here: it goes from the connection to the page, see
 //! `terminal_feed`.
 
 use cockpit_protocol::{
@@ -143,15 +143,27 @@ pub fn file_view_shows_terminal(state: &AppState, agent: AgentId) -> bool {
         && (state.ui.file_view(agent).is_none() || state.ui.terminal_tab_shown.contains(&agent))
 }
 
-/// The terminal's tab in the file view.
+/// Whether `agent`'s file view panel shows: with a file open, or with the terminal as its tab.
+pub fn file_view_open(state: &AppState, agent: AgentId) -> bool {
+    state.ui.file_view(agent).is_some() || in_file_view(state, agent)
+}
+
+/// Shows the terminal's tab in `agent`'s file view, when the terminal is a tab there.
 pub fn show_tab(state: &mut AppState, agent: AgentId) {
-    state.ui.terminal_tab_shown.insert(agent);
+    if state.prefs.terminal.place == TerminalPlace::FileView {
+        state.ui.terminal_tab_shown.insert(agent);
+    }
 }
 
 /// Hides `agent`'s pane. Its shells keep running.
 pub fn hide(state: &mut AppState, agent: AgentId) {
+    let panel_was_open = file_view_open(state, agent);
     state.ui.terminal_panes.remove(&agent);
     state.ui.terminal_tab_shown.remove(&agent);
+    // The cards over the chat leave their badges, as when the file view closes.
+    if panel_was_open && !file_view_open(state, agent) {
+        state.ui.badge = None;
+    }
 }
 
 /// The header's button and its shortcut, for the selected agent. In the file view, a file shown
@@ -368,9 +380,11 @@ mod tests {
     use cockpit_protocol::{AgentStatus, Catchup, Method};
 
     use super::*;
+    use crate::state::find::{self, FindPane};
+    use crate::state::tab_menu::{self, TabGroup};
     use crate::state::{
-        Drafts, actions, apply_response, apply_update as apply_session_update, connected_update,
-        state_with, summary,
+        Block, Drafts, TabMenuOrigin, actions, apply_response,
+        apply_update as apply_session_update, connected_update, state_with, summary,
     };
 
     fn agent() -> AgentId {
@@ -655,5 +669,76 @@ mod tests {
         assert!(in_view_hidden);
         assert!(state.ui.file_view(agent()).is_none());
         assert!(pane_open(&state), "the bottom panel stays");
+    }
+
+    #[test]
+    fn going_back_to_the_file_under_the_terminal_shows_it_as_it_was() {
+        let mut state = in_file_view_with_two_files();
+        if let Some(view) = state.ui.file_views.get_mut(&agent()) {
+            view.line = Some(4);
+        }
+        toggle_pane(&mut state);
+
+        actions::show_file(&mut state, agent(), PathBuf::from("b.rs"));
+
+        assert!(!shows_terminal(&state));
+        assert_eq!(state.ui.file_view(agent()).unwrap().line, Some(4));
+    }
+
+    #[test]
+    fn the_tab_menu_closing_files_behind_the_terminal_leaves_it_shown() {
+        let mut state = in_file_view_with_two_files();
+        toggle_pane(&mut state);
+
+        tab_menu::close(
+            &mut state,
+            &mut Drafts::default(),
+            agent(),
+            Path::new("a.rs"),
+            TabGroup::Others,
+            TabMenuOrigin::Tabs,
+        );
+
+        assert_eq!(state.ui.file_view(agent()).unwrap().path, Path::new("a.rs"));
+        assert!(shows_terminal(&state));
+    }
+
+    #[test]
+    fn the_find_over_the_terminal_is_the_chats() {
+        let mut state = in_file_view_with_two_files();
+        toggle_pane(&mut state);
+
+        find::open(&mut state, &mut Drafts::default(), FindPane::File, "");
+
+        assert!(!state.ui.file_view(agent()).unwrap().find);
+        assert!(state.ui.chat_finds.contains(&agent()));
+    }
+
+    #[test]
+    fn hiding_the_terminal_alone_in_the_file_view_closes_the_panel_and_its_badges() {
+        let mut state = state_with(vec![summary(1, AgentStatus::Idle)]);
+        state.ui.selected = Some(agent());
+        state.prefs.terminal.place = TerminalPlace::FileView;
+        toggle_pane(&mut state);
+        let opened = file_view_open(&state, agent());
+        state.ui.badge = Some(Block::Tasks);
+
+        toggle_pane(&mut state);
+
+        assert!(opened);
+        assert!(!file_view_open(&state, agent()));
+        assert_eq!(state.ui.badge, None);
+    }
+
+    #[test]
+    fn the_bottom_panel_leaves_no_terminal_tab_for_a_later_move_to_the_file_view() {
+        let mut state = in_file_view_with_two_files();
+        state.prefs.terminal.place = TerminalPlace::Bottom;
+        toggle_pane(&mut state);
+
+        state.prefs.terminal.place = TerminalPlace::FileView;
+
+        assert!(in_file_view(&state, agent()));
+        assert!(!shows_terminal(&state), "the file stays over it");
     }
 }

@@ -60,9 +60,7 @@ pub fn App() -> Element {
     let state = cockpit.state.read();
     let selected = state.ui.selected;
     let switching = use_switching(cockpit, selected);
-    let file_view_agent = selected.filter(|agent| {
-        state.ui.file_view(*agent).is_some() || terminals::in_file_view(&state, *agent)
-    });
+    let file_view_agent = selected.filter(|agent| terminals::file_view_open(&state, *agent));
     let file_view_open = file_view_agent.is_some();
     let file_view = use_presence(file_view_agent);
     // Each agent keeps its pane open or closed. As the file view, the pane leaves with a slide

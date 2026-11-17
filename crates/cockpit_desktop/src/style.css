@@ -7542,6 +7542,11 @@ html.splitting * {
   animation: fade-in var(--motion-in) var(--ease-out) backwards;
 }
 
+/* A file view that opened with its agent shows its terminal at once. */
+.app.file-view-instant .terminal-pane.in-file-view {
+  animation: none;
+}
+
 /* A drag sizes the pane on every frame: no transition to lag behind the pointer. */
 .terminal-pane.resizing {
   animation: none;

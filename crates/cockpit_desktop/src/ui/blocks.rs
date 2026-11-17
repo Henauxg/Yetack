@@ -17,7 +17,7 @@ use crate::connection::{Clock, Cockpit};
 use crate::keymap::Command;
 use crate::machine::MachineId;
 use crate::state::actions::Direction;
-use crate::state::{Block, actions, agent_map};
+use crate::state::{Block, actions, agent_map, terminals};
 use crate::ui::chat_scroll::InView;
 use crate::ui::icons::{Icon, IconKind};
 use crate::ui::mcp::{McpPanel, mcp_summary};
@@ -156,7 +156,7 @@ pub fn FloatingBlocks(in_view: Signal<Option<InView>>) -> Element {
     };
     let agent = entry.id();
     let details = entry.details.loaded().cloned().unwrap_or_default();
-    let badge_mode = state.ui.file_view(agent).is_some();
+    let badge_mode = terminals::file_view_open(&state, agent);
     let badge = state.ui.badge;
     let open_blocks = state.ui.open_blocks.clone();
     let finished_rows = if state.ui.finished_tasks_unfolded.contains(&agent) {

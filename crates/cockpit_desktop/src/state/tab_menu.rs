@@ -12,7 +12,7 @@ use cockpit_protocol::AgentId;
 use super::app_state::AppState;
 use super::drafts::Drafts;
 use super::ui_state::{Popover, TabMenuOrigin};
-use super::{actions, file_edits, file_list, file_tree};
+use super::{actions, file_edits, file_list, file_tree, terminals};
 use crate::path_style::{self, PathStyle};
 
 /// The tabs a close takes, around the tab whose menu is open.
@@ -231,6 +231,7 @@ pub fn close(
 ) {
     let closing = taken(&group_tabs(state, drafts, agent, origin), path, group);
     close_menu(state);
+    let terminal_shown = state.ui.terminal_tab_shown.contains(&agent);
     let shown = |state: &AppState| state.ui.file_view(agent).map(|view| view.path.clone());
     if shown(state).is_some_and(|shown| closing.contains(&shown))
         && !closing.iter().any(|tab| tab == path)
@@ -247,6 +248,10 @@ pub fn close(
     }
     if let Some(shown_now) = shown_now.filter(|shown_now| closing.contains(shown_now)) {
         actions::close_tab(state, agent, &shown_now);
+    }
+    // Files closed behind the terminal's tab leave the terminal shown.
+    if terminal_shown {
+        terminals::show_tab(state, agent);
     }
     if origin == TabMenuOrigin::List {
         file_list::after_close(state, drafts, agent, path);

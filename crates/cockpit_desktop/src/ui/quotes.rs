@@ -16,7 +16,7 @@ use crate::bridge::{self, COMPOSER_ID};
 use crate::connection::Cockpit;
 use crate::prefs::CommentPlacement;
 use crate::state::quotes::{self, EditorTarget, Passage, Quote, QuoteAnchor, QuoteEditor, QuoteId};
-use crate::state::{AppState, Drafts};
+use crate::state::{AppState, Drafts, terminals};
 use crate::ui::blocks::{BLOCK_CARD_CLASS, BLOCKS_CLASS};
 use crate::ui::chat_scroll::{CHAT_SCROLL_ID, ENTRY_CLASS, REVEALED_CLASS};
 use crate::ui::icons::{Icon, IconKind};
@@ -1213,7 +1213,7 @@ fn field_view(state: &AppState, drafts: &Drafts, agent: AgentId) -> Option<Field
 
 /// Whether the chat has the strip on its right, where notes show: the file view takes it.
 pub fn chat_is_wide(state: &AppState, agent: AgentId) -> bool {
-    state.ui.file_view(agent).is_none()
+    !terminals::file_view_open(state, agent)
 }
 
 /// The elements the script places over the chat area.

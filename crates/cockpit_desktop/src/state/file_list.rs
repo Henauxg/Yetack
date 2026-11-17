@@ -83,7 +83,7 @@ pub fn point(state: &AppState, drafts: &mut Drafts, agent: AgentId, index: usize
 pub fn pick(state: &mut AppState, drafts: &Drafts, agent: AgentId, index: Option<usize>) {
     let index = index.unwrap_or(drafts.file_list.highlighted);
     if let Some(path) = rows(state, drafts, agent).into_iter().nth(index) {
-        actions::open_file(state, agent, path, None);
+        actions::show_file(state, agent, path);
     }
 }
 

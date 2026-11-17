@@ -475,7 +475,7 @@ fn FileTab(agent: AgentId, path: PathBuf, label: String, full: String, selected:
                 class: "file-tab-name",
                 onclick: move |_| {
                     let path = path.clone();
-                    cockpit.update(|state| actions::open_file(state, agent, path, None));
+                    cockpit.update(|state| actions::show_file(state, agent, path));
                 },
                 "{label}"
             }
