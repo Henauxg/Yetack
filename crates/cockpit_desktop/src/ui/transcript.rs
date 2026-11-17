@@ -644,10 +644,17 @@ impl ChatView {
 /// so the find, cannot search. Its "Search them" asks the chat to draw them all.
 #[derive(Clone, Copy)]
 pub struct UndrawnRows {
-    /// The selected agent's rows not drawn yet.
-    pub count: Signal<Option<(AgentId, usize)>>,
+    /// For the selected agent.
+    pub count: Signal<Option<UndrawnCount>>,
     /// The agent whose rows the chat must all draw.
     pub draw_all: Signal<Option<AgentId>>,
+}
+
+/// The rows of an agent's chat not drawn yet.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct UndrawnCount {
+    pub agent: AgentId,
+    pub rows: usize,
 }
 
 /// Provides [`UndrawnRows`] to the chat and its find.
@@ -785,10 +792,10 @@ pub fn TranscriptView(in_view: Signal<Option<InView>>) -> Element {
         }
     });
     use_effect(move || {
-        let now = view
-            .read()
-            .as_ref()
-            .map(|view| (view.agent, view.shown.undrawn(view.row_ids.len())));
+        let now = view.read().as_ref().map(|view| UndrawnCount {
+            agent: view.agent,
+            rows: view.shown.undrawn(view.row_ids.len()),
+        });
         if *undrawn.peek() != now {
             undrawn.set(now);
         }

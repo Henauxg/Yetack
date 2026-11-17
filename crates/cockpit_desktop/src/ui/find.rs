@@ -786,12 +786,12 @@ pub(super) fn ChatFindBar() -> Element {
         .and_then(|draft| draft.found);
     let folded = found.map_or(0, |found| found.folded);
     let UndrawnRows {
-        count: undrawn,
+        count,
         mut draw_all,
     } = use_context();
-    let undrawn = undrawn()
-        .filter(|(shown, _)| *shown == agent)
-        .map_or(0, |(_, count)| count);
+    let undrawn = count()
+        .filter(|count| count.agent == agent)
+        .map_or(0, |count| count.rows);
     rsx! {
         div {
             key: "{shown.opening}",
