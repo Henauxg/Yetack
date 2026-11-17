@@ -192,7 +192,7 @@ pub fn listed(state: &mut AppState, agent: AgentId, listed: Result<Vec<TerminalI
     for info in listed {
         terminals.add(info.terminal, info.title);
         if let Some(tab) = terminals.tab_mut(info.terminal) {
-            tab.exited = info.exited;
+            tab.exited = info.exited.map(|exit| exit.code);
         }
     }
     if terminals.shown.is_none() {

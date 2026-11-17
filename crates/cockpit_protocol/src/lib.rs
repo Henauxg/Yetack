@@ -79,8 +79,8 @@ pub use session::{
 pub use settings::Settings;
 pub use stored_bool::{FromStoredBool, enum_or_stored_bool};
 pub use terminal::{
-    TerminalChange, TerminalId, TerminalInfo, TerminalInputParams, TerminalOpenParams,
-    TerminalParams, TerminalResizeParams, TerminalSize, TerminalUpdate,
+    TerminalChange, TerminalExit, TerminalId, TerminalInfo, TerminalInputParams,
+    TerminalOpenParams, TerminalParams, TerminalResizeParams, TerminalSize, TerminalUpdate,
 };
 pub use time::Timestamp;
 pub use transcript::{

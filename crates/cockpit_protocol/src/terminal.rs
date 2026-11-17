@@ -73,9 +73,16 @@ pub struct TerminalInfo {
     pub terminal: TerminalId,
     /// The shell's name, such as "zsh".
     pub title: String,
-    /// The shell's exit code once it exited: `Some(None)` when it ended without one, as on a
-    /// signal.
-    pub exited: Option<Option<i32>>,
+    /// `Some` once the shell ended.
+    pub exited: Option<TerminalExit>,
+}
+
+/// How a terminal's shell ended. It is a struct, not an `Option`, since JSON writes `Some(None)`
+/// and `None` both as `null`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TerminalExit {
+    /// `None` when it ended without one, as on a signal.
+    pub code: Option<i32>,
 }
 
 /// What happened in a terminal.

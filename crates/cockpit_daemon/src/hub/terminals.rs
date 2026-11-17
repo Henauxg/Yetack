@@ -12,9 +12,9 @@ use std::sync::mpsc as std_mpsc;
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
 use cockpit_protocol::{
-    AgentId, ErrorBody, ErrorCode, Frame, ResponseBody, ServerMessage, TerminalChange, TerminalId,
-    TerminalInfo, TerminalInputParams, TerminalOpenParams, TerminalParams, TerminalResizeParams,
-    TerminalSize, TerminalUpdate,
+    AgentId, ErrorBody, ErrorCode, Frame, ResponseBody, ServerMessage, TerminalChange,
+    TerminalExit, TerminalId, TerminalInfo, TerminalInputParams, TerminalOpenParams,
+    TerminalParams, TerminalResizeParams, TerminalSize, TerminalUpdate,
 };
 use portable_pty::{ChildKiller, CommandBuilder, MasterPty, PtySize, native_pty_system};
 use tokio::sync::mpsc;
@@ -128,7 +128,7 @@ impl Terminals {
             .map(|(terminal, open)| TerminalInfo {
                 terminal: *terminal,
                 title: open.title.clone(),
-                exited: open.exited,
+                exited: open.exited.map(|code| TerminalExit { code }),
             })
             .collect()
     }

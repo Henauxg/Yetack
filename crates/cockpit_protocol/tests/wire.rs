@@ -34,7 +34,7 @@ use cockpit_protocol::{
     ServerMessage, ServerPoint, SessionResumeParams, SetEffortParams, SetModeParams,
     SetModelParams, Settings, SignIn, SignInWait, SlashCommand, Snapshot, StartParams,
     StopProcessParams, StopTaskParams, Subagent, SubagentRun, SubagentStatus, SubagentToolCall,
-    TaskListItem, TaskProgress, TaskStatus, TerminalChange, TerminalId, TerminalInfo,
+    TaskListItem, TaskProgress, TaskStatus, TerminalChange, TerminalExit, TerminalId, TerminalInfo,
     TerminalInputParams, TerminalOpenParams, TerminalParams, TerminalResizeParams, TerminalSize,
     TerminalUpdate, Timestamp, TokenUsage, ToolCall, ToolCallStatus, TranscriptItem, TurnEnd,
     TurnOutcome, UsageWindow, UserMessage, WaitingPrompt, WaitingState, WindowUsage,
@@ -883,11 +883,23 @@ fn response_bodies() -> Vec<ResponseBody> {
             terminal: TerminalId::new(2),
         },
         ResponseBody::Terminals {
-            terminals: vec![TerminalInfo {
-                terminal: TerminalId::new(2),
-                title: "zsh".to_owned(),
-                exited: Some(Some(0)),
-            }],
+            terminals: vec![
+                TerminalInfo {
+                    terminal: TerminalId::new(2),
+                    title: "zsh".to_owned(),
+                    exited: Some(TerminalExit { code: Some(0) }),
+                },
+                TerminalInfo {
+                    terminal: TerminalId::new(3),
+                    title: "bash".to_owned(),
+                    exited: Some(TerminalExit { code: None }),
+                },
+                TerminalInfo {
+                    terminal: TerminalId::new(4),
+                    title: "fish".to_owned(),
+                    exited: None,
+                },
+            ],
         },
         ResponseBody::TerminalScreen {
             offset: 4096,
