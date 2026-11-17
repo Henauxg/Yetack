@@ -494,6 +494,11 @@ fn text(prompt: &str) -> Prompt {
     }
 }
 
+/// The notice the fake writes once it gives the Claude session `title`.
+fn session_renamed(body: &ItemBody, title: &str) -> bool {
+    matches!(body, ItemBody::Notice { text, .. } if text.strip_prefix("Session renamed to: ") == Some(title))
+}
+
 fn pending_of(body: &ItemBody) -> Option<PendingId> {
     match body {
         ItemBody::Approval(Approval {
@@ -823,9 +828,7 @@ async fn a_start_reads_its_title_as_a_rename_does() {
     let named = client.summary_with(titled, |_| true).await;
     // The Claude session takes the name too, once the first turn ends.
     client
-        .item_with(titled, |body| {
-            matches!(body, ItemBody::Notice { text, .. } if text == "Session renamed to: Cart total")
-        })
+        .item_with(titled, |body| session_renamed(body, "Cart total"))
         .await;
     let ResponseBody::AgentStarted { agent: untitled } = client.ok(start(None)).await else {
         panic!("expected AgentStarted");
@@ -867,9 +870,8 @@ async fn named_start_statuses(prompt: Option<&str>) -> Vec<AgentStatus> {
     client
         .wait_for(|event| {
             note(event);
-            matches!(event, Event::TranscriptAppended { item, .. }
-                if matches!(&item.body, ItemBody::Notice { text, .. } if text == "Session renamed to: Cart total"))
-            .then_some(())
+            matches!(event, Event::TranscriptAppended { item, .. } if session_renamed(&item.body, "Cart total"))
+                .then_some(())
         })
         .await;
     client.prompt(agent, "ping").await;
@@ -960,9 +962,7 @@ async fn an_agent_is_renamed_in_its_record_and_in_its_claude_session() {
         .summary_with(agent, |summary| summary.title == "Cart total")
         .await;
     client
-        .item_with(agent, |body| {
-            matches!(body, ItemBody::Notice { text, .. } if text == "Session renamed to: Cart total")
-        })
+        .item_with(agent, |body| session_renamed(body, "Cart total"))
         .await;
     assert_eq!(
         client.error_code(rename(" \n ")).await,
@@ -997,9 +997,7 @@ async fn a_rename_made_while_the_agent_is_stopped_outlives_its_resume() {
     };
     client.ok(rename("Cart total")).await;
     client
-        .item_with(agent, |body| {
-            matches!(body, ItemBody::Notice { text, .. } if text == "Session renamed to: Cart total")
-        })
+        .item_with(agent, |body| session_renamed(body, "Cart total"))
         .await;
     client.ok(Request::AgentStop(AgentParams { agent })).await;
     client
@@ -1010,7 +1008,7 @@ async fn a_rename_made_while_the_agent_is_stopped_outlives_its_resume() {
     client.ok(Request::AgentResume(AgentParams { agent })).await;
     // The fake restates the session's old name before it answers `initialize`: the daemon then
     // gives the session the agent's name.
-    let renamed_session = |body: &ItemBody| matches!(body, ItemBody::Notice { text, .. } if text == "Session renamed to: Checkout");
+    let renamed_session = |body: &ItemBody| session_renamed(body, "Checkout");
     client.item_with(agent, renamed_session).await;
     client.prompt(agent, "after the resume").await;
     client.says(agent, "Echo: after the resume").await;

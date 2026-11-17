@@ -1348,6 +1348,7 @@ impl AgentView {
     }
 
     /// Returns whether the result ends a turn.
+    #[must_use]
     fn apply_result(&mut self, result: &ResultMessage, now: Timestamp) -> bool {
         let total = result.total_cost_usd.unwrap_or(self.process_cost);
         if self.awaits_restored_cost {
@@ -4451,19 +4452,29 @@ mod tests {
         );
     }
 
+    /// The answer to a slash command Claude Code runs itself, such as `/effort`.
+    fn local_answer(text: &str) -> Value {
+        let mut answer = assistant(json!([{"type": "text", "text": text}]));
+        answer["message"]["model"] = json!(SYNTHETIC_MODEL);
+        answer
+    }
+
+    /// The result of a slash command Claude Code runs itself: it makes no API call.
+    fn local_result() -> Value {
+        let mut done = result(0.0);
+        done["num_turns"] = json!(0);
+        done
+    }
+
     #[test]
     fn a_local_command_shows_a_notice_and_no_turn() {
         let mut view = view();
         view.hidden_prompt_sent("/effort low".to_owned());
 
         apply(&mut view, init());
-        let mut answer = assistant(json!([{"type": "text", "text": "Set effort level to low"}]));
-        answer["message"]["model"] = json!("<synthetic>");
-        apply(&mut view, answer);
+        apply(&mut view, local_answer("Set effort level to low"));
         let busy_before_its_result = view.is_busy();
-        let mut done = result(0.0);
-        done["num_turns"] = json!(0);
-        let follow_ups = apply(&mut view, done);
+        let follow_ups = apply(&mut view, local_result());
         view.take_events();
 
         assert!(!busy_before_its_result, "a local command is no turn");
@@ -4486,15 +4497,10 @@ mod tests {
         let mut view = view();
         view.hidden_prompt_sent("/rename Cart total".to_owned());
         view.add_prompt(&prompt("Fix the cart"), now());
-        let mut renamed =
-            assistant(json!([{"type": "text", "text": "Session renamed to: Cart total"}]));
-        renamed["message"]["model"] = json!("<synthetic>");
-        let mut rename_done = result(0.0);
-        rename_done["num_turns"] = json!(0);
 
         apply(&mut view, init());
-        apply(&mut view, renamed);
-        let after_rename = apply(&mut view, rename_done);
+        apply(&mut view, local_answer("Session renamed to: Cart total"));
+        let after_rename = apply(&mut view, local_result());
         let busy_after_rename = view.is_busy();
         apply(&mut view, echo("Fix the cart"));
         apply(&mut view, init());
@@ -4515,11 +4521,6 @@ mod tests {
     fn a_turn_claude_code_starts_before_a_hidden_prompt_shows_working() {
         let mut view = view();
         view.hidden_prompt_sent("/rename Cart total".to_owned());
-        let mut renamed =
-            assistant(json!([{"type": "text", "text": "Session renamed to: Cart total"}]));
-        renamed["message"]["model"] = json!("<synthetic>");
-        let mut rename_done = result(0.0);
-        rename_done["num_turns"] = json!(0);
 
         apply(&mut view, init());
         apply(
@@ -4528,9 +4529,9 @@ mod tests {
         );
         let busy_in_its_turn = view.is_busy();
         let after_turn = apply(&mut view, result(0.01));
-        apply(&mut view, renamed);
+        apply(&mut view, local_answer("Session renamed to: Cart total"));
         let busy_in_the_rename = view.is_busy();
-        apply(&mut view, rename_done);
+        apply(&mut view, local_result());
 
         assert!(busy_in_its_turn);
         assert_eq!(after_turn, [FollowUp::TurnEnded]);
