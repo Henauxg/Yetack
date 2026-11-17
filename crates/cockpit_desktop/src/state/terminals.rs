@@ -131,26 +131,52 @@ pub fn pane_open(state: &AppState) -> bool {
         .is_some_and(|agent| state.ui.terminal_panes.contains(&agent))
 }
 
-fn set_pane(state: &mut AppState, open: impl FnOnce(bool) -> bool) {
-    let Some(agent) = state.ui.selected else {
-        return;
-    };
-    if open(state.ui.terminal_panes.contains(&agent)) {
-        state.ui.terminal_panes.insert(agent);
-    } else {
-        state.ui.terminal_panes.remove(&agent);
-    }
+/// Whether `agent`'s terminal is a tab of its file view.
+pub fn in_file_view(state: &AppState, agent: AgentId) -> bool {
+    state.prefs.terminal.place == TerminalPlace::FileView
+        && state.ui.terminal_panes.contains(&agent)
 }
 
-/// The header's button and its shortcut, for the selected agent.
+/// Whether `agent`'s file view shows the terminal: the user picked its tab, or no file is open.
+pub fn file_view_shows_terminal(state: &AppState, agent: AgentId) -> bool {
+    in_file_view(state, agent)
+        && (state.ui.file_view(agent).is_none() || state.ui.terminal_tab_shown.contains(&agent))
+}
+
+/// The terminal's tab in the file view.
+pub fn show_tab(state: &mut AppState, agent: AgentId) {
+    state.ui.terminal_tab_shown.insert(agent);
+}
+
+/// Hides `agent`'s pane. Its shells keep running.
+pub fn hide(state: &mut AppState, agent: AgentId) {
+    state.ui.terminal_panes.remove(&agent);
+    state.ui.terminal_tab_shown.remove(&agent);
+}
+
+/// The header's button and its shortcut, for the selected agent. In the file view, a file shown
+/// over the terminal's tab gives it its place first.
 pub fn toggle_pane(state: &mut AppState) -> Vec<Outgoing> {
-    set_pane(state, |open| !open);
+    let Some(agent) = state.ui.selected else {
+        return Vec::new();
+    };
+    if in_file_view(state, agent) && !file_view_shows_terminal(state, agent) {
+        show_tab(state, agent);
+    } else if state.ui.terminal_panes.contains(&agent) {
+        hide(state, agent);
+    } else {
+        state.ui.terminal_panes.insert(agent);
+        show_tab(state, agent);
+    }
     Vec::new()
 }
 
 pub fn move_to(state: &mut AppState, place: TerminalPlace) {
     state.prefs.terminal.place = place;
-    set_pane(state, |_| true);
+    if let Some(agent) = state.ui.selected {
+        state.ui.terminal_panes.insert(agent);
+        show_tab(state, agent);
+    }
 }
 
 /// While the pane shows, the selected agent's terminals are listed, and an agent with none gets
@@ -282,7 +308,7 @@ pub fn close(state: &mut AppState, agent: AgentId, terminal: TerminalId) -> Vec<
     terminals.remove(terminal);
     // The last tab closed: the pane closes with it, rather than opening another.
     if terminals.tabs.is_empty() {
-        state.ui.terminal_panes.remove(&agent);
+        hide(state, agent);
     }
     vec![outgoing(
         Request::TerminalClose(TerminalParams { agent, terminal }),
@@ -335,6 +361,7 @@ pub fn screen(state: &mut AppState, screen: Screen) {
 
 #[cfg(test)]
 mod tests {
+    use std::path::{Path, PathBuf};
     use std::time::Instant;
 
     use cockpit_client::RequestError;
@@ -342,8 +369,8 @@ mod tests {
 
     use super::*;
     use crate::state::{
-        Drafts, apply_response, apply_update as apply_session_update, connected_update, state_with,
-        summary,
+        Drafts, actions, apply_response, apply_update as apply_session_update, connected_update,
+        state_with, summary,
     };
 
     fn agent() -> AgentId {
@@ -562,5 +589,71 @@ mod tests {
         );
 
         assert!(state.ui.errors.is_empty());
+    }
+
+    /// The terminal is a tab of the file view, which shows `a.rs` and `b.rs`.
+    fn in_file_view_with_two_files() -> AppState {
+        let mut state = state_with(vec![summary(1, AgentStatus::Idle)]);
+        state.ui.selected = Some(agent());
+        state.prefs.terminal.place = TerminalPlace::FileView;
+        actions::open_file(&mut state, agent(), PathBuf::from("a.rs"), None);
+        actions::open_file(&mut state, agent(), PathBuf::from("b.rs"), None);
+        state
+    }
+
+    fn shows_terminal(state: &AppState) -> bool {
+        file_view_shows_terminal(state, agent())
+    }
+
+    #[test]
+    fn in_the_file_view_the_shortcut_brings_the_terminal_over_the_file_before_it_hides_it() {
+        let mut state = in_file_view_with_two_files();
+
+        toggle_pane(&mut state);
+        let opened = shows_terminal(&state);
+        actions::open_file(&mut state, agent(), PathBuf::from("a.rs"), None);
+        let file_over_it = (in_file_view(&state, agent()), shows_terminal(&state));
+        toggle_pane(&mut state);
+        let brought = shows_terminal(&state);
+        toggle_pane(&mut state);
+
+        assert!(opened);
+        assert_eq!(file_over_it, (true, false));
+        assert!(brought);
+        assert!(!in_file_view(&state, agent()));
+        assert!(state.ui.file_view(agent()).is_some(), "the files stay");
+    }
+
+    #[test]
+    fn closing_files_behind_the_terminal_leaves_it_shown() {
+        let mut state = in_file_view_with_two_files();
+        toggle_pane(&mut state);
+
+        actions::close_tab(&mut state, agent(), Path::new("b.rs"));
+        let one_file_left = shows_terminal(&state);
+        actions::close_tab(&mut state, agent(), Path::new("a.rs"));
+
+        assert!(one_file_left);
+        assert!(state.ui.file_view(agent()).is_none());
+        assert!(
+            shows_terminal(&state),
+            "the terminal alone keeps the file view"
+        );
+    }
+
+    #[test]
+    fn closing_the_file_view_hides_its_terminal_and_not_a_terminal_elsewhere() {
+        let mut state = in_file_view_with_two_files();
+        toggle_pane(&mut state);
+
+        actions::close_file_panel(&mut state, agent());
+        let in_view_hidden = !pane_open(&state);
+        move_to(&mut state, TerminalPlace::Bottom);
+        actions::open_file(&mut state, agent(), PathBuf::from("a.rs"), None);
+        actions::close_file_panel(&mut state, agent());
+
+        assert!(in_view_hidden);
+        assert!(state.ui.file_view(agent()).is_none());
+        assert!(pane_open(&state), "the bottom panel stays");
     }
 }

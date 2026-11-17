@@ -200,11 +200,13 @@ function place() {
   }
   const entry = terminalFor(agent, terminal);
   drawOnly(entry);
-  if (entry.box.parentElement !== screen) {
+  // A terminal that moves to another place takes the focus, as one that shows anew does.
+  const moved = entry.box.parentElement !== screen;
+  if (moved) {
     screen.replaceChildren(entry.box);
   }
   const now = key(agent, terminal);
-  if (now !== shown) {
+  if (now !== shown || moved) {
     shown = now;
     fitWhenSettled(entry);
     requestAnimationFrame(() => entry.term.focus());
@@ -504,6 +506,8 @@ fn receive(cockpit: Cockpit, message: FromPage) {
             match state.prefs.terminal.place {
                 TerminalPlace::Bottom => state.prefs.terminal.height = Some(size),
                 TerminalPlace::Right => state.prefs.terminal.width = Some(size),
+                // The file view's splitter sizes it.
+                TerminalPlace::FileView => {}
             }
         }),
     }
@@ -532,7 +536,7 @@ pub fn TerminalPane(place: TerminalPlace, leaving: bool) -> Element {
             } else {
                 "terminal-pane bottom"
             },
-            "bottom",
+            Some("bottom"),
             format!(
                 "height: {}px",
                 prefs.height.unwrap_or(DEFAULT_TERMINAL_HEIGHT)
@@ -544,9 +548,10 @@ pub fn TerminalPane(place: TerminalPlace, leaving: bool) -> Element {
             } else {
                 "terminal-pane right"
             },
-            "right",
+            Some("right"),
             format!("width: {}px", prefs.width.unwrap_or(DEFAULT_TERMINAL_WIDTH)),
         ),
+        TerminalPlace::FileView => ("terminal-pane in-file-view", None, String::new()),
     };
     let shown = terminals.shown.map_or(0, TerminalId::get);
     let tabs = terminals.tabs.clone();
@@ -555,10 +560,13 @@ pub fn TerminalPane(place: TerminalPlace, leaving: bool) -> Element {
     let places = [
         (TerminalPlace::Bottom, "Bottom panel"),
         (TerminalPlace::Right, "Right pane"),
+        (TerminalPlace::FileView, "Tab of the file view"),
     ];
     rsx! {
         section { class, style, aria_label: "Terminal", inert: leaving.then_some(true),
-            div { class: "terminal-grip", "data-terminal-grip": grip, aria_hidden: true }
+            if let Some(grip) = grip {
+                div { class: "terminal-grip", "data-terminal-grip": grip, aria_hidden: true }
+            }
             div { class: "terminal-bar",
                 div { class: "terminal-tabs", role: "tablist",
                     for tab in tabs {
@@ -640,12 +648,15 @@ pub fn TerminalPane(place: TerminalPlace, leaving: bool) -> Element {
                             }
                         }
                     }
-                    button {
-                        class: "icon-button",
-                        aria_label: "Hide the terminal",
-                        title: "Hide the terminal: its shells keep running",
-                        onclick: move |_| cockpit.change(terminals::toggle_pane),
-                        Icon { kind: IconKind::Close, size: 13 }
+                    // In the file view, the terminal's tab hides it.
+                    if place != TerminalPlace::FileView {
+                        button {
+                            class: "icon-button",
+                            aria_label: "Hide the terminal",
+                            title: "Hide the terminal: its shells keep running",
+                            onclick: move |_| cockpit.update(|state| terminals::hide(state, agent)),
+                            Icon { kind: IconKind::Close, size: 13 }
+                        }
                     }
                 }
             }

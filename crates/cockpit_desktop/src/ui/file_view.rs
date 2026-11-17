@@ -15,10 +15,12 @@ use crate::daemon_label::DaemonPlace;
 use crate::keymap::Command;
 use crate::machine::MachineId;
 use crate::path_style::PathStyle;
+use crate::prefs::TerminalPlace;
 use crate::render::{self, Diff, Language, MAX_RENDERED_LINES, diff_lines};
 use crate::state::{
     FileFreshness, FileRead, FileUpdate, Loadable, Popover, Reread, TabMenuOrigin, ViewMode,
     actions, chat_images, file_edits, file_reread, file_tree, is_markdown, page_copy, tab_menu,
+    terminals,
 };
 use crate::ui::code::{
     CopyButton, CopyLook, LineMarks, LineNumbers, diff_line, diff_row, lines_not_shown,
@@ -28,6 +30,7 @@ use crate::ui::find::FileFindBox;
 use crate::ui::icons::{Icon, IconKind};
 use crate::ui::markdown::MarkdownView;
 use crate::ui::splitter::FILE_VIEW_ID;
+use crate::ui::terminal_pane::TerminalPane;
 use crate::ui::zoom::ZoomImage;
 use crate::{bridge, browser, format, page_files};
 
@@ -52,6 +55,8 @@ pub(super) const FILE_LOADING_CLASS: &str = "file-loading";
 /// The widths of the placeholder lines shown while the file loads, in percent of the text's width.
 const LOADING_LINE_WIDTHS: [u8; 8] = [46, 72, 64, 30, 81, 58, 69, 38];
 
+/// The panel: the tabs of the files and of the terminal, when the terminal is one, and the shown
+/// tab's content.
 #[component]
 pub fn FileViewPanel() -> Element {
     let cockpit: Cockpit = use_context();
@@ -60,13 +65,24 @@ pub fn FileViewPanel() -> Element {
         return rsx! {};
     };
     let agent = entry.id();
-    let Some(view) = state.ui.file_view(agent).cloned() else {
+    let view = state.ui.file_view(agent);
+    let terminal_tab = terminals::in_file_view(&state, agent);
+    if view.is_none() && !terminal_tab {
         return rsx! {};
-    };
-    let folder = &entry.summary.folder;
+    }
+    let terminal_shown = terminals::file_view_shows_terminal(&state, agent);
+    let folder = entry.summary.folder.clone();
     let changed_paths = entry.changed_paths();
-    let tabs = view.tabs(&changed_paths);
+    let tabs = view
+        .map(|view| view.tabs(&changed_paths))
+        .unwrap_or_default();
     let tab_count = tabs.len();
+    let has_files = view.is_some();
+    // The file whose tab is selected, which Ctrl+W closes. In the terminal, Ctrl+W is the shell's.
+    let shown = view
+        .filter(|_| !terminal_shown)
+        .map(|view| view.path.clone());
+    let closed_by_key = shown.clone();
     let list_menu = matches!(
         state.ui.popover,
         Some(Popover::TabMenu {
@@ -75,12 +91,114 @@ pub fn FileViewPanel() -> Element {
         })
     );
     let list_open = state.ui.popover == Some(Popover::FileList) || list_menu;
+    let labels = tab_labels(PathStyle::of(&folder), &tabs);
+    drop(state);
+    rsx! {
+        section {
+            id: FILE_VIEW_ID,
+            class: "file-view",
+            aria_label: "File view",
+            // Focusable, so that a click in the view lets Ctrl+W close its tab.
+            tabindex: -1,
+            onkeydown: move |event| {
+                let Some(shown) = closed_by_key.clone() else {
+                    return;
+                };
+                let command = event.modifiers().ctrl() || event.modifiers().meta();
+                if command && event.key() == Key::Character(CLOSE_TAB_KEY.to_owned()) {
+                    event.prevent_default();
+                    cockpit.update(|state| actions::close_tab(state, agent, &shown));
+                }
+            },
+            div { class: "file-tabs",
+                div { class: "tab-list scroll-x", role: "tablist", aria_label: "Files changed by this agent",
+                    if terminal_tab {
+                        TerminalTab { agent, selected: terminal_shown }
+                    }
+                    for (tab, label) in tabs.into_iter().zip(labels) {
+                        FileTab {
+                            key: "{tab.display()}",
+                            agent,
+                            selected: shown.as_ref() == Some(&tab),
+                            full: full_path(&folder, &tab),
+                            path: tab,
+                            label,
+                        }
+                    }
+                }
+                if has_files {
+                    FileListButton { agent, count: tab_count, open: list_open, covered: list_menu }
+                }
+                button {
+                    class: "icon-button",
+                    aria_label: "Close the file view",
+                    title: "Close the file view",
+                    onclick: move |_| cockpit.update(|state| actions::close_file_panel(state, agent)),
+                    Icon { kind: IconKind::Close, size: 16 }
+                }
+            }
+            if terminal_shown {
+                TerminalPane { place: TerminalPlace::FileView, leaving: false }
+            } else {
+                FileShown { agent }
+            }
+        }
+    }
+}
+
+/// The terminal's tab, before the files'. Its "×" hides the terminal, and its shells keep running.
+#[component]
+fn TerminalTab(agent: AgentId, selected: bool) -> Element {
+    let cockpit: Cockpit = use_context();
+    use_effect(use_reactive!(|selected| {
+        if selected {
+            bridge::reveal(SHOWN_TAB_ID);
+        }
+    }));
+    rsx! {
+        div {
+            id: selected.then_some(SHOWN_TAB_ID),
+            class: if selected { "file-tab terminal-tab-in-view selected" } else { "file-tab terminal-tab-in-view" },
+            role: "tab",
+            aria_selected: selected,
+            onauxclick: move |event| {
+                if event.trigger_button() == Some(MouseButton::Auxiliary) {
+                    event.prevent_default();
+                    cockpit.update(|state| terminals::hide(state, agent));
+                }
+            },
+            button {
+                class: "file-tab-name",
+                onclick: move |_| cockpit.update(|state| terminals::show_tab(state, agent)),
+                Icon { kind: IconKind::Terminal, size: 12 }
+                "Terminal"
+            }
+            button {
+                class: "file-tab-close",
+                aria_label: "Hide the terminal",
+                title: "Hide the terminal: its shells keep running",
+                onclick: move |_| cockpit.update(|state| terminals::hide(state, agent)),
+                Icon { kind: IconKind::Close, size: 12 }
+            }
+        }
+    }
+}
+
+/// The shown file: its bar, its text and its foot.
+#[component]
+fn FileShown(agent: AgentId) -> Element {
+    let cockpit: Cockpit = use_context();
+    let state = cockpit.state.read();
+    let (Some(entry), Some(view)) = (state.agents.get(&agent), state.ui.file_view(agent).cloned())
+    else {
+        return rsx! {};
+    };
+    let folder = &entry.summary.folder;
     let text = entry.files.get(&view.path).cloned().unwrap_or_default();
     let freshness = entry.file_freshness.clone();
     let update = freshness.update.clone();
     let short = ShortPath::new(folder, &view.path);
     let full = full_path(folder, &view.path);
-    let labels = tab_labels(PathStyle::of(folder), &tabs);
     let changed = entry.has_changed(&view.path);
     let edit_count = match &text {
         Loadable::Loaded(FileRead::Text { edits, .. }) => edits.len(),
@@ -111,7 +229,6 @@ pub fn FileViewPanel() -> Element {
     if markdown {
         modes.push((ViewMode::Preview, "Preview"));
     }
-    let shown = view.path.clone();
     let loading = matches!(text, Loadable::NotRequested | Loadable::Loading);
     let image = matches!(text, Loadable::Loaded(FileRead::Image(_)));
     let copied_text = match &text {
@@ -135,140 +252,103 @@ pub fn FileViewPanel() -> Element {
         (false, false) => "scroll mono",
     };
     rsx! {
-        section {
-            id: FILE_VIEW_ID,
-            class: "file-view",
-            aria_label: "File view",
-            // Focusable, so that a click in the view lets Ctrl+W close its tab.
-            tabindex: -1,
-            onkeydown: move |event| {
-                let command = event.modifiers().ctrl() || event.modifiers().meta();
-                if command && event.key() == Key::Character(CLOSE_TAB_KEY.to_owned()) {
-                    event.prevent_default();
-                    let shown = shown.clone();
-                    cockpit.update(|state| actions::close_tab(state, agent, &shown));
+        div { class: "file-bar",
+            span { class: "file-label mono",
+                span { class: "file-path", title: "{full}", {short_path(&short)} }
+                if let Some(line) = view.line {
+                    span { class: "file-line", ", line {line}" }
                 }
-            },
-            div { class: "file-tabs",
-                div { class: "tab-list scroll-x", role: "tablist", aria_label: "Files changed by this agent",
-                    for (tab, label) in tabs.into_iter().zip(labels) {
-                        FileTab {
-                            key: "{tab.display()}",
-                            agent,
-                            selected: tab == view.path,
-                            full: full_path(folder, &tab),
-                            path: tab,
-                            label,
+                if loading {
+                    span { class: "spinner", role: "status", aria_label: "Loading the file" }
+                }
+            }
+            span { class: "read-only-chip", "Read-only" }
+            if !image {
+                div { class: "segmented", role: "group", aria_label: "View mode",
+                    for (choice, name) in modes {
+                        button {
+                            key: "{name}",
+                            class: if choice == mode { "segment chosen" } else { "segment" },
+                            aria_pressed: choice == mode,
+                            onclick: move |_| cockpit.update(|state| actions::set_view_mode(state, agent, choice)),
+                            "{name}"
                         }
                     }
                 }
-                FileListButton { agent, count: tab_count, open: list_open, covered: list_menu }
                 button {
-                    class: "icon-button",
-                    aria_label: "Close the file view",
-                    title: "Close the file view",
-                    onclick: move |_| cockpit.update(|state| actions::close_file_view(state, agent)),
-                    Icon { kind: IconKind::Close, size: 16 }
+                    class: if wrap && !preview { "icon-button framed toggled" } else { "icon-button framed" },
+                    aria_label: "Wrap long lines",
+                    aria_pressed: wrap && !preview,
+                    disabled: preview,
+                    title: if preview { "The preview always wraps" } else { "Wrap long lines instead of scrolling sideways" },
+                    onclick: move |_| cockpit.update(actions::toggle_wrap),
+                    Icon { kind: IconKind::Wrap, size: 15 }
+                }
+                // The file's whole text, in the diff and the preview too.
+                CopyButton { text: copied_text, label: "Copy the file's text", look: CopyLook::IconOnly }
+                if let Some(text) = page_text {
+                    OpenInBrowserButton { agent, path: full.clone(), text, on_this_computer, reading: reading_page }
                 }
             }
-            div { class: "file-bar",
-                span { class: "file-label mono",
-                    span { class: "file-path", title: "{full}", {short_path(&short)} }
-                    if let Some(line) = view.line {
-                        span { class: "file-line", ", line {line}" }
-                    }
-                    if loading {
-                        span { class: "spinner", role: "status", aria_label: "Loading the file" }
-                    }
-                }
-                span { class: "read-only-chip", "Read-only" }
-                if !image {
-                    div { class: "segmented", role: "group", aria_label: "View mode",
-                        for (choice, name) in modes {
-                            button {
-                                key: "{name}",
-                                class: if choice == mode { "segment chosen" } else { "segment" },
-                                aria_pressed: choice == mode,
-                                onclick: move |_| cockpit.update(|state| actions::set_view_mode(state, agent, choice)),
-                                "{name}"
-                            }
+        }
+        div { class: "file-find-anchor",
+            FileFindBox { agent, open: find_open }
+        }
+        div {
+            class: "{FILE_BODY_CLASS} {body_layout}",
+            // Focusable, so that after a click in the text End and Home scroll it.
+            tabindex: -1,
+            match text {
+                Loadable::NotRequested | Loadable::Loading => rsx! {
+                    div { class: FILE_LOADING_CLASS, aria_hidden: true,
+                        for (index, width) in LOADING_LINE_WIDTHS.iter().enumerate() {
+                            div { key: "{index}", class: "skeleton skeleton-line", style: "width: {width}%" }
                         }
                     }
-                    button {
-                        class: if wrap && !preview { "icon-button framed toggled" } else { "icon-button framed" },
-                        aria_label: "Wrap long lines",
-                        aria_pressed: wrap && !preview,
-                        disabled: preview,
-                        title: if preview { "The preview always wraps" } else { "Wrap long lines instead of scrolling sideways" },
-                        onclick: move |_| cockpit.update(actions::toggle_wrap),
-                        Icon { kind: IconKind::Wrap, size: 15 }
-                    }
-                    // The file's whole text, in the diff and the preview too.
-                    CopyButton { text: copied_text, label: "Copy the file's text", look: CopyLook::IconOnly }
-                    if let Some(text) = page_text {
-                        OpenInBrowserButton { agent, path: full.clone(), text, on_this_computer, reading: reading_page }
-                    }
-                }
-            }
-            div { class: "file-find-anchor",
-                FileFindBox { agent, open: find_open }
-            }
-            div {
-                class: "{FILE_BODY_CLASS} {body_layout}",
-                // Focusable, so that after a click in the text End and Home scroll it.
-                tabindex: -1,
-                match text {
-                    Loadable::NotRequested | Loadable::Loading => rsx! {
-                        div { class: FILE_LOADING_CLASS, aria_hidden: true,
-                            for (index, width) in LOADING_LINE_WIDTHS.iter().enumerate() {
-                                div { key: "{index}", class: "skeleton skeleton-line", style: "width: {width}%" }
-                            }
+                },
+                Loadable::Failed(error) => rsx! {
+                    p { class: "file-note", "Cannot read the file: {error}" }
+                },
+                Loadable::Loaded(FileRead::Missing(sentence)) => rsx! {
+                    p { class: "file-note", "{sentence}." }
+                },
+                Loadable::Loaded(FileRead::Choices(matches)) => rsx! {
+                    FileChoices { agent, folder: folder.clone(), name: view.path.clone(), matches, line: view.line }
+                },
+                Loadable::Loaded(FileRead::Text { text, .. }) if preview => rsx! {
+                    FilePreview { agent, folder: folder.clone(), path: view.path.clone(), text }
+                },
+                Loadable::Loaded(FileRead::Text { text, edits }) => rsx! {
+                    FileContent { path: view.path.clone(), text, mode, line: view.line, edits, changed, update }
+                },
+                Loadable::Loaded(FileRead::Image(image)) => {
+                    let image = Arc::new(image);
+                    let path = view.path.clone();
+                    let open_full_view = {
+                        let image = Arc::clone(&image);
+                        move |()| {
+                            let (path, image) = (path.clone(), Arc::clone(&image));
+                            cockpit.update(|state| chat_images::open_full_view(state, agent, path, image));
                         }
-                    },
-                    Loadable::Failed(error) => rsx! {
-                        p { class: "file-note", "Cannot read the file: {error}" }
-                    },
-                    Loadable::Loaded(FileRead::Missing(sentence)) => rsx! {
-                        p { class: "file-note", "{sentence}." }
-                    },
-                    Loadable::Loaded(FileRead::Choices(matches)) => rsx! {
-                        FileChoices { agent, folder: folder.clone(), name: view.path.clone(), matches, line: view.line }
-                    },
-                    Loadable::Loaded(FileRead::Text { text, .. }) if preview => rsx! {
-                        FilePreview { agent, folder: folder.clone(), path: view.path.clone(), text }
-                    },
-                    Loadable::Loaded(FileRead::Text { text, edits }) => rsx! {
-                        FileContent { path: view.path.clone(), text, mode, line: view.line, edits, changed, update }
-                    },
-                    Loadable::Loaded(FileRead::Image(image)) => {
-                        let image = Arc::new(image);
-                        let path = view.path.clone();
-                        let open_full_view = {
-                            let image = Arc::clone(&image);
-                            move |()| {
-                                let (path, image) = (path.clone(), Arc::clone(&image));
-                                cockpit.update(|state| chat_images::open_full_view(state, agent, path, image));
-                            }
-                        };
-                        rsx! {
-                            div { class: "file-image",
-                                // Keyed by the path, so that another file does not show for a
-                                // frame at the last one's zoom.
-                                for shown in [view.path.clone()] {
-                                    ZoomImage {
-                                        key: "{shown.display()}",
-                                        image: Arc::clone(&image),
-                                        alt: full.clone(),
-                                        on_click: open_full_view.clone(),
-                                    }
+                    };
+                    rsx! {
+                        div { class: "file-image",
+                            // Keyed by the path, so that another file does not show for a
+                            // frame at the last one's zoom.
+                            for shown in [view.path.clone()] {
+                                ZoomImage {
+                                    key: "{shown.display()}",
+                                    image: Arc::clone(&image),
+                                    alt: full.clone(),
+                                    on_click: open_full_view.clone(),
                                 }
                             }
                         }
                     }
                 }
             }
-            FileFoot { agent, note, freshness }
         }
+        FileFoot { agent, note, freshness }
     }
 }
 

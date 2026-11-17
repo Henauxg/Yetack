@@ -551,6 +551,8 @@ pub struct UiState {
     /// The agents whose terminal pane shows while they are selected. It outlives a reconnection,
     /// which makes the agents' entries again.
     pub terminal_panes: BTreeSet<AgentId>,
+    /// The agents whose file view shows the terminal's tab rather than a file.
+    pub terminal_tab_shown: BTreeSet<AgentId>,
     /// Terminal output the daemon kept, which the page writes before what comes next.
     pub terminal_screens: Vec<Screen>,
     /// Agents that finished while another one was selected, or that their row's menu marked
@@ -617,6 +619,7 @@ impl Default for UiState {
         Self {
             selected: None,
             terminal_panes: BTreeSet::new(),
+            terminal_tab_shown: BTreeSet::new(),
             terminal_screens: Vec::new(),
             unread: BTreeSet::new(),
             folded_machines: BTreeSet::new(),

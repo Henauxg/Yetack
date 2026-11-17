@@ -32,7 +32,7 @@ use super::ui_state::{
 use super::utf16_offset::Utf16Offset;
 use super::{
     accounts, export, file_edits, file_reread, file_tree, folder_field, grouping, open_file,
-    projects, quotes, sending, title_emoji,
+    projects, quotes, sending, terminals, title_emoji,
 };
 use crate::format::{self, MODE_CHOICES, MODEL_CHOICES};
 use crate::machine::MachineId;
@@ -1480,6 +1480,7 @@ pub fn open_file(state: &mut AppState, agent: AgentId, path: PathBuf, line: Opti
     view.path = path;
     view.line = line;
     view.mode = mode;
+    state.ui.terminal_tab_shown.remove(&agent);
     state.ui.popover = None;
     state.ui.badge = None;
     // A link in the agent map opens the file view, which the map would cover.
@@ -1549,9 +1550,14 @@ pub fn close_tab(state: &mut AppState, agent: AgentId, path: &Path) {
     }
     let after = tabs.get(index + 1);
     let before = index.checked_sub(1).and_then(|before| tabs.get(before));
+    let terminal_shown = state.ui.terminal_tab_shown.contains(&agent);
     match after.or(before) {
         Some(next) => open_file(state, agent, next.clone(), None),
         None => close_file_view(state, agent),
+    }
+    // A file closed behind the terminal's tab leaves the terminal shown.
+    if terminal_shown {
+        terminals::show_tab(state, agent);
     }
 }
 
@@ -1608,6 +1614,14 @@ pub fn close_file_view(state: &mut AppState, agent: AgentId) {
         entry.files.clear();
         entry.file_freshness = FileFreshness::default();
     }
+}
+
+/// The file view's "×": closes its files, and hides the terminal when it is one of its tabs.
+pub fn close_file_panel(state: &mut AppState, agent: AgentId) {
+    if terminals::in_file_view(state, agent) {
+        terminals::hide(state, agent);
+    }
+    close_file_view(state, agent);
 }
 
 pub fn set_view_mode(state: &mut AppState, agent: AgentId, mode: ViewMode) {

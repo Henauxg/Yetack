@@ -7165,6 +7165,12 @@ html.splitting * {
   color: var(--text);
 }
 
+.terminal-tab-in-view .file-tab-name {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
 /* The count of open files at the end of the tabs, which opens their list. */
 .file-list-anchor {
   position: relative;
@@ -7528,6 +7534,12 @@ html.splitting * {
   max-width: 60%;
   border-left: 1px solid var(--line-strong);
   animation: terminal-in var(--motion-in) var(--ease-out) backwards;
+}
+
+/* In the file view, the terminal takes the place of the file. */
+.terminal-pane.in-file-view {
+  flex: 1 1 auto;
+  animation: fade-in var(--motion-in) var(--ease-out) backwards;
 }
 
 /* A drag sizes the pane on every frame: no transition to lag behind the pointer. */

@@ -204,6 +204,10 @@ pub fn apply_catchup(
         .retain(|agent| agents.contains_key(agent));
     state
         .ui
+        .terminal_tab_shown
+        .retain(|agent| agents.contains_key(agent));
+    state
+        .ui
         .mcp_reconnects
         .retain(|(agent, _), _| agents.contains_key(agent));
     state
@@ -442,6 +446,8 @@ pub fn forget_agent(
         .mcp_reconnects
         .retain(|(owner, _), _| *owner != agent);
     state.ui.file_views.remove(&agent);
+    state.ui.terminal_panes.remove(&agent);
+    state.ui.terminal_tab_shown.remove(&agent);
     state.page_copies.retain_agents(|kept| kept != agent);
     state.ui.finished_tasks_unfolded.remove(&agent);
     state.ui.chat_scrolled_up.remove(&agent);

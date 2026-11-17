@@ -771,6 +771,8 @@ pub enum TerminalPlace {
     Bottom,
     /// At the window's right edge.
     Right,
+    /// A tab of the file view, before the files' tabs.
+    FileView,
 }
 
 /// The terminal pane's default and allowed sizes, in pixels.
