@@ -770,6 +770,7 @@ mod tests {
         for agent in [AgentId::new(1), AgentId::new(2)] {
             state.ui.selected = Some(agent);
             file_tree::toggle_pane(&mut state);
+            terminals::toggle_pane(&mut state);
         }
 
         apply_catchup(
@@ -794,6 +795,7 @@ mod tests {
             .flat_map(|panes| panes.keys().copied())
             .collect();
         assert_eq!(kept, [AgentId::new(2)]);
+        assert_eq!(state.ui.terminal_panes, BTreeSet::from([AgentId::new(2)]));
     }
 
     fn record(event: Event) -> EventRecord {

@@ -492,7 +492,10 @@ mod tests {
     fn the_users_login_shell_is_a_file() {
         let shell = login_shell();
 
-        assert!(shell.is_some(), "no login shell: {shell:?}");
+        assert!(
+            shell.is_some(),
+            "the user database gives no login shell that is an existing file"
+        );
     }
 
     /// A terminal of agent 3 whose shell already ended.

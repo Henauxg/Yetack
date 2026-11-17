@@ -149,14 +149,19 @@ function terminalFor(agent, terminal) {
 }
 
 // Drops a terminal's screen. ghostty-web draws each terminal on every frame until it is disposed.
+// The entry goes first, so a terminal whose dispose throws is not met again.
 function forget(entry) {
-  clearTimeout(entry.settle);
-  entry.observer.disconnect();
-  entry.term.dispose();
-  entry.box.remove();
   terminals.delete(entry.name);
   if (shown === entry.name) {
     shown = null;
+  }
+  clearTimeout(entry.settle);
+  entry.observer.disconnect();
+  entry.box.remove();
+  try {
+    entry.term.dispose();
+  } catch (error) {
+    send({ type: "problem", text: `dispose: ${error}` });
   }
 }
 
@@ -251,17 +256,22 @@ function receive(message) {
     const data = bytes(message.data);
     entry.end = message.offset + data.length;
     const pending = entry.pending.splice(0);
+    let drawn = false;
     try {
       // ghostty-web throws on an empty write, as when the shell has written nothing yet.
       if (data.length > 0) {
         entry.term.write(data);
       }
-      restarts.delete(entry.name);
+      drawn = true;
     } finally {
       // The output that waited goes on even if the screen fails to draw.
       for (const [offset, waited] of pending) {
         write(entry, offset, waited);
       }
+    }
+    // Only a terminal that drew all of it, and did not start again on a gap, starts its count over.
+    if (drawn && terminals.get(entry.name) === entry) {
+      restarts.delete(entry.name);
     }
   } else if (message.type === "shortcut") {
     shortcut = message;
@@ -271,22 +281,28 @@ function receive(message) {
     const live = new Set(message.terminals.map(({ agent, terminal }) => key(agent, terminal)));
     for (const gone of [...terminals.values()].filter((entry) => !live.has(entry.name))) {
       forget(gone);
-      restarts.delete(gone.name);
+    }
+    for (const name of [...restarts.keys()].filter((name) => !live.has(name))) {
+      restarts.delete(name);
     }
   }
 }
 
 for (;;) {
   const message = await dioxus.recv();
+  const entry = terminals.get(key(message.agent, message.terminal));
   try {
     receive(message);
   } catch (error) {
     // A failed message must not stop the loop. The terminal it was for starts again from the
-    // output the daemon kept.
+    // output the daemon kept, unless a gap already started it again.
     send({ type: "problem", text: `${message.type}: ${error}` });
-    const entry = terminals.get(key(message.agent, message.terminal));
-    if (entry !== undefined) {
-      restart(entry);
+    try {
+      if (entry !== undefined && terminals.get(entry.name) === entry) {
+        restart(entry);
+      }
+    } catch (again) {
+      send({ type: "problem", text: `restart: ${again}` });
     }
   }
 }
