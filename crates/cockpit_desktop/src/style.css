@@ -9128,6 +9128,31 @@ button.map-toggle:hover {
   color: var(--muted);
 }
 
+/* The new agent dialog's name field: its label inside it, and "optional" at its end. Both
+   classes, to win over `.folder-field`, which comes later. */
+.folder-field.name-field {
+  min-height: 36px;
+  cursor: text;
+}
+
+.name-field .folder-input {
+  min-height: 34px;
+  font-size: 13.5px;
+}
+
+.name-field-label {
+  flex: none;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--muted);
+}
+
+.field-note {
+  flex: none;
+  font-size: 12px;
+  color: var(--dim);
+}
+
 /* A question mark after a label, outside it, so that the input's name stays the label's text. Its
    tooltip spans the field's group, below the label. */
 .field-group {
@@ -12064,4 +12089,13 @@ html.splitting .sidebar {
   padding-bottom: 3px;
   border-bottom: 1px solid var(--line-strong);
   color: var(--amber);
+}
+
+/* On a short window, the new agent dialog's first message gets two lines in place of three, so
+   its folder field and some recent folders stay in view above the name field. */
+@media (max-height: 760px) {
+  .dialog-footer .prompt-input {
+    min-height: 0;
+    height: calc(2lh + 8px);
+  }
 }

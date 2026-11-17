@@ -4,7 +4,8 @@
 use std::path::{Path, PathBuf};
 
 use cockpit_protocol::{
-    AgentId, AgentStatus, Completeness, Effort, PastSession, PermissionMode, Timestamp,
+    AgentId, AgentStatus, Completeness, Effort, MAX_TITLE_CHARS, PastSession, PermissionMode,
+    Timestamp,
 };
 use dioxus::html::geometry::ScreenPoint;
 use dioxus::html::input_data::MouseButton;
@@ -57,6 +58,7 @@ const FOLDER_LOADING_ROWS: [&str; 4] = ["34%", "22%", "46%", "28%"];
 
 /// The new agent dialog's first message.
 const PROMPT_FIELD_ID: &str = "new-agent-prompt";
+const NAME_FIELD_ID: &str = "new-agent-name";
 
 /// The "Resume a session" tab's search field.
 const SESSION_SEARCH_ID: &str = "new-agent-session-search";
@@ -667,6 +669,14 @@ fn StartForm(form: NewAgentForm) -> Element {
     // render that lags behind typing would put an older text back.
     let folder_seed = use_hook(|| typed_folder.clone());
     let prompt_seed = use_hook(|| typed_prompt.clone());
+    let name_seed = use_hook(|| cockpit.drafts.peek().new_agent.name.clone());
+    // Without a name, the daemon names the agent after its first message, else its folder.
+    let typed_folder_path = typed_folder.trim();
+    let default_name = if typed_folder_path.is_empty() && typed_prompt.trim().is_empty() {
+        "Its first message's first line, or its folder's name".to_owned()
+    } else {
+        cockpit_protocol::default_title(Some(&typed_prompt), Path::new(typed_folder_path))
+    };
     let focus = use_hook(|| actions::start_focus(&cockpit.drafts.peek().new_agent));
     // The recent folder under the pointer, the one row lit. The field's folder is only marked.
     let mut pointed = use_signal(|| None::<PathBuf>);
@@ -884,6 +894,23 @@ fn StartForm(form: NewAgentForm) -> Element {
             }
         }
         div { class: "dialog-footer",
+            // The label sits inside the field: the footer stays short, and the folders above it
+            // keep their room on a small window.
+            label { class: "folder-field name-field", r#for: NAME_FIELD_ID,
+                span { class: "name-field-label", "Name" }
+                input {
+                    id: NAME_FIELD_ID,
+                    class: "folder-input",
+                    r#type: "text",
+                    aria_label: "Name, optional",
+                    maxlength: "{MAX_TITLE_CHARS}",
+                    placeholder: "{default_name}",
+                    initial_value: "{name_seed}",
+                    oninput: move |event: FormEvent| cockpit.with_drafts(|_, drafts| drafts.new_agent.name = event.value()),
+                    onkeydown: start_on_enter,
+                }
+                span { class: "field-note", "optional" }
+            }
             div { class: "prompt-box",
                 textarea {
                     id: PROMPT_FIELD_ID,

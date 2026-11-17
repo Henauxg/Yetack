@@ -24,8 +24,6 @@ use crate::transcript::prompts::TypedSetting;
 use crate::transcript::{AgentView, AnswerError, FollowUp, ProcessSession, prompts, words};
 use crate::{machine_load, read_file, repository, sessions};
 
-/// A title made from a prompt keeps this many characters.
-const TITLE_MAX_CHARS: usize = 60;
 /// The longest model name a client may set: every summary carries it.
 const MODEL_MAX_CHARS: usize = 100;
 
@@ -52,7 +50,15 @@ impl Hub {
         }
         let folder = agent_folder(&params.folder)?;
         let account = self.account(params.account)?;
-        let title = title.unwrap_or_else(|| default_title(params.prompt.as_ref(), &folder));
+        // A name the client gave goes into the Claude session too, as a rename does, so the
+        // session keeps it after the agent closes, in the resume list and in `claude --resume`.
+        let named = title.is_some();
+        let title = title.unwrap_or_else(|| {
+            cockpit_protocol::default_title(
+                params.prompt.as_ref().map(|prompt| prompt.text.as_str()),
+                &folder,
+            )
+        });
         let record = AgentRecord {
             id: self.next_agent,
             title,
@@ -70,7 +76,16 @@ impl Hub {
             mark: Mark::Unmarked,
             resume_as: ResumeAs::Same,
         };
-        let agent = self.add_agent(record, params.prompt, None)?;
+        let agent = self.add_agent(record, None, None)?;
+        // Before the first message: the session has the name even if the agent stops before its
+        // first turn ends.
+        if named && let Some(started) = self.agents.get_mut(&agent) {
+            let text = prompts::rename_command(&started.record.title);
+            send_quiet_prompt(started, text);
+        }
+        if let Some(prompt) = params.prompt {
+            self.prompt(agent, prompt, PromptDelivery::Steer)?;
+        }
         Ok(ResponseBody::AgentStarted { agent })
     }
 
@@ -412,7 +427,7 @@ impl Hub {
                     shown_text = Some(queued.prompt.text);
                     break;
                 }
-                None => agent.view.expect_echo(queued.prompt.text),
+                None => agent.view.hidden_prompt_sent(queued.prompt.text),
             }
         }
         if shown_text.is_some_and(|text| record_typed_setting(agent, &text)) {
@@ -747,7 +762,19 @@ fn send_hidden_prompt(agent: &mut Agent, text: String) {
         });
     } else {
         process.write(line);
-        agent.view.expect_echo(text);
+        agent.view.hidden_prompt_sent(text);
+    }
+}
+
+/// Sends a hidden prompt whose output shows no notice, now if the agent is idle. Queued behind a
+/// turn, it goes as any hidden prompt does, and its output shows.
+fn send_quiet_prompt(agent: &mut Agent, text: String) {
+    match &agent.process {
+        Some(process) if !agent.view.is_busy() && agent.queue.is_empty() => {
+            process.write(InputLine::prompt(text.clone()));
+            agent.view.quiet_prompt_sent(text);
+        }
+        Some(_) | None => send_hidden_prompt(agent, text),
     }
 }
 
@@ -860,29 +887,6 @@ fn check_length(what: &str, text: &str, max_chars: usize) -> Result<(), ErrorBod
     Ok(())
 }
 
-/// The prompt's first line, or the folder's name.
-fn default_title(prompt: Option<&Prompt>, folder: &Path) -> String {
-    let first_line = prompt.and_then(|prompt| {
-        prompt
-            .text
-            .lines()
-            .map(str::trim)
-            .find(|line| !line.is_empty())
-    });
-    if let Some(line) = first_line {
-        if line.chars().count() <= TITLE_MAX_CHARS {
-            return line.to_owned();
-        }
-        let mut title: String = line.chars().take(TITLE_MAX_CHARS - 1).collect();
-        title.push('…');
-        return title;
-    }
-    folder.file_name().map_or_else(
-        || folder.display().to_string(),
-        |name| name.to_string_lossy().into_owned(),
-    )
-}
-
 #[cfg(test)]
 mod tests {
     #[cfg(unix)]
@@ -896,24 +900,6 @@ mod tests {
     use crate::test_script;
 
     use super::*;
-
-    #[test]
-    fn a_title_comes_from_the_prompt_or_the_folder() {
-        let folder = Path::new("/srv/work/shop");
-        let prompt = |text: &str| Prompt {
-            text: text.to_owned(),
-            images: Vec::new(),
-        };
-
-        assert_eq!(default_title(None, folder), "shop");
-        assert_eq!(
-            default_title(Some(&prompt("\n  Fix the cart\nthen test")), folder),
-            "Fix the cart"
-        );
-        let long = default_title(Some(&prompt(&"word ".repeat(40))), folder);
-        assert_eq!(long.chars().count(), TITLE_MAX_CHARS);
-        assert!(long.ends_with('…'));
-    }
 
     #[test]
     fn a_folder_must_exist_and_be_absolute() {

@@ -1472,13 +1472,14 @@ mod tests {
         assert_eq!(windows.as_deref(), Some(r"C:\Users\sam\.claude-work-3"));
     }
 
-    /// The new agent dialog with a typed folder and message, a picked account, model and mode,
-    /// and its account menu open, as "Manage accounts" finds it.
+    /// The new agent dialog with a typed folder, message and name, a picked account, model and
+    /// mode, and its account menu open, as "Manage accounts" finds it.
     fn new_agent_dialog(state: &mut AppState, drafts: &mut Drafts) -> NewAgentForm {
         three_accounts(state);
         actions::open_new_agent(state, drafts);
         drafts.new_agent.folder = "/work/app".to_owned();
         drafts.new_agent.prompt = "Fix the parser".to_owned();
+        drafts.new_agent.name = "Parser fix".to_owned();
         pick_new_agent_account(state, drafts, lab());
         actions::with_new_agent_form(state, |form| {
             form.model = Some("opus".to_owned());
