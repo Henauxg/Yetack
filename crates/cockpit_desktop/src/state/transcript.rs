@@ -23,6 +23,8 @@ pub enum HistoryState {
         has_older: bool,
     },
     LoadingOlder,
+    /// The page before the first item held did not load, for this reason. Older items exist.
+    OlderFailed(String),
     Failed(String),
 }
 
@@ -30,6 +32,14 @@ impl HistoryState {
     /// Whether the first page of the history is still to come. A failed one is not.
     pub fn awaits_first_page(&self) -> bool {
         matches!(self, Self::NotLoaded | Self::Loading)
+    }
+
+    /// Whether older items exist and no page of them is on its way.
+    pub fn can_load_older(&self) -> bool {
+        matches!(
+            self,
+            Self::Loaded { has_older: true } | Self::OlderFailed(_)
+        )
     }
 }
 

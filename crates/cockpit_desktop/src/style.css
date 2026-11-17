@@ -10680,16 +10680,46 @@ html.splitting .sidebar {
   border-radius: 12px;
 }
 
-.transcript-skeleton .skeleton-tool {
+.transcript-skeleton .skeleton-tool,
+.older-skeleton .skeleton-tool {
   display: flex;
   align-items: center;
   gap: 8px;
 }
 
-.transcript-skeleton .skeleton-dot {
+.transcript-skeleton .skeleton-dot,
+.older-skeleton .skeleton-dot {
   width: 7px;
   height: 7px;
   border-radius: 50%;
+}
+
+/* The older messages' rows: as many as fill the space above the first loaded message. */
+.older-skeleton {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.older-skeleton .skeleton-line {
+  margin: 0;
+}
+
+/* Above the first message: a line across the chat, with the time between its halves. */
+.conversation-start {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: var(--dim);
+  font-size: 11.5px;
+}
+
+.conversation-start::before,
+.conversation-start::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background: var(--line);
 }
 
 

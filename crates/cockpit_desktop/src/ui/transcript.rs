@@ -34,7 +34,7 @@ use crate::ui::find::SKIP_CLASS;
 use crate::ui::find_folds::{self, FoldChip, FoldKey};
 use crate::ui::icons::{Icon, IconKind};
 use crate::ui::last_instruction::LastInstruction;
-use crate::ui::loading::TranscriptSkeleton;
+use crate::ui::loading::{OlderSkeleton, TranscriptSkeleton};
 use crate::ui::markdown::{MARKDOWN_CLASS, MarkdownView};
 use crate::ui::question_card::{CardPlace, QuestionCard};
 use crate::ui::tool_rows::{self, ExploredView, Row, SkillView};
@@ -430,6 +430,13 @@ pub fn TranscriptView(in_view: Signal<Option<InView>>) -> Element {
     let top_items = top_items(&items, &loaded, sign_in_notice);
     let divider = actions::new_divider(&state, agent);
     let top_rows = tool_rows::rows(&top_items, &awaiting, divider);
+    let started = top_items
+        .first()
+        .and_then(|item| match &item.body {
+            ItemBody::UserMessage(message) => message.sent_at,
+            _ => None,
+        })
+        .and_then(|sent_at| format::message_time(sent_at, today()));
     let states: Vec<Option<StepState>> = top_rows
         .iter()
         .map(|row| {
@@ -501,7 +508,7 @@ pub fn TranscriptView(in_view: Signal<Option<InView>>) -> Element {
                 if shown == ShownRows::Skeleton {
                     TranscriptSkeleton {}
                 } else if shown == ShownRows::All {
-                    {history_note(history, cockpit, agent)}
+                    {history_note(history, started, cockpit, agent)}
                 }
                 // Item ids repeat across agents: with the agent in the key, another agent's item
                 // never takes over the state of this one's (a fold, a typed answer).
@@ -538,26 +545,40 @@ pub fn TranscriptView(in_view: Signal<Option<InView>>) -> Element {
 }
 
 /// What stands above the conversation's first loaded item: the skeleton while the first page
-/// loads, the way to older messages, or why they did not load.
-fn history_note(history: HistoryState, cockpit: Cockpit, agent: AgentId) -> Element {
+/// loads, rows where older messages will go, the start of the conversation with the time of its
+/// first message, or why messages did not load.
+fn history_note(
+    history: HistoryState,
+    started: Option<String>,
+    cockpit: Cockpit,
+    agent: AgentId,
+) -> Element {
     match history {
         HistoryState::NotLoaded | HistoryState::Loading => rsx! {
             TranscriptSkeleton {}
         },
-        HistoryState::LoadingOlder => rsx! {
-            p { class: "history-note loading-note", role: "status",
-                span { class: "spinner", aria_hidden: true }
-                "Loading older messages"
+        // The chat asks for them as the view nears its top.
+        HistoryState::LoadingOlder | HistoryState::Loaded { has_older: true } => rsx! {
+            OlderSkeleton {}
+        },
+        HistoryState::OlderFailed(error) => rsx! {
+            p { class: "history-note",
+                "Older messages did not load: {error}. "
+                button {
+                    class: "link-button",
+                    onclick: move |_| cockpit.change(|state| actions::load_older(state, agent)),
+                    "Retry"
+                }
             }
         },
-        HistoryState::Loaded { has_older: true } => rsx! {
-            button {
-                class: "link-button history-note",
-                onclick: move |_| cockpit.change(|state| actions::load_older(state, agent)),
-                "Load older messages"
+        HistoryState::Loaded { has_older: false } => rsx! {
+            p { class: "conversation-start",
+                match started {
+                    Some(started) => rsx! { "Start of the conversation · {started}" },
+                    None => rsx! { "Start of the conversation" },
+                }
             }
         },
-        HistoryState::Loaded { has_older: false } => rsx! {},
         HistoryState::Failed(error) => rsx! {
             p { class: "history-note",
                 "The conversation did not load: {error}. "
