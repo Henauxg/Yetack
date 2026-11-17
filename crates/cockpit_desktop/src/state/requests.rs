@@ -46,9 +46,8 @@ pub struct Outgoing {
 pub enum Purpose {
     /// Answered by `Done`: only a failure shows.
     Action,
-    /// A key typed in a terminal, or its new size. The connection drops the answer without a
-    /// look at the state, since each change of the state renders the window again: a failure
-    /// is logged, as on an ended shell.
+    /// A key typed in a terminal, or its new size. Its answer does not touch the state, since each
+    /// write renders the window again. A failure, as on an ended shell, is only logged.
     TerminalKeys,
     /// `agent.answer` for a card, which a failure lets answer again.
     Answer {

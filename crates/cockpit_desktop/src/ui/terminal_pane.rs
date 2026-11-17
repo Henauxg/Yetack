@@ -115,7 +115,7 @@ function terminalFor(agent, terminal) {
     return false;
   });
   const name = key(agent, terminal);
-  const entry = { name, term, fit, box, end: null, pending: [], settle: null, observer: null };
+  const entry = { name, paused: false, term, fit, box, end: null, pending: [], settle: null, observer: null };
   entry.observer = new ResizeObserver(() => fitWhenSettled(entry));
   entry.observer.observe(box);
   terminals.set(name, entry);
@@ -137,11 +137,27 @@ function forget(entry) {
 
 // Puts the shown terminal's box in the screen, wherever the pane is.
 let shown = null;
+// ghostty-web draws each open terminal on every frame, even one out of the page: the terminals
+// not on screen stop drawing, and a write still reaches them.
+function drawOnly(drawn) {
+  for (const entry of terminals.values()) {
+    const term = entry.term;
+    if (entry === drawn && entry.paused) {
+      entry.paused = false;
+      term.startRenderLoop();
+    } else if (entry !== drawn && !entry.paused) {
+      entry.paused = true;
+      cancelAnimationFrame(term.animationFrameId);
+    }
+  }
+}
+
 function place() {
   const screen = document.getElementById(settings.screen_id);
   if (screen === null) {
     // The pane closed: the terminal it shows next takes the focus, even the same one.
     shown = null;
+    drawOnly(null);
     return;
   }
   const agent = Number(screen.dataset.agent);
@@ -149,9 +165,11 @@ function place() {
   if (!terminal) {
     screen.replaceChildren();
     shown = null;
+    drawOnly(null);
     return;
   }
   const entry = terminalFor(agent, terminal);
+  drawOnly(entry);
   if (entry.box.parentElement !== screen) {
     screen.replaceChildren(entry.box);
   }
@@ -363,13 +381,13 @@ fn receive(cockpit: Cockpit, message: FromPage) {
             agent,
             terminal,
             data,
-        } => cockpit.send(terminals::input(agent, terminal, data)),
+        } => cockpit.send_terminal_keys(terminals::input(agent, terminal, data)),
         FromPage::Resize {
             agent,
             terminal,
             cols,
             rows,
-        } => cockpit.send(terminals::resize(
+        } => cockpit.send_terminal_keys(terminals::resize(
             agent,
             terminal,
             TerminalSize { cols, rows },

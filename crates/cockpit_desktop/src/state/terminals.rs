@@ -525,4 +525,26 @@ mod tests {
             ]
         );
     }
+
+    #[test]
+    fn a_key_the_terminal_refuses_leaves_no_note() {
+        use cockpit_client::RequestError;
+        use cockpit_protocol::Method;
+
+        use crate::state::{Drafts, apply_response};
+
+        let mut state = state_with(vec![summary(1, AgentStatus::Idle)]);
+        let key = input(agent(), TerminalId::new(2), "l".to_owned());
+
+        apply_response(
+            &mut state,
+            &mut Drafts::default(),
+            Method::TerminalInput,
+            key.purpose,
+            Err(RequestError::NotConnected),
+            MachineId::THIS,
+        );
+
+        assert!(state.ui.errors.is_empty());
+    }
 }

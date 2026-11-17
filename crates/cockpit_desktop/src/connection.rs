@@ -138,8 +138,10 @@ impl Cockpit {
         }
     }
 
-    /// Sends a request without a look at the state, such as a key typed in a terminal.
-    pub fn send(&self, request: Outgoing) {
+    /// Sends a terminal's keys or size (`Purpose::TerminalKeys`) without writing the state, which
+    /// would render the window again for each key. Another purpose would lose the requests that
+    /// `change` adds.
+    pub fn send_terminal_keys(&self, request: Outgoing) {
         self.daemon.send(ToDaemon::Send(request));
     }
 
@@ -1110,6 +1112,11 @@ async fn refuse_requests(
             message = requests.recv() => match message {
                 Some(ToDaemon::Machines(MachineChange::Retry(_))) => return true,
                 Some(ToDaemon::Machines(_) | ToDaemon::Update(_) | ToDaemon::Notifications) => {}
+                // A key needs no note while the machine is away: the app shows that.
+                Some(ToDaemon::Send(Outgoing {
+                    purpose: Purpose::TerminalKeys,
+                    ..
+                })) => {}
                 Some(ToDaemon::Send(Outgoing { request, purpose, .. })) => {
                     let mut state = state.write();
                     state::apply_response(
@@ -1457,6 +1464,10 @@ async fn next_choice(
         match requests.recv().await? {
             ToDaemon::Choose(chosen) => return Some(chosen),
             ToDaemon::Machines(_) | ToDaemon::Update(_) | ToDaemon::Notifications => {}
+            ToDaemon::Send(Outgoing {
+                purpose: Purpose::TerminalKeys,
+                ..
+            }) => {}
             ToDaemon::Send(Outgoing {
                 request, purpose, ..
             }) => {
