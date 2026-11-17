@@ -10,11 +10,16 @@ const CLOSING_LINES: [&str; 2] = ["90%", "64%"];
 /// The widths of the older messages' rows.
 const OLDER_LINES: [&str; 4] = ["62%", "48%", "80%", "55%"];
 
-/// Rows where the older messages will go, until they come.
+/// Rows where the older messages will go, until they come. Only rows whose page is on its way
+/// say so to a screen reader.
 #[component]
-pub fn OlderSkeleton() -> Element {
+pub fn OlderSkeleton(loading: bool) -> Element {
     rsx! {
-        div { class: "older-skeleton", role: "status", aria_label: "Loading older messages",
+        div {
+            class: "older-skeleton",
+            role: loading.then_some("status"),
+            aria_label: loading.then_some("Loading older messages"),
+            aria_hidden: (!loading).then_some(true),
             for width in OLDER_LINES {
                 div { class: "skeleton-tool", aria_hidden: true,
                     span { class: "skeleton skeleton-dot" }

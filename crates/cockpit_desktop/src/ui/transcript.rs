@@ -561,8 +561,11 @@ fn history_note(
             TranscriptSkeleton {}
         },
         // The chat asks for them as the view nears its top.
-        HistoryState::LoadingOlder | HistoryState::Loaded { has_older: true } => rsx! {
-            OlderSkeleton {}
+        HistoryState::LoadingOlder => rsx! {
+            OlderSkeleton { loading: true }
+        },
+        HistoryState::Loaded { has_older: true } => rsx! {
+            OlderSkeleton { loading: false }
         },
         HistoryState::OlderFailed(error) => rsx! {
             p { class: "history-note",
