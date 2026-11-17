@@ -451,6 +451,16 @@ impl ShownRows {
             Self::Skeleton => false,
         }
     }
+
+    /// The rows of `rows` the chat holds but has not drawn, once it drew the rows it opens with:
+    /// the rows the next frames draw do not count.
+    fn undrawn(self, rows: usize) -> usize {
+        if self.is_named(rows) {
+            self.first(rows)
+        } else {
+            0
+        }
+    }
 }
 
 /// What the chat's rows depend on, cheap to compare: the selected agent's transcript by its
@@ -775,12 +785,10 @@ pub fn TranscriptView(in_view: Signal<Option<InView>>) -> Element {
         }
     });
     use_effect(move || {
-        let now = view.read().as_ref().map(|view| {
-            (
-                view.agent,
-                view.row_ids.len().saturating_sub(view.top.len()),
-            )
-        });
+        let now = view
+            .read()
+            .as_ref()
+            .map(|view| (view.agent, view.shown.undrawn(view.row_ids.len())));
         if *undrawn.peek() != now {
             undrawn.set(now);
         }
@@ -3306,6 +3314,18 @@ mod tests {
         assert_eq!(ShownRows::All.first(140), 0);
         assert_eq!(long.first(140), 140 - FIRST_ROWS);
         assert_eq!(scrolled_up.first(140), 140);
+    }
+
+    /// The find bar shows the count: it would count down, or show then leave, as the chunks come.
+    #[test]
+    fn the_undrawn_rows_count_once_the_chat_drew_the_rows_it_opens_with() {
+        let rows = 300;
+
+        assert_eq!(ShownRows::opening(rows, false).undrawn(rows), 0);
+        assert_eq!(ShownRows::opening(rows, true).undrawn(rows), 0);
+        assert_eq!(ShownRows::Latest(220).undrawn(rows), 0);
+        assert_eq!(ShownRows::Latest(180).undrawn(rows), 180);
+        assert_eq!(ShownRows::All.undrawn(rows), 0);
     }
 
     /// The fold script reads these fields by name: a rename in Rust would make it read
