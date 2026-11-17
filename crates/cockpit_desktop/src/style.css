@@ -8724,6 +8724,62 @@ button.map-toggle:hover {
   color: var(--muted);
 }
 
+/* A question mark after a label, outside it, so that the input's name stays the label's text. Its
+   tooltip spans the field's group, below the label. */
+.field-group {
+  position: relative;
+}
+
+.field-head {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.field-help.tooltip-anchor {
+  position: static;
+}
+
+.field-help-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--dim);
+  cursor: help;
+  transition:
+    color var(--motion-hover) var(--ease),
+    transform var(--motion-hover) var(--ease);
+}
+
+.field-help-button:hover,
+.field-help-button:focus-visible {
+  color: var(--text);
+}
+
+.field-help-button:active {
+  transform: scale(var(--press-scale));
+}
+
+.field-help-text.tooltip {
+  top: 22px;
+  left: 0;
+  right: auto;
+  width: max-content;
+  max-width: min(100%, 360px);
+  min-width: min(100%, 240px);
+  padding: 8px 10px;
+  font-weight: 400;
+  line-height: 1.45;
+  white-space: normal;
+  pointer-events: none;
+}
+
 .folder-field {
   display: flex;
   align-items: center;

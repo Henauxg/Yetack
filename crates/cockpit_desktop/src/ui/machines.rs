@@ -24,6 +24,7 @@ use crate::state::update_offer::ProgramBuild;
 use crate::state::update_plan::SendProgress;
 use crate::state::{AppState, Dialog, MachineEdit, MachineMenu, MachinesView, daemon_update};
 use crate::ui::accounts::CommandBox;
+use crate::ui::field_help::FieldHelp;
 use crate::ui::icons::{Icon, IconKind};
 use crate::ui::menu::{FlatMenu, FlatRow};
 use crate::ui::presence::use_presence;
@@ -31,6 +32,22 @@ use crate::{bridge, format};
 
 /// Between the parts of a machine row's detail line.
 const DETAIL_SEPARATOR: &str = " · ";
+
+// The ids that tie the server forms' labels to their inputs.
+const ADD_HOST_ID: &str = "add-server-host";
+const ADD_NAME_ID: &str = "add-server-name";
+const ADD_PATH_ID: &str = "add-server-path";
+const EDIT_HOST_ID: &str = "edit-server-host";
+const EDIT_NAME_ID: &str = "edit-server-name";
+const EDIT_PATH_ID: &str = "edit-server-path";
+const EDIT_SOURCE_ID: &str = "edit-server-source";
+
+/// What the SSH host field takes, in both server forms.
+const HOST_HELP: &str = "The server as you name it to ssh: a host from your SSH config, or user@host. The app connects with your SSH keys.";
+
+/// What the name field does, in both server forms.
+const NAME_HELP: &str =
+    "What the app calls this server in the sidebar and the lists. Leave it empty to use the host.";
 
 /// The class of the releases in the version cell when the commits show under them.
 const RELEASE_LINE: &str = "version-release";
@@ -439,8 +456,9 @@ fn AddServer(view: MachinesView) -> Element {
             aria_label: "Add a server",
             div { class: "form-row",
                 div { class: "field-group",
-                    label { class: "field-label", "SSH host" }
+                    div { class: "field-head", label { class: "field-label", r#for: ADD_HOST_ID, "SSH host" } FieldHelp { field: "the SSH host", text: HOST_HELP } }
                     input {
+                        id: ADD_HOST_ID,
                         class: "text-input mono",
                         r#type: "text",
                         spellcheck: false,
@@ -454,8 +472,9 @@ fn AddServer(view: MachinesView) -> Element {
                     }
                 }
                 div { class: "field-group",
-                    label { class: "field-label", "Name in the app" }
+                    div { class: "field-head", label { class: "field-label", r#for: ADD_NAME_ID, "Name in the app" } FieldHelp { field: "the name in the app", text: NAME_HELP } }
                     input {
+                        id: ADD_NAME_ID,
                         class: "text-input",
                         r#type: "text",
                         spellcheck: false,
@@ -466,11 +485,18 @@ fn AddServer(view: MachinesView) -> Element {
                 }
             }
             div { class: "field-group",
-                label { class: "field-label",
-                    "Path of {PROGRAM} on the server"
-                    span { class: "optional", "optional" }
+                div { class: "field-head",
+                    label { class: "field-label", r#for: ADD_PATH_ID,
+                        "Path of {PROGRAM} on the server"
+                        span { class: "optional", "optional" }
+                    }
+                    FieldHelp {
+                        field: "the path of {PROGRAM}",
+                        text: "Where {PROGRAM} is on the server, as an absolute path. Leave it empty and the app looks for it on the server's PATH and in the usual folders, such as ~/.local/bin. When it finds none, it offers to install the daemon it has for the server's system.",
+                    }
                 }
                 input {
+                    id: ADD_PATH_ID,
                     class: "text-input mono",
                     r#type: "text",
                     spellcheck: false,
@@ -949,8 +975,9 @@ fn MachineEditView(name: String, agents: usize, edit: MachineEdit) -> Element {
             }
             div { class: "form-row",
                 div { class: "field-group",
-                    label { class: "field-label", "SSH host" }
+                    div { class: "field-head", label { class: "field-label", r#for: EDIT_HOST_ID, "SSH host" } FieldHelp { field: "the SSH host", text: HOST_HELP } }
                     input {
+                        id: EDIT_HOST_ID,
                         class: "text-input mono",
                         r#type: "text",
                         spellcheck: false,
@@ -964,8 +991,9 @@ fn MachineEditView(name: String, agents: usize, edit: MachineEdit) -> Element {
                     }
                 }
                 div { class: "field-group",
-                    label { class: "field-label", "Name in the app" }
+                    div { class: "field-head", label { class: "field-label", r#for: EDIT_NAME_ID, "Name in the app" } FieldHelp { field: "the name in the app", text: NAME_HELP } }
                     input {
+                        id: EDIT_NAME_ID,
                         class: "text-input",
                         r#type: "text",
                         spellcheck: false,
@@ -976,8 +1004,17 @@ fn MachineEditView(name: String, agents: usize, edit: MachineEdit) -> Element {
                 }
             }
             div { class: "field-group",
-                label { class: "field-label", "Path of {PROGRAM} on the server" }
+                div { class: "field-head",
+                    label { class: "field-label", r#for: EDIT_PATH_ID,
+                        "Path of {PROGRAM} on the server"
+                    }
+                    FieldHelp {
+                        field: "the path of {PROGRAM}",
+                        text: "The {PROGRAM} the app starts on the server, as an absolute path. An update from the app replaces this file when it is in ~/.local/share/{PROGRAM}/bin or ~/.local/bin. Elsewhere, such as from a package or Nix, update it the way it was installed.",
+                    }
+                }
                 input {
+                    id: EDIT_PATH_ID,
                     class: "text-input mono",
                     r#type: "text",
                     spellcheck: false,
@@ -987,11 +1024,18 @@ fn MachineEditView(name: String, agents: usize, edit: MachineEdit) -> Element {
                 }
             }
             div { class: "field-group",
-                label { class: "field-label",
-                    "Source checkout for updates "
-                    span { class: "field-optional", "(optional)" }
+                div { class: "field-head",
+                    label { class: "field-label", r#for: EDIT_SOURCE_ID,
+                        "Source checkout for updates "
+                        span { class: "field-optional", "(optional)" }
+                    }
+                    FieldHelp {
+                        field: "the source checkout",
+                        text: "A git checkout of the {PROGRAM} repository on the server. An update uses it only when the app has no daemon to send for the server's system: it fetches the app's commit there and builds the daemon from it. The checkout itself stays as it is. Leave it empty to use ~/{PROGRAM}.",
+                    }
                 }
                 input {
+                    id: EDIT_SOURCE_ID,
                     class: "text-input mono",
                     r#type: "text",
                     spellcheck: false,
