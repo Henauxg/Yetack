@@ -226,6 +226,8 @@ fn composer_key(
 ) -> Vec<Outgoing> {
     if state.ui.popover == Some(Popover::Palette(PaletteOrigin::Typed)) {
         match press.key.as_str() {
+            // Shift+Enter adds a line, which the page does itself.
+            KEY_ENTER if press.shift => return Vec::new(),
             KEY_UP => actions::palette_move(state, drafts, agent, Direction::Up),
             KEY_DOWN => actions::palette_move(state, drafts, agent, Direction::Down),
             // Opened by typing, the palette lists commands alone. A pick puts one in the
@@ -696,6 +698,43 @@ mod tests {
             assert_eq!(text, Some("/review "), "{key}");
             assert_eq!(state.ui.popover, None, "{key}");
         }
+    }
+
+    /// Shift+Enter adds a line, as it does without the palette: it picks no command.
+    #[test]
+    fn shift_enter_in_a_typed_palette_picks_nothing() {
+        let agent = AgentId::new(1);
+        let mut drafts = Drafts::default();
+        let mut state = state(AgentStatus::Idle, None);
+        if let Some(entry) = state.agents.get_mut(&agent) {
+            entry.details = Loadable::Loaded(AgentDetails::default());
+            entry.commands = vec![SlashCommand {
+                name: "review".to_owned(),
+                description: "Review the changes on the branch".to_owned(),
+                kind: CommandKind::Skill,
+            }];
+        }
+        let typed = actions::composer_input(
+            &state,
+            &mut drafts,
+            agent,
+            "/rev".to_owned(),
+            Utf16Offset::new(4),
+        );
+        if let Some(change) = typed {
+            actions::change_palette(&mut state, agent, change);
+        }
+        let shift_enter = KeyPress {
+            shift: true,
+            composer_text: "/rev".to_owned(),
+            ..press(KEY_ENTER, KeyTarget::Composer)
+        };
+
+        let requests = handle_key(&mut state, &mut drafts, &shift_enter);
+
+        assert!(requests.is_empty(), "nothing is sent");
+        let text = drafts.draft(agent).map(|draft| draft.text.as_str());
+        assert_eq!(text, Some("/rev"), "the text stays as typed");
     }
 
     /// The draft can lag a keystroke behind the field: "/re" in the draft and "/ren" in the field

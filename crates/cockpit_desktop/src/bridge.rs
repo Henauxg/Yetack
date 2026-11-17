@@ -264,7 +264,7 @@ document.addEventListener("keydown", (event) => {
     // Alt+Enter queues the message until the turn ends.
     take = true;
   } else if (where === "composer" && plain) {
-    take = (mode.palette && ["ArrowUp", "ArrowDown", "Enter", "Tab"].includes(key))
+    take = (mode.palette && (["ArrowUp", "ArrowDown", "Tab"].includes(key) || (key === "Enter" && !event.shiftKey)))
       || (text === "" && answers)
       || (key === "Enter" && !event.shiftKey);
   } else if (where === "page" && plain && !mode.dialog
