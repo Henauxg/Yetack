@@ -46,6 +46,10 @@ pub struct Outgoing {
 pub enum Purpose {
     /// Answered by `Done`: only a failure shows.
     Action,
+    /// A key typed in a terminal, or its new size. The connection drops the answer without a
+    /// look at the state, since each change of the state renders the window again: a failure
+    /// is logged, as on an ended shell.
+    TerminalKeys,
     /// `agent.answer` for a card, which a failure lets answer again.
     Answer {
         agent: AgentId,
@@ -462,6 +466,7 @@ pub fn apply_response(
         Err(error) => Err(Failure::from_request(&error, method)),
     };
     match purpose {
+        Purpose::TerminalKeys => {}
         Purpose::Action => {
             if let Err(failure) = result {
                 state

@@ -363,19 +363,17 @@ fn receive(cockpit: Cockpit, message: FromPage) {
             agent,
             terminal,
             data,
-        } => cockpit.change(|_| vec![terminals::input(agent, terminal, data)]),
+        } => cockpit.send(terminals::input(agent, terminal, data)),
         FromPage::Resize {
             agent,
             terminal,
             cols,
             rows,
-        } => cockpit.change(|_| {
-            vec![terminals::resize(
-                agent,
-                terminal,
-                TerminalSize { cols, rows },
-            )]
-        }),
+        } => cockpit.send(terminals::resize(
+            agent,
+            terminal,
+            TerminalSize { cols, rows },
+        )),
         FromPage::Title {
             agent,
             terminal,

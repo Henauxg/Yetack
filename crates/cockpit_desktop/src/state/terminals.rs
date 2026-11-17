@@ -286,7 +286,7 @@ pub fn input(agent: AgentId, terminal: TerminalId, data: String) -> Outgoing {
             terminal,
             data,
         }),
-        Purpose::Action,
+        Purpose::TerminalKeys,
     )
 }
 
@@ -297,7 +297,7 @@ pub fn resize(agent: AgentId, terminal: TerminalId, size: TerminalSize) -> Outgo
             terminal,
             size,
         }),
-        Purpose::Action,
+        Purpose::TerminalKeys,
     )
 }
 

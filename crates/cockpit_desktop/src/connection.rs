@@ -138,6 +138,11 @@ impl Cockpit {
         }
     }
 
+    /// Sends a request without a look at the state, such as a key typed in a terminal.
+    pub fn send(&self, request: Outgoing) {
+        self.daemon.send(ToDaemon::Send(request));
+    }
+
     /// Adds or removes a server, or tries one again.
     pub fn change_machines(&self, change: MachineChange) {
         self.daemon.send(ToDaemon::Machines(change));
@@ -1687,6 +1692,12 @@ fn send(
             machine.answer_to_app(&mut body);
             body
         });
+        if purpose == Purpose::TerminalKeys {
+            if let Err(error) = result {
+                tracing::debug!(%error, "a terminal did not take a key");
+            }
+            return;
+        }
         let follow_up = {
             let mut state = state.write();
             state::apply_response(
