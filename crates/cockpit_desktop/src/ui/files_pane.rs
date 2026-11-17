@@ -13,7 +13,7 @@ use crate::keymap::Command;
 use crate::path_style::{self, PathStyle};
 use crate::state::actions::Direction;
 use crate::state::file_tree::{self, RowKind, Sideways, TreeFilter, TreeMenuItem, TreeRow};
-use crate::state::{AppState, Popover, file_edits};
+use crate::state::{AppState, Popover, file_edits, terminals};
 use crate::ui::icons::{Icon, IconKind};
 use crate::ui::menu::{FlatMenu, FlatRow};
 use crate::ui::presence::use_presence;
@@ -53,8 +53,8 @@ pub fn FilesPane() -> Element {
         .map(|search| search.name.clone())
         .unwrap_or_default();
     let style = PathStyle::of(&folder);
-    let shown_file = state.ui.file_view(agent).map(|view| {
-        PathBuf::from(style.resolve(&folder.to_string_lossy(), &view.path.to_string_lossy()))
+    let shown_file = terminals::shown_file(&state, agent).map(|path| {
+        PathBuf::from(style.resolve(&folder.to_string_lossy(), &path.to_string_lossy()))
     });
     let changed = footprint.changed.len();
     let read = footprint.read.len();

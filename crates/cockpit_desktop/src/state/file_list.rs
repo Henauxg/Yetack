@@ -10,8 +10,8 @@ use cockpit_protocol::AgentId;
 use super::actions::{self, Direction};
 use super::app_state::AppState;
 use super::drafts::{Drafts, FileListDraft};
-use super::tab_menu;
 use super::ui_state::{Popover, TabMenuOrigin};
+use super::{tab_menu, terminals};
 use crate::path_style::PathStyle;
 
 /// The open files the filter leaves, in the order of the tabs. The filter matches the path as the
@@ -134,7 +134,7 @@ pub fn open_menu(
 
 /// The shown file's row, when the filter leaves it.
 fn shown_row(state: &AppState, drafts: &Drafts, agent: AgentId) -> Option<usize> {
-    let shown = &state.ui.file_view(agent)?.path;
+    let shown = terminals::shown_file(state, agent)?;
     rows(state, drafts, agent)
         .iter()
         .position(|row| row == shown)

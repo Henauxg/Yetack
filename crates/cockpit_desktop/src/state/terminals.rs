@@ -2,6 +2,8 @@
 //! requests that list, open and close them. The output does not pass here: it goes from the
 //! connection to the page, see `terminal_feed`.
 
+use std::path::Path;
+
 use cockpit_protocol::{
     AgentId, AgentParams, Request, TerminalChange, TerminalExit, TerminalId, TerminalInfo,
     TerminalInputParams, TerminalOpenParams, TerminalParams, TerminalResizeParams, TerminalSize,
@@ -141,6 +143,12 @@ pub fn in_file_view(state: &AppState, agent: AgentId) -> bool {
 pub fn file_view_shows_terminal(state: &AppState, agent: AgentId) -> bool {
     in_file_view(state, agent)
         && (state.ui.file_view(agent).is_none() || state.ui.terminal_tab_shown.contains(&agent))
+}
+
+/// The file `agent`'s file view shows, unless the terminal's tab is over it.
+pub fn shown_file(state: &AppState, agent: AgentId) -> Option<&Path> {
+    let view = state.ui.file_view(agent)?;
+    (!file_view_shows_terminal(state, agent)).then_some(view.path.as_path())
 }
 
 /// Whether `agent`'s file view panel shows: with a file open, or with the terminal as its tab.
@@ -762,5 +770,26 @@ mod tests {
         assert!(!file_view_open(&state, agent()));
         assert!(pane_open(&state));
         assert_eq!(state.ui.badge, None);
+    }
+
+    #[test]
+    fn the_file_under_the_terminal_is_not_the_shown_one_and_its_find_waits() {
+        let mut state = in_file_view_with_two_files();
+        find::open(&mut state, &mut Drafts::default(), FindPane::File, "");
+        toggle_pane(&mut state);
+
+        let shown_under = shown_file(&state, agent()).map(Path::to_path_buf);
+        let open_under = find::is_open(&state, FindPane::File, agent());
+        let closed_by_escape = find::close_on_escape(&mut state, FindPane::File);
+        actions::show_file(&mut state, agent(), PathBuf::from("b.rs"));
+
+        assert_eq!(shown_under, None);
+        assert!(!open_under);
+        assert!(!closed_by_escape);
+        assert_eq!(shown_file(&state, agent()), Some(Path::new("b.rs")));
+        assert!(
+            find::is_open(&state, FindPane::File, agent()),
+            "it finds again"
+        );
     }
 }

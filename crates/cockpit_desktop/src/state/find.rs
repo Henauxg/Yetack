@@ -127,11 +127,15 @@ pub struct FindFocus {
     pub serial: u64,
 }
 
-/// Whether `agent`'s find in `pane` is open.
+/// Whether `agent`'s find in `pane` is open. The file's find waits while the terminal's tab is
+/// over the file: it takes no key, and it finds again once the file shows.
 pub fn is_open(state: &AppState, pane: FindPane, agent: AgentId) -> bool {
     match pane {
         FindPane::Chat => state.ui.chat_finds.contains(&agent),
-        FindPane::File => state.ui.file_view(agent).is_some_and(|view| view.find),
+        FindPane::File => {
+            state.ui.file_view(agent).is_some_and(|view| view.find)
+                && !terminals::file_view_shows_terminal(state, agent)
+        }
     }
 }
 
@@ -170,6 +174,7 @@ pub fn open(state: &mut AppState, drafts: &mut Drafts, pane: FindPane, selection
 pub fn close(state: &mut AppState, pane: FindPane, agent: AgentId) -> bool {
     match pane {
         FindPane::Chat => state.ui.chat_finds.remove(&agent),
+        FindPane::File if !is_open(state, pane, agent) => false,
         FindPane::File => state
             .ui
             .file_views

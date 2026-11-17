@@ -833,6 +833,39 @@ fn line_number(digits: &str) -> Option<u32> {
     digits.parse::<u32>().ok().filter(|&line| line > 0)
 }
 
+/// A `path:line` reference in a line of text, at bytes `start..end`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LineRef {
+    pub start: usize,
+    pub end: usize,
+    pub path: String,
+    pub line: u32,
+}
+
+/// The `path:line` references in one line of text, such as a terminal's, found as in the chat.
+pub fn line_refs(text: &str, style: PathStyle) -> Vec<LineRef> {
+    let mut at = 0;
+    let mut found = Vec::new();
+    for piece in find_file_refs(text, style) {
+        match piece {
+            TextPiece::Text(plain) => at += plain.len(),
+            TextPiece::File(file) => {
+                let end = at + file.text.len();
+                if let Some(line) = file.line {
+                    found.push(LineRef {
+                        start: at,
+                        end,
+                        path: file.path,
+                        line,
+                    });
+                }
+                at = end;
+            }
+        }
+    }
+    found
+}
+
 /// The length of the run of ASCII digits at the start of `text`.
 fn digits_len(text: &str) -> usize {
     text.bytes().take_while(u8::is_ascii_digit).count()
@@ -866,7 +899,12 @@ fn find_file_refs(text: &str, style: PathStyle) -> Vec<TextPiece<'_>> {
         };
         // A path right after a colon is part of a URL, such as "https://example.org:8080".
         let after_colon = path_start > 0 && bytes.get(path_start - 1) == Some(&b':');
-        if after_colon || !is_path(path, style) {
+        // A letter past ASCII, as in "Données/a.rs:3", cuts the path: its end alone is no file.
+        let cut = text
+            .get(..path_start)
+            .and_then(|before| before.chars().next_back())
+            .is_some_and(|character| !character.is_ascii() && character.is_alphanumeric());
+        if after_colon || cut || !is_path(path, style) {
             continue;
         }
         let rest = text.get(colon + 1..).unwrap_or_default();
@@ -1300,6 +1338,32 @@ mod tests {
                 file("lib/util.rs:7", "lib/util.rs", 7),
                 text(")."),
             ]
+        );
+    }
+
+    #[test]
+    fn a_terminal_line_gives_its_references_by_their_place() {
+        let line = "  --> src/main.rs:12:5 and https://example.org:8080 ";
+
+        let found = line_refs(line, PathStyle::Unix);
+
+        assert_eq!(
+            found,
+            [LineRef {
+                start: 6,
+                end: 22,
+                path: "src/main.rs".to_owned(),
+                line: 12,
+            }]
+        );
+        assert_eq!(line.get(6..22), Some("src/main.rs:12:5"));
+    }
+
+    #[test]
+    fn a_path_cut_by_a_letter_past_ascii_is_no_reference() {
+        assert_eq!(
+            references("/home/u/Données/app/src/main.rs:5 and café/a.rs:3, but é a.rs:4"),
+            [("a.rs:4".to_owned(), "a.rs".to_owned(), 4)]
         );
     }
 

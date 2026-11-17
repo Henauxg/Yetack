@@ -6,6 +6,8 @@
 //! pane keeps the screen and its scrollback. Output comes from the connections apart from the
 //! state ([`crate::terminal_feed`]), and the keys typed go out as `terminal.input`.
 
+use std::path::PathBuf;
+
 use cockpit_protocol::{AgentId, TerminalId, TerminalParams, TerminalSize};
 use dioxus::prelude::*;
 use serde::{Deserialize, Serialize};
@@ -13,11 +15,13 @@ use serde::{Deserialize, Serialize};
 use crate::connection::Cockpit;
 use crate::keymap::{Chord, Command};
 use crate::machine::MachineId;
+use crate::path_style::PathStyle;
 use crate::prefs::{
     DEFAULT_TERMINAL_HEIGHT, DEFAULT_TERMINAL_WIDTH, MAX_TERMINAL_SIZE, MIN_TERMINAL_SIZE,
     TerminalPlace,
 };
-use crate::state::terminals;
+use crate::render::{self, LineRef};
+use crate::state::{actions, terminals};
 use crate::terminal_feed::FeedReceiver;
 use crate::ui::icons::{Icon, IconKind};
 use crate::ui::presence::Presence;
@@ -52,6 +56,31 @@ const restarts = new Map();
 const MAX_RESTARTS = 3;
 // The terminal that starts again, while it did not have the focus.
 let unfocused = null;
+// The rows whose `path:line` references the app is finding, by the id of the request.
+const linkAnswers = new Map();
+let linkAsks = 0;
+
+// A row's text, one code point per cell, so that a character's place is its column. A wide
+// character fills its second cell too, so that the path after it still starts after a letter.
+// `null` past the buffer.
+function rowText(term, y) {
+  const row = term.buffer.active.getLine(y);
+  if (!row) {
+    return null;
+  }
+  let text = "";
+  // The wide character before this cell, whose second cell this is.
+  let wide = null;
+  for (let x = 0; x < row.length; x++) {
+    const cell = row.getCell(x);
+    const code = cell?.getCodepoint() ?? 0;
+    const shown = code >= 32 && code <= 0x10ffff && (code < 0xd800 || code > 0xdfff);
+    const character = shown ? String.fromCodePoint(code) : null;
+    text += character ?? (cell?.getWidth() === 0 && wide !== null ? wide : " ");
+    wide = cell?.getWidth() === 2 ? character : null;
+  }
+  return text;
+}
 
 // Starts a terminal again from the output the daemon kept, unless it did too often.
 function restart(entry) {
@@ -146,6 +175,42 @@ function terminalFor(agent, terminal) {
       return true;
     }
     return false;
+  });
+  // `path:line` references, which the app finds as in the chat. A Ctrl+click opens the file view.
+  term.registerLinkProvider({
+    provideLinks(y, callback) {
+      const text = rowText(term, y);
+      if (text === null || !text.includes(":")) {
+        callback(undefined);
+        return;
+      }
+      const id = ++linkAsks;
+      linkAnswers.set(id, (links) => {
+        // Output that changed the row meanwhile would give the old text's links.
+        if (rowText(term, y) !== text) {
+          callback(undefined);
+          return;
+        }
+        // A reference that a soft wrap cuts would name the wrong file or line.
+        const buffer = term.buffer.active;
+        const wrapped = buffer.getLine(y).isWrapped;
+        const wrapsOn = buffer.getLine(y + 1)?.isWrapped ?? false;
+        const cells = Array.from(text);
+        const found = links
+          .filter((link) => !(wrapped && link.start === 0) && !(wrapsOn && link.end === cells.length))
+          .map((link) => ({
+            text: cells.slice(link.start, link.end).join(""),
+            range: { start: { x: link.start, y }, end: { x: link.end - 1, y } },
+            activate: (event) => {
+              if (event.ctrlKey || event.metaKey) {
+                send({ type: "open_file", agent, path: link.path, line: link.line });
+              }
+            },
+          }));
+        callback(found.length === 0 ? undefined : found);
+      });
+      send({ type: "links", id, agent, text });
+    },
   });
   const name = key(agent, terminal);
   const entry = { name, paused: false, term, fit, box, end: null, pending: [], settle: null, observer: null };
@@ -285,6 +350,10 @@ function receive(message) {
     if (drawn && terminals.get(entry.name) === entry) {
       restarts.delete(entry.name);
     }
+  } else if (message.type === "links") {
+    const answer = linkAnswers.get(message.id);
+    linkAnswers.delete(message.id);
+    answer?.(message.links);
   } else if (message.type === "shortcut") {
     shortcut = message;
   } else if (message.type === "focus" && entry !== undefined) {
@@ -362,6 +431,19 @@ enum FromPage {
     Size {
         size: u16,
     },
+    /// A row of a terminal, one code point per cell, whose `path:line` references the page
+    /// asks for.
+    Links {
+        id: u64,
+        agent: AgentId,
+        text: String,
+    },
+    /// A Ctrl+click on a `path:line` reference.
+    OpenFile {
+        agent: AgentId,
+        path: String,
+        line: u32,
+    },
 }
 
 /// What the page's script receives.
@@ -389,6 +471,33 @@ enum ToPage {
     },
     /// The terminals the page keeps a screen for.
     Live { terminals: Vec<TerminalParams> },
+    /// The answer to [`FromPage::Links`].
+    Links { id: u64, links: Vec<PageLink> },
+}
+
+/// A `path:line` reference in a terminal's row, from column `start` to `end`, excluded.
+#[derive(Debug, Serialize)]
+struct PageLink {
+    start: u16,
+    end: u16,
+    path: String,
+    line: u32,
+}
+
+impl PageLink {
+    /// `found` in `row`, a row's text with one character per cell: its bytes become columns.
+    fn in_row(row: &str, found: LineRef) -> Option<Self> {
+        let column = |byte: usize| {
+            let cells = row.get(..byte)?.chars().count();
+            u16::try_from(cells).ok()
+        };
+        Some(Self {
+            start: column(found.start)?,
+            end: column(found.end)?,
+            path: found.path,
+            line: found.line,
+        })
+    }
 }
 
 /// Starts the page's terminal script for the window's life, and carries output to it.
@@ -411,7 +520,7 @@ pub fn use_terminal_script(cockpit: Cockpit) {
         spawn(async move {
             loop {
                 match script.recv::<FromPage>().await {
-                    Ok(message) => receive(cockpit, message),
+                    Ok(message) => receive(cockpit, script, message),
                     Err(error) => {
                         tracing::warn!("the terminal script stopped: {error}");
                         return;
@@ -484,8 +593,28 @@ pub fn use_terminal_script(cockpit: Cockpit) {
     });
 }
 
-fn receive(cockpit: Cockpit, message: FromPage) {
+fn receive(cockpit: Cockpit, script: document::Eval, message: FromPage) {
     match message {
+        FromPage::Links { id, agent, text } => {
+            let style = cockpit
+                .state
+                .read()
+                .agents
+                .get(&agent)
+                .map_or(PathStyle::Unix, |entry| {
+                    PathStyle::of(&entry.summary.folder)
+                });
+            let links = render::line_refs(&text, style)
+                .into_iter()
+                .filter_map(|found| PageLink::in_row(&text, found))
+                .collect();
+            if let Err(error) = script.send(ToPage::Links { id, links }) {
+                tracing::warn!("cannot give the terminal its links: {error}");
+            }
+        }
+        FromPage::OpenFile { agent, path, line } => cockpit.update(|state| {
+            actions::open_file(state, agent, PathBuf::from(path), Some(line));
+        }),
         FromPage::Input {
             agent,
             terminal,
@@ -701,6 +830,20 @@ mod tests {
 
     use super::*;
 
+    #[test]
+    fn a_reference_after_characters_past_ascii_keeps_its_columns() {
+        // Several bytes each, one cell each. The page repeats the wide "界" in its second cell.
+        let row = "é 界界 src/a.rs:3 项目/src/b.rs:4";
+
+        let links: Vec<(u16, u16)> = render::line_refs(row, PathStyle::Unix)
+            .into_iter()
+            .filter_map(|found| PageLink::in_row(row, found))
+            .map(|link| (link.start, link.end))
+            .collect();
+
+        assert_eq!(links, [(5, 15)]);
+    }
+
     /// The page's script spells these words.
     #[test]
     fn the_messages_to_and_from_the_page_are_pinned() {
@@ -728,6 +871,15 @@ mod tests {
             ToPage::Live {
                 terminals: vec![TerminalParams { agent, terminal }],
             },
+            ToPage::Links {
+                id: 5,
+                links: vec![PageLink {
+                    start: 0,
+                    end: 6,
+                    path: "a.rs".to_owned(),
+                    line: 2,
+                }],
+            },
         ];
         let from_page = [
             r#"{"type":"input","agent":3,"terminal":2,"data":"ls\r"}"#,
@@ -736,6 +888,8 @@ mod tests {
             r#"{"type":"attach","agent":3,"terminal":2}"#,
             r#"{"type":"toggle"}"#,
             r#"{"type":"size","size":300}"#,
+            r#"{"type":"links","id":5,"agent":3,"text":"a.rs:2"}"#,
+            r#"{"type":"open_file","agent":3,"path":"a.rs","line":2}"#,
         ];
 
         let parsed: Vec<FromPage> = from_page
@@ -753,6 +907,7 @@ mod tests {
                 { "type": "output", "agent": 3, "terminal": 2, "offset": 4, "data": "bHMK" },
                 { "type": "screen", "agent": 3, "terminal": 2, "offset": 0, "data": "bHMK" },
                 { "type": "live", "terminals": [{ "agent": 3, "terminal": 2 }] },
+                { "type": "links", "id": 5, "links": [{ "start": 0, "end": 6, "path": "a.rs", "line": 2 }] },
             ])
         );
         assert!(
@@ -769,6 +924,8 @@ mod tests {
                     FromPage::Attach { .. },
                     FromPage::Toggle,
                     FromPage::Size { size: 300 },
+                    FromPage::Links { id: 5, .. },
+                    FromPage::OpenFile { line: 2, .. },
                 ]
             ),
             "{parsed:?}"

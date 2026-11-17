@@ -9,7 +9,7 @@ use dioxus::prelude::*;
 use crate::bridge::{self, HIGHLIGHTED_CLASS, HIGHLIGHTED_ENTRY_ID};
 use crate::connection::Cockpit;
 use crate::state::actions::Direction;
-use crate::state::file_list;
+use crate::state::{file_list, terminals};
 use crate::ui::dialogs::{PointerMoves, use_pointer_moves};
 use crate::ui::file_view::{self, CLOSE_TAB_KEY, ShortPath};
 use crate::ui::icons::{Icon, IconKind};
@@ -71,7 +71,7 @@ struct Row {
     shown: bool,
 }
 
-fn rows(folder: &Path, shown: &Path, paths: Vec<PathBuf>) -> Vec<Row> {
+fn rows(folder: &Path, shown: Option<&Path>, paths: Vec<PathBuf>) -> Vec<Row> {
     paths
         .into_iter()
         .map(|path| {
@@ -81,7 +81,7 @@ fn rows(folder: &Path, shown: &Path, paths: Vec<PathBuf>) -> Vec<Row> {
                 name: name.to_owned(),
                 folders,
                 full: file_view::full_path(folder, &path),
-                shown: path == shown,
+                shown: Some(path.as_path()) == shown,
                 path,
             }
         })
@@ -110,12 +110,15 @@ fn FileList(agent: AgentId, open: bool, covered: bool) -> Element {
     let rows = {
         let state = cockpit.state.read();
         let drafts = cockpit.drafts.read();
-        let (Some(entry), Some(view)) = (state.agents.get(&agent), state.ui.file_view(agent))
-        else {
+        let (Some(entry), Some(_)) = (state.agents.get(&agent), state.ui.file_view(agent)) else {
             return rsx! {};
         };
         let paths = file_list::rows(&state, &drafts, agent);
-        rows(&entry.summary.folder, &view.path, paths)
+        rows(
+            &entry.summary.folder,
+            terminals::shown_file(&state, agent),
+            paths,
+        )
     };
     let highlighted = highlighted();
     rsx! {
@@ -261,7 +264,7 @@ mod tests {
             PathBuf::from("/work/app_feature/src/lib.rs"),
         ];
 
-        let rows = rows(folder, Path::new("AGENTS.md"), paths);
+        let rows = rows(folder, Some(Path::new("AGENTS.md")), paths);
 
         let parts: Vec<(&str, &str, bool)> = rows
             .iter()
