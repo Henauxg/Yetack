@@ -7542,8 +7542,8 @@ html.splitting * {
   animation: fade-in var(--motion-in) var(--ease-out) backwards;
 }
 
-/* A file view that opened with its agent shows its terminal at once. */
-.app.file-view-instant .terminal-pane.in-file-view {
+/* A terminal that came on screen with its agent draws at once. */
+.terminal-pane.in-file-view.instant {
   animation: none;
 }
 

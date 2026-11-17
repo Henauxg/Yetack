@@ -1,6 +1,6 @@
 //! The terminal pane: each agent's terminals, the tab it shows, its tab in the file view, and the
-//! requests that list, open and close them. The output does not pass here: it goes from the connection to the page, see
-//! `terminal_feed`.
+//! requests that list, open and close them. The output does not pass here: it goes from the
+//! connection to the page, see `terminal_feed`.
 
 use cockpit_protocol::{
     AgentId, AgentParams, Request, TerminalChange, TerminalExit, TerminalId, TerminalInfo,
@@ -184,10 +184,17 @@ pub fn toggle_pane(state: &mut AppState) -> Vec<Outgoing> {
 }
 
 pub fn move_to(state: &mut AppState, place: TerminalPlace) {
+    let Some(agent) = state.ui.selected else {
+        state.prefs.terminal.place = place;
+        return;
+    };
+    let panel_was_open = file_view_open(state, agent);
     state.prefs.terminal.place = place;
-    if let Some(agent) = state.ui.selected {
-        state.ui.terminal_panes.insert(agent);
-        show_tab(state, agent);
+    state.ui.terminal_panes.insert(agent);
+    show_tab(state, agent);
+    // A terminal that leaves the file view alone in it closes it, and its badges go.
+    if panel_was_open && !file_view_open(state, agent) {
+        state.ui.badge = None;
     }
 }
 
@@ -740,5 +747,20 @@ mod tests {
 
         assert!(in_file_view(&state, agent()));
         assert!(!shows_terminal(&state), "the file stays over it");
+    }
+
+    #[test]
+    fn moving_the_terminal_alone_out_of_the_file_view_drops_its_badges() {
+        let mut state = state_with(vec![summary(1, AgentStatus::Idle)]);
+        state.ui.selected = Some(agent());
+        state.prefs.terminal.place = TerminalPlace::FileView;
+        toggle_pane(&mut state);
+        state.ui.badge = Some(Block::Tasks);
+
+        move_to(&mut state, TerminalPlace::Bottom);
+
+        assert!(!file_view_open(&state, agent()));
+        assert!(pane_open(&state));
+        assert_eq!(state.ui.badge, None);
     }
 }

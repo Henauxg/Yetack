@@ -29,6 +29,7 @@ use crate::ui::file_list::FileListButton;
 use crate::ui::find::FileFindBox;
 use crate::ui::icons::{Icon, IconKind};
 use crate::ui::markdown::MarkdownView;
+use crate::ui::presence::use_agent_presence;
 use crate::ui::splitter::FILE_VIEW_ID;
 use crate::ui::terminal_pane::TerminalPane;
 use crate::ui::zoom::ZoomImage;
@@ -60,6 +61,17 @@ const LOADING_LINE_WIDTHS: [u8; 8] = [46, 72, 64, 30, 81, 58, 69, 38];
 #[component]
 pub fn FileViewPanel() -> Element {
     let cockpit: Cockpit = use_context();
+    let (selected, terminal_open) = {
+        let state = cockpit.state.read();
+        let selected = state.ui.selected;
+        let terminal_open =
+            selected.filter(|agent| terminals::file_view_shows_terminal(&state, *agent));
+        (selected, terminal_open)
+    };
+    // The panel stays as the window switches agents: it tells whether the terminal came with its
+    // agent, and then draws at once.
+    let terminal_instant =
+        use_agent_presence(selected, terminal_open).is_some_and(|shown| shown.instant);
     let state = cockpit.state.read();
     let Some(entry) = state.selected() else {
         return rsx! {};
@@ -138,7 +150,7 @@ pub fn FileViewPanel() -> Element {
                 }
             }
             if terminal_shown {
-                TerminalPane { place: TerminalPlace::FileView, leaving: false }
+                TerminalPane { place: TerminalPlace::FileView, leaving: false, instant: terminal_instant }
             } else {
                 FileShown { agent }
             }

@@ -523,10 +523,14 @@ fn receive(cockpit: Cockpit, message: FromPage) {
     }
 }
 
-/// The pane, where the prefs put it. `place` is where this one sits in the layout, and `leaving`
-/// while it folds away.
+/// The pane, where the prefs put it. `place` is where this one sits in the layout, `leaving`
+/// while it folds away, and `instant` when it draws without its opening animation.
 #[component]
-pub fn TerminalPane(place: TerminalPlace, leaving: bool) -> Element {
+pub fn TerminalPane(
+    place: TerminalPlace,
+    leaving: bool,
+    #[props(default)] instant: bool,
+) -> Element {
     let cockpit: Cockpit = use_context();
     let mut moving = use_signal(|| false);
     let state = cockpit.state.read();
@@ -561,7 +565,15 @@ pub fn TerminalPane(place: TerminalPlace, leaving: bool) -> Element {
             Some("right"),
             format!("width: {}px", prefs.width.unwrap_or(DEFAULT_TERMINAL_WIDTH)),
         ),
-        TerminalPlace::FileView => ("terminal-pane in-file-view", None, String::new()),
+        TerminalPlace::FileView => (
+            if instant {
+                "terminal-pane in-file-view instant"
+            } else {
+                "terminal-pane in-file-view"
+            },
+            None,
+            String::new(),
+        ),
     };
     let shown = terminals.shown.map_or(0, TerminalId::get);
     let tabs = terminals.tabs.clone();
