@@ -837,6 +837,69 @@ async fn a_start_reads_its_title_as_a_rename_does() {
     assert_eq!(unnamed.title, "Fix the cart", "the prompt's first line");
 }
 
+/// The statuses of an agent started with a name, each once in a row, until it answers a prompt
+/// sent once the session took the name.
+async fn named_start_statuses(prompt: Option<&str>) -> Vec<AgentStatus> {
+    let setup = Setup::new();
+    let mut client = setup.connect().await;
+    let params = StartParams {
+        folder: setup.work(),
+        title: Some("Cart total".to_owned()),
+        model: None,
+        effort: None,
+        mode: None,
+        prompt: prompt.map(text),
+        account: AccountId::DEFAULT,
+    };
+    let ResponseBody::AgentStarted { agent } = client.ok(Request::AgentStart(params)).await else {
+        panic!("expected AgentStarted");
+    };
+    let turns = if prompt.is_some() { 2 } else { 1 };
+    let mut statuses = Vec::new();
+    let mut note = |event: &Event| {
+        if let Event::AgentAdded(summary) | Event::AgentUpdated(summary) = event
+            && summary.id == agent
+            && statuses.last() != Some(&summary.status)
+        {
+            statuses.push(summary.status);
+        }
+    };
+    client
+        .wait_for(|event| {
+            note(event);
+            matches!(event, Event::TranscriptAppended { item, .. }
+                if matches!(&item.body, ItemBody::Notice { text, .. } if text == "Session renamed to: Cart total"))
+            .then_some(())
+        })
+        .await;
+    client.prompt(agent, "ping").await;
+    client
+        .wait_for(|event| {
+            note(event);
+            matches!(event, Event::AgentUpdated(summary)
+                if summary.id == agent && summary.turns == turns && summary.status == AgentStatus::Idle)
+            .then_some(())
+        })
+        .await;
+    statuses
+}
+
+#[tokio::test]
+async fn the_name_a_start_gives_the_session_shows_no_turn() {
+    use AgentStatus::{Idle, Working};
+
+    assert_eq!(
+        named_start_statuses(Some("hello there")).await,
+        [Idle, Working, Idle, Working, Idle],
+        "the first turn, then the ping's"
+    );
+    assert_eq!(
+        named_start_statuses(None).await,
+        [Idle, Working, Idle],
+        "the ping's turn alone"
+    );
+}
+
 #[tokio::test]
 async fn a_new_agent_shows_its_mcp_servers_and_context_before_any_prompt() {
     let setup = Setup::new();

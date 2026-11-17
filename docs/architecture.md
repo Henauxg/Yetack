@@ -224,6 +224,7 @@ A client that reads too slowly is disconnected rather than buffered without boun
   Either way, stopping the agent stops its MCP servers and commands too, and on Windows the job also ends when the app dies. When Windows cannot make the job, `claude` runs and stops alone.
 - An agent given no effort runs at the one Claude Code picks, which the daemon asks for with `get_settings`. It does not read the settings files itself, since the user's own `effortLevel` counts only for some models.
 - Effort and the session's name have no control request, so the daemon sends `/effort` and `/rename` as prompts.
+  Claude Code runs them without Claude: they show no working agent, and their `result` ends no turn, even one a prompt sent meanwhile started (`hidden_prompt_sent` in `AgentView`).
   Claude Code restates the session's saved name as it starts, but the daemon keeps the agent's own, so a rename made while the agent was stopped stays.
 - A prompt goes to stdin as a `user` message, never as an argument: other users can read arguments with `ps`.
   A prompt sent while the agent works is either queued in the daemon until a turn ends with every steered prompt read, or steered: written to stdin at once, for Claude Code to read at the next tool boundary or turn.

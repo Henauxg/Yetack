@@ -198,6 +198,8 @@ pub(crate) struct AgentView {
     /// The name Claude Code restated as the process started, until it answers `initialize`.
     restated_title: Option<String>,
     awaited_echoes: VecDeque<String>,
+    /// The prompts the hub sent without an item, such as `/rename`, whose `result` has not come.
+    hidden_prompts: u32,
     next_prompt: PromptId,
     /// Calls per tool name, for the MCP servers' tool counts.
     tool_counts: HashMap<String, u32>,
@@ -232,6 +234,7 @@ impl AgentView {
             sign_in_failed: false,
             sign_in_failed_at: None,
             awaited_echoes: VecDeque::new(),
+            hidden_prompts: 0,
             next_prompt: PromptId::new(1),
             tool_counts: HashMap::new(),
             skills: BTreeSet::new(),
@@ -479,8 +482,9 @@ impl AgentView {
             }
             OutputLine::User(message) => self.apply_user(message, LineSource::Process, now),
             OutputLine::Result(result) => {
-                self.apply_result(&result, now);
-                follow_ups.push(FollowUp::TurnEnded);
+                if self.apply_result(&result, now) {
+                    follow_ups.push(FollowUp::TurnEnded);
+                }
             }
             OutputLine::RateLimitEvent(event) => {
                 follow_ups.push(FollowUp::RateLimit(event.rate_limit_info));
@@ -574,8 +578,15 @@ impl AgentView {
         }
     }
 
-    /// A prompt that shows no item, such as `/effort high`, whose echo must not show either.
-    pub(crate) fn expect_echo(&mut self, text: String) {
+    /// A prompt the hub sent between turns that shows no item, such as `/effort high`. Claude
+    /// Code runs it without Claude: its lines start no turn, and its `result` ends none.
+    pub(crate) fn hidden_prompt_sent(&mut self, text: String) {
+        self.expect_echo(text);
+        self.hidden_prompts = self.hidden_prompts.saturating_add(1);
+    }
+
+    /// A prompt whose echo must not show.
+    fn expect_echo(&mut self, text: String) {
         if self.awaited_echoes.len() == MAX_AWAITED_ECHOES {
             self.awaited_echoes.pop_front();
         }
@@ -717,6 +728,7 @@ impl AgentView {
         self.awaits_restored_cost = session == ProcessSession::Resumed;
         self.takes_session_titles = false;
         self.restated_title = None;
+        self.hidden_prompts = 0;
         self.expected_context = None;
         self.sign_in_failed = false;
         self.pending.clear();
@@ -907,7 +919,7 @@ impl AgentView {
                 }
             }
             SystemEvent::SessionStateChanged(changed) => match changed.state {
-                OpenWord::Known(SessionState::Running) => self.begin_work(now),
+                OpenWord::Known(SessionState::Running) => self.begin_work_unless_hidden(now),
                 OpenWord::Known(SessionState::Idle) => {
                     self.end_work();
                     // As at a turn's end: Claude Code starts the next turn with a prompt Claude has
@@ -979,7 +991,7 @@ impl AgentView {
 
     /// `system/init` starts each turn and says what the session uses.
     fn apply_init(&mut self, init: SystemInit, now: Timestamp) {
-        self.begin_work(now);
+        self.begin_work_unless_hidden(now);
         self.summary.session = Some(ClaudeSessionId::new(init.session_id.as_str().to_owned()));
         if let Some(model) = init.model {
             self.summary.model = Some(model);
@@ -1012,8 +1024,10 @@ impl AgentView {
         let parent = self.parent_item(message.parent_tool_use_id.as_ref());
         let synthetic = message.message.model.as_deref() == Some(SYNTHETIC_MODEL);
         if message.parent_tool_use_id.is_none() {
-            self.begin_work(now);
-            if !synthetic {
+            if synthetic {
+                self.begin_work_unless_hidden(now);
+            } else {
+                self.begin_work(now);
                 self.summary.cache_expires_at = Some(add(now, self.prompt_cache_ttl));
             }
         }
@@ -1333,7 +1347,8 @@ impl AgentView {
         self.details_changed = true;
     }
 
-    fn apply_result(&mut self, result: &ResultMessage, now: Timestamp) {
+    /// Returns whether the result ends a turn.
+    fn apply_result(&mut self, result: &ResultMessage, now: Timestamp) -> bool {
         let total = result.total_cost_usd.unwrap_or(self.process_cost);
         if self.awaits_restored_cost {
             // The restored cost is unknown: the total keeps what the agent counted.
@@ -1343,6 +1358,13 @@ impl AgentView {
         let turn_cost = (total - self.process_cost).max(0.0);
         self.process_cost = total;
         self.summary.cost = CostUsd::new(self.cost_before_process + total);
+        if self.hidden_prompts > 0 && result.num_turns == 0 {
+            self.hidden_prompts -= 1;
+            // A prompt sent after the hidden one started a turn, which goes on.
+            if self.working {
+                return false;
+            }
+        }
         // The result says it rather than the daemon's own `interrupt`, which may arrive after the
         // turn ended.
         let interrupted = matches!(
@@ -1401,7 +1423,7 @@ impl AgentView {
         // A slash command Claude Code runs itself, such as `/effort`, makes no API call: it is not
         // a turn of the conversation.
         if result.num_turns == 0 && !result.is_error && !interrupted {
-            return;
+            return true;
         }
         self.summary.last_activity_at = Some(now);
         self.summary.turns = self.summary.turns.saturating_add(1);
@@ -1415,6 +1437,7 @@ impl AgentView {
                 error,
             }),
         );
+        true
     }
 
     fn apply_control_request(&mut self, request: IncomingControlRequest, now: Timestamp) {
@@ -1891,6 +1914,14 @@ impl AgentView {
         self.summary.turn_started_at = Some(now);
         self.summary.last_activity_at = Some(now);
         self.note_output(now);
+    }
+
+    /// A line a hidden prompt writes too, such as `system/init`: between turns, it starts one
+    /// only once the hidden prompts have their `result`.
+    fn begin_work_unless_hidden(&mut self, now: Timestamp) {
+        if self.hidden_prompts == 0 || self.working {
+            self.begin_work(now);
+        }
     }
 
     /// A line shows that a turn runs, which may be one Claude Code started without a prompt.
@@ -4423,17 +4454,19 @@ mod tests {
     #[test]
     fn a_local_command_shows_a_notice_and_no_turn() {
         let mut view = view();
-        view.expect_echo("/effort low".to_owned());
+        view.hidden_prompt_sent("/effort low".to_owned());
 
         apply(&mut view, init());
         let mut answer = assistant(json!([{"type": "text", "text": "Set effort level to low"}]));
         answer["message"]["model"] = json!("<synthetic>");
         apply(&mut view, answer);
+        let busy_before_its_result = view.is_busy();
         let mut done = result(0.0);
         done["num_turns"] = json!(0);
         let follow_ups = apply(&mut view, done);
         view.take_events();
 
+        assert!(!busy_before_its_result, "a local command is no turn");
         assert_eq!(follow_ups, [FollowUp::TurnEnded]);
         assert_eq!(
             bodies(&view),
@@ -4446,6 +4479,64 @@ mod tests {
         assert_eq!(view.summary().turns, 0);
         assert_eq!(view.summary().status, AgentStatus::Idle);
         assert_eq!(view.summary().cache_expires_at, None);
+    }
+
+    #[test]
+    fn a_prompt_sent_while_a_hidden_one_runs_works_until_its_own_result() {
+        let mut view = view();
+        view.hidden_prompt_sent("/rename Cart total".to_owned());
+        view.add_prompt(&prompt("Fix the cart"), now());
+        let mut renamed =
+            assistant(json!([{"type": "text", "text": "Session renamed to: Cart total"}]));
+        renamed["message"]["model"] = json!("<synthetic>");
+        let mut rename_done = result(0.0);
+        rename_done["num_turns"] = json!(0);
+
+        apply(&mut view, init());
+        apply(&mut view, renamed);
+        let after_rename = apply(&mut view, rename_done);
+        let busy_after_rename = view.is_busy();
+        apply(&mut view, echo("Fix the cart"));
+        apply(&mut view, init());
+        apply(
+            &mut view,
+            assistant(json!([{"type": "text", "text": "Fixed."}])),
+        );
+        let after_turn = apply(&mut view, result(0.01));
+
+        assert_eq!(after_rename, []);
+        assert!(busy_after_rename, "the prompt's turn runs on");
+        assert_eq!(after_turn, [FollowUp::TurnEnded]);
+        assert!(!view.is_busy());
+        assert_eq!(view.summary().turns, 1);
+    }
+
+    #[test]
+    fn a_turn_claude_code_starts_before_a_hidden_prompt_shows_working() {
+        let mut view = view();
+        view.hidden_prompt_sent("/rename Cart total".to_owned());
+        let mut renamed =
+            assistant(json!([{"type": "text", "text": "Session renamed to: Cart total"}]));
+        renamed["message"]["model"] = json!("<synthetic>");
+        let mut rename_done = result(0.0);
+        rename_done["num_turns"] = json!(0);
+
+        apply(&mut view, init());
+        apply(
+            &mut view,
+            assistant(json!([{"type": "text", "text": "Resuming."}])),
+        );
+        let busy_in_its_turn = view.is_busy();
+        let after_turn = apply(&mut view, result(0.01));
+        apply(&mut view, renamed);
+        let busy_in_the_rename = view.is_busy();
+        apply(&mut view, rename_done);
+
+        assert!(busy_in_its_turn);
+        assert_eq!(after_turn, [FollowUp::TurnEnded]);
+        assert!(!busy_in_the_rename);
+        assert!(!view.is_busy());
+        assert_eq!(view.summary().turns, 1);
     }
 
     #[test]

@@ -421,7 +421,7 @@ impl Hub {
                     shown_text = Some(queued.prompt.text);
                     break;
                 }
-                None => agent.view.expect_echo(queued.prompt.text),
+                None => agent.view.hidden_prompt_sent(queued.prompt.text),
             }
         }
         if shown_text.is_some_and(|text| record_typed_setting(agent, &text)) {
@@ -756,7 +756,7 @@ fn send_hidden_prompt(agent: &mut Agent, text: String) {
         });
     } else {
         process.write(line);
-        agent.view.expect_echo(text);
+        agent.view.hidden_prompt_sent(text);
     }
 }
 
