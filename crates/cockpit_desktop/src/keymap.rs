@@ -88,6 +88,7 @@ pub enum Command {
     NewAgent,
     OpenFile,
     FilesPane,
+    Terminal,
     AgentMap,
     Find,
     Rename,
@@ -139,6 +140,7 @@ impl Command {
             Self::NewAgent => "Start a new agent",
             Self::OpenFile => "Open a file",
             Self::FilesPane => "Show or hide the files pane",
+            Self::Terminal => "Show or hide the terminal",
             Self::AgentMap => "Open the agent map",
             Self::Find => "Find in the chat, or in the file view",
             Self::Rename => "Rename",
@@ -156,6 +158,7 @@ impl Command {
             | Self::NewAgent
             | Self::OpenFile
             | Self::FilesPane
+            | Self::Terminal
             | Self::AgentMap
             | Self::Find => Group::Anywhere,
             Self::Rename
@@ -175,6 +178,7 @@ impl Command {
             | Self::NewAgent
             | Self::OpenFile
             | Self::FilesPane
+            | Self::Terminal
             | Self::AgentMap
             | Self::Find
             | Self::MarkToHandle
@@ -189,6 +193,7 @@ impl Command {
             Self::NewAgent => Chord::ctrl("n"),
             Self::OpenFile => Chord::ctrl("o"),
             Self::FilesPane => Chord::ctrl("b"),
+            Self::Terminal => Chord::ctrl("`"),
             Self::AgentMap => Chord::ctrl("m"),
             Self::Find => Chord::ctrl("f"),
             Self::Rename => Chord::plain("F2"),
@@ -209,6 +214,7 @@ impl Command {
             | Self::NewAgent
             | Self::OpenFile
             | Self::FilesPane
+            | Self::Terminal
             | Self::AgentMap
             | Self::Find
             | Self::Rename
@@ -817,6 +823,7 @@ mod tests {
                 "new_agent",
                 "open_file",
                 "files_pane",
+                "terminal",
                 "agent_map",
                 "find",
                 "rename",

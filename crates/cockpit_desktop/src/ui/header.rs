@@ -17,7 +17,8 @@ use crate::keymap::Command;
 use crate::machine::MachineId;
 use crate::state::accounts::{self, Billing, PlanChip};
 use crate::state::{
-    AgentEntry, Loadable, Popover, TitlePlace, actions, claude_code_version, file_tree, title_emoji,
+    AgentEntry, Loadable, Popover, TitlePlace, actions, claude_code_version, file_tree, terminals,
+    title_emoji,
 };
 use crate::ui::accounts::{AccountDot, AccountTag, PlanAccounts};
 use crate::ui::emoji_picker::EmojiPicker;
@@ -154,6 +155,7 @@ pub fn Header() -> Element {
         None => (None, summary.title.clone()),
     };
     let files_open = file_tree::pane_open(&state, agent);
+    let terminal_open = state.ui.terminal_open;
     let plan_text = plan.map_or_else(|| "?".to_owned(), |percent| format!("{percent}%"));
     let context_text = context.map_or_else(|| "?".to_owned(), |percent| format!("{percent}%"));
     let plan_words = match chip {
@@ -318,6 +320,16 @@ pub fn Header() -> Element {
                         }
                         span { class: "chip-compact chip-count", aria_hidden: true, "{file_count}" }
                     }
+                }
+            }
+            div { class: "chip-anchor",
+                button {
+                    class: if terminal_open { "chip terminal-chip open" } else { "chip terminal-chip" },
+                    aria_pressed: terminal_open,
+                    aria_label: "Terminal",
+                    title: "Terminal ({state.prefs.keys.shown(Command::Terminal)})",
+                    onclick: move |_| cockpit.change(terminals::toggle_pane),
+                    Icon { kind: IconKind::Terminal, size: 15 }
                 }
             }
         }

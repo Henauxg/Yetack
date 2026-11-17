@@ -12,7 +12,6 @@ use cockpit_protocol::{
 };
 use strum::VariantArray;
 
-use super::terminals::AgentTerminals;
 use super::accounts::SignIns;
 use super::app_update::AppUpdate;
 use super::chat_images::KeptImage;
@@ -27,6 +26,7 @@ use super::page_copy::PageCopies;
 use super::resume::Resume;
 use super::sending::Sending;
 use super::server_setup::{InstallReport, ServerSetup};
+use super::terminals::AgentTerminals;
 use super::transcript::Transcript;
 use super::ui_state::UiState;
 use super::update_offer::{ProgramBuild, VersionGap};

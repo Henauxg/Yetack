@@ -34,9 +34,10 @@ use cockpit_protocol::{
     ServerMessage, ServerPoint, SessionResumeParams, SetEffortParams, SetModeParams,
     SetModelParams, Settings, SignIn, SignInWait, SlashCommand, Snapshot, StartParams,
     StopProcessParams, StopTaskParams, Subagent, SubagentRun, SubagentStatus, SubagentToolCall,
-    TaskListItem, TaskProgress, TaskStatus, Timestamp, TokenUsage, ToolCall, ToolCallStatus,
-    TranscriptItem, TurnEnd, TurnOutcome, UsageWindow, UserMessage, WaitingPrompt, WaitingState,
-    WindowUsage,
+    TaskListItem, TaskProgress, TaskStatus, TerminalChange, TerminalId, TerminalInfo,
+    TerminalInputParams, TerminalOpenParams, TerminalParams, TerminalResizeParams, TerminalSize,
+    TerminalUpdate, Timestamp, TokenUsage, ToolCall, ToolCallStatus, TranscriptItem, TurnEnd,
+    TurnOutcome, UsageWindow, UserMessage, WaitingPrompt, WaitingState, WindowUsage,
 };
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -687,6 +688,32 @@ fn requests() -> Vec<Request> {
             agent,
             name: "login".to_owned(),
         }),
+        Request::AgentTerminalOpen(TerminalOpenParams {
+            agent,
+            size: TerminalSize { cols: 80, rows: 24 },
+        }),
+        Request::AgentTerminals(AgentParams { agent }),
+        Request::TerminalAttach(TerminalParams {
+            agent,
+            terminal: TerminalId::new(2),
+        }),
+        Request::TerminalInput(TerminalInputParams {
+            agent,
+            terminal: TerminalId::new(2),
+            data: "ls\r".to_owned(),
+        }),
+        Request::TerminalResize(TerminalResizeParams {
+            agent,
+            terminal: TerminalId::new(2),
+            size: TerminalSize {
+                cols: 120,
+                rows: 40,
+            },
+        }),
+        Request::TerminalClose(TerminalParams {
+            agent,
+            terminal: TerminalId::new(2),
+        }),
         Request::McpRemove(McpRemoveParams {
             agent,
             server: "issues".to_owned(),
@@ -851,6 +878,20 @@ fn response_bodies() -> Vec<ResponseBody> {
         },
         ResponseBody::Commands {
             commands: commands(),
+        },
+        ResponseBody::TerminalOpened {
+            terminal: TerminalId::new(2),
+        },
+        ResponseBody::Terminals {
+            terminals: vec![TerminalInfo {
+                terminal: TerminalId::new(2),
+                title: "zsh".to_owned(),
+                exited: Some(Some(0)),
+            }],
+        },
+        ResponseBody::TerminalScreen {
+            offset: 4096,
+            data: "bHMK".to_owned(),
         },
         ResponseBody::File {
             path: Some(PathBuf::from("/srv/projects/shop/src/main.rs")),
@@ -1017,7 +1058,29 @@ fn server_messages() -> Vec<ServerMessage> {
             event,
         }));
     }
+    for change in terminal_changes() {
+        messages.push(ServerMessage::Terminal(TerminalUpdate {
+            agent: agent(),
+            terminal: TerminalId::new(2),
+            change,
+        }));
+    }
     messages
+}
+
+fn terminal_changes() -> Vec<TerminalChange> {
+    vec![
+        TerminalChange::Opened {
+            title: "zsh".to_owned(),
+        },
+        TerminalChange::Output {
+            offset: 4096,
+            data: "bHMK".to_owned(),
+        },
+        TerminalChange::Exited { code: Some(1) },
+        TerminalChange::Exited { code: None },
+        TerminalChange::Closed,
+    ]
 }
 
 /// Serializes, deserializes, and checks that both the value and its JSON come back unchanged.
@@ -1123,6 +1186,12 @@ fn method_names_are_pinned() {
             "agent.read_file",
             "agent.list_dir",
             "agent.find_files",
+            "agent.terminal_open",
+            "agent.terminals",
+            "terminal.attach",
+            "terminal.input",
+            "terminal.resize",
+            "terminal.close",
             "mcp.remove",
             "settings.set",
             "sessions.list",
@@ -1150,7 +1219,11 @@ fn message_and_body_tags_are_pinned() {
     assert_eq!(tags(&client_messages(), "type"), ["hello", "request"]);
     assert_eq!(
         tags(&server_messages(), "type"),
-        ["welcome", "refused", "response", "event"]
+        ["welcome", "refused", "response", "event", "terminal"]
+    );
+    assert_eq!(
+        tags(&terminal_changes(), "type"),
+        ["opened", "output", "exited", "closed"]
     );
     assert_eq!(
         tags(&[Catchup::Replay, Catchup::Snapshot(snapshot())], "type"),
@@ -1166,6 +1239,9 @@ fn message_and_body_tags_are_pinned() {
             "context_usage",
             "mcp_servers",
             "commands",
+            "terminal_opened",
+            "terminals",
+            "terminal_screen",
             "file",
             "image",
             "directory",

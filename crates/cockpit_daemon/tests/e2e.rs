@@ -28,8 +28,9 @@ use cockpit_protocol::{
     PlanUsage, ProcessId, Prompt, PromptDelivery, PromptParams, Question, QuestionAnswer,
     QueuedPromptParams, ReadFileParams, RenameParams, Request, ResponseBody, Seq,
     SessionResumeParams, SetEffortParams, SetModeParams, SetModelParams, Settings, SignIn,
-    SignInWait, StartParams, StopProcessParams, StopTaskParams, TranscriptItem, TurnOutcome,
-    UsageWindow, WaitingPrompt, WaitingState,
+    SignInWait, StartParams, StopProcessParams, StopTaskParams, TerminalInputParams,
+    TerminalOpenParams, TerminalParams, TerminalSize, TranscriptItem, TurnOutcome, UsageWindow,
+    WaitingPrompt, WaitingState,
 };
 use rustix::process::{Pid, Signal};
 use serde_json::{Value, json};
@@ -2506,4 +2507,67 @@ async fn the_daemon_names_itself_in_its_lock_and_stops_when_asked() {
     assert!(status.success(), "{status:?}");
     assert_eq!(cockpit_daemon::lock_holder(&setup.state()).unwrap(), None);
     setup.start();
+}
+
+/// A terminal runs the shell in the agent's folder, takes what is typed, keeps the output for a
+/// client that attaches, and goes when closed.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_terminal_runs_a_shell_in_the_agents_folder() {
+    use base64::Engine;
+    use base64::engine::general_purpose::STANDARD;
+
+    let setup = Setup::new_with(None, DefaultFolder::Variable, vec![("SHELL", "/bin/sh")]);
+    let mut client = setup.connect().await;
+    let agent = client.start(&setup.work(), "hello").await;
+    let opened = client
+        .ok(Request::AgentTerminalOpen(TerminalOpenParams {
+            agent,
+            size: TerminalSize { cols: 80, rows: 24 },
+        }))
+        .await;
+    let ResponseBody::TerminalOpened { terminal } = opened else {
+        panic!("expected a terminal, got {opened:?}");
+    };
+    let params = TerminalParams { agent, terminal };
+
+    client
+        .ok(Request::TerminalInput(TerminalInputParams {
+            agent,
+            terminal,
+            data: "pwd; echo marker-$((40 + 2))\n".to_owned(),
+        }))
+        .await;
+    let deadline = Instant::now() + WAIT;
+    let screen = loop {
+        let ResponseBody::TerminalScreen { offset, data } =
+            client.ok(Request::TerminalAttach(params)).await
+        else {
+            panic!("expected a screen");
+        };
+        let text = String::from_utf8_lossy(&STANDARD.decode(data).unwrap()).into_owned();
+        if text.contains("marker-42") || Instant::now() > deadline {
+            assert_eq!(offset, 0);
+            break text;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    };
+
+    assert!(screen.contains("marker-42"), "{screen:?}");
+    assert!(
+        screen.contains(&setup.work().display().to_string()),
+        "{screen:?}"
+    );
+    let listed = client
+        .ok(Request::AgentTerminals(AgentParams { agent }))
+        .await;
+    assert!(matches!(
+        listed,
+        ResponseBody::Terminals { ref terminals } if terminals.len() == 1
+    ));
+    client.ok(Request::TerminalClose(params)).await;
+    assert_eq!(
+        client.error_code(Request::TerminalAttach(params)).await,
+        ErrorCode::NotFound
+    );
 }

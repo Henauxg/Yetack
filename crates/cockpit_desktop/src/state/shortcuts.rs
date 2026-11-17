@@ -12,7 +12,7 @@ use super::requests::Outgoing;
 use super::transcript::WaitingKind;
 use super::ui_state::{Dialog, PaletteOrigin, Popover};
 use super::utf16_offset::Utf16Offset;
-use super::{accounts, agent_map, file_reread, file_tree, open_file, quotes, to_handle};
+use super::{accounts, agent_map, file_reread, file_tree, open_file, quotes, terminals, to_handle};
 use crate::keymap::{Chord, Command};
 use crate::prefs::EscStop;
 
@@ -89,6 +89,9 @@ fn run(
         Command::NewAgent => actions::open_new_agent(state, drafts),
         Command::OpenFile => open_file::toggle(state, drafts),
         Command::FilesPane => file_tree::toggle_pane(state),
+        Command::Terminal => {
+            terminals::toggle_pane(state);
+        }
         Command::AgentMap => agent_map::toggle(state),
         Command::Find if no_dialog => find::open(state, drafts, press.pane, &press.selection),
         // Asks to close the selected agent, and confirms when asked.

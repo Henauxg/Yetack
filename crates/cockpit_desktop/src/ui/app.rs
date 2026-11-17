@@ -7,7 +7,7 @@ use dioxus::prelude::*;
 
 use crate::bridge::use_bridge;
 use crate::connection::{Cockpit, Startup, use_clock, use_cockpit};
-use crate::prefs::use_prefs_saver;
+use crate::prefs::{TerminalPlace, use_prefs_saver};
 use crate::state::{ConnectionState, NoteKind, actions, daemon_update, file_tree, sending};
 use crate::ui::app_update::use_release_checks;
 use crate::ui::blocks::FloatingBlocks;
@@ -31,6 +31,7 @@ use crate::ui::splitter::{
     SidebarSplitter, Splitter, use_splitter,
 };
 use crate::ui::tab_menu::TabMenu;
+use crate::ui::terminal_pane::{TerminalPane, use_terminal_script};
 use crate::ui::transcript::{TranscriptView, use_call_detail};
 
 #[component]
@@ -44,6 +45,7 @@ pub fn App() -> Element {
     use_release_checks(cockpit);
     use_clock();
     use_bridge(cockpit);
+    use_terminal_script(cockpit);
     use_quotes(cockpit);
     use_find(cockpit);
     use_call_detail(cockpit);
@@ -64,6 +66,8 @@ pub fn App() -> Element {
     let files_agent = selected.filter(|agent| file_tree::pane_open(&state, *agent));
     let files_open = files_agent.is_some();
     let files_pane = use_presence(files_agent);
+    // The terminal pane folds away as it closes, wherever it was.
+    let terminal_pane = use_presence(state.ui.terminal_open.then_some(state.prefs.terminal.place));
     let files_leaving = files_pane
         .as_ref()
         .is_some_and(|shown| shown.leaving && Some(shown.value) == selected);
@@ -119,6 +123,16 @@ pub fn App() -> Element {
     let share = state.prefs.file_view.share();
     let sidebar_width = state.prefs.sidebar.width();
     let files_width = state.prefs.files_pane.width();
+    let terminal_at = |place| {
+        terminal_pane
+            .as_ref()
+            .filter(|shown| shown.value == place)
+            .map(|shown| shown.leaving)
+    };
+    let (terminal_bottom, terminal_right) = (
+        terminal_at(TerminalPlace::Bottom),
+        terminal_at(TerminalPlace::Right),
+    );
     rsx! {
         div { id: APP_ID, class: app_class, style: "{SHARE_PROPERTY}: {share}; {SIDEBAR_WIDTH_PROPERTY}: {sidebar_width}px; {FILES_WIDTH_PROPERTY}: {files_width}px",
             Sidebar {}
@@ -138,6 +152,9 @@ pub fn App() -> Element {
                     ErrorNotes {}
                 }
                 Composer {}
+                if let Some(leaving) = terminal_bottom {
+                    TerminalPane { place: TerminalPlace::Bottom, leaving }
+                }
             }
             if file_view_open {
                 Splitter { share }
@@ -151,6 +168,9 @@ pub fn App() -> Element {
                 FilesPane {}
             } else if files_leaving {
                 div { class: "files-pane leaving", aria_hidden: true }
+            }
+            if let Some(leaving) = terminal_right {
+                TerminalPane { place: TerminalPlace::Right, leaving }
             }
             if closes_on_click {
                 div {

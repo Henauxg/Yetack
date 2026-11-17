@@ -91,6 +91,7 @@ pub struct Prefs {
     pub file_view: FileViewPrefs,
     pub sidebar: SidebarPrefs,
     pub files_pane: FilesPanePrefs,
+    #[serde(skip_serializing_if = "TerminalPrefs::is_default")]
     pub terminal: TerminalPrefs,
     pub blocks: BlocksPrefs,
     pub accounts: AccountPrefs,
@@ -754,6 +755,12 @@ pub struct TerminalPrefs {
     /// The right pane's width in pixels. `None` keeps the default.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub width: Option<u16>,
+}
+
+impl TerminalPrefs {
+    fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]

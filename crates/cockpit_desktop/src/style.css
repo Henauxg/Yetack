@@ -7506,6 +7506,276 @@ html.splitting * {
 
 /* Files pane: the selected agent's folder as a tree, at the window's right edge. */
 
+/* The terminal pane: under the chat and the composer, or at the window's right edge. Its size is
+   an inline height or width, which its grip changes. */
+.terminal-pane {
+  position: relative;
+  flex: none;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  background: #121212;
+}
+
+.terminal-pane.bottom {
+  max-height: 70%;
+  border-top: 1px solid var(--line-strong);
+  animation: terminal-up var(--motion-in) var(--ease-out) backwards;
+}
+
+.terminal-pane.right {
+  max-width: 60%;
+  border-left: 1px solid var(--line-strong);
+  animation: terminal-in var(--motion-in) var(--ease-out) backwards;
+}
+
+/* A drag sizes the pane on every frame: no transition to lag behind the pointer. */
+.terminal-pane.resizing {
+  animation: none;
+  user-select: none;
+}
+
+@keyframes terminal-up {
+  from {
+    height: 0;
+  }
+}
+
+@keyframes terminal-in {
+  from {
+    width: 0;
+  }
+}
+
+.terminal-pane.bottom.leaving {
+  animation: terminal-down var(--motion-out) var(--ease-in) forwards;
+}
+
+.terminal-pane.right.leaving {
+  animation: terminal-out var(--motion-out) var(--ease-in) forwards;
+}
+
+@keyframes terminal-down {
+  to {
+    height: 0;
+  }
+}
+
+@keyframes terminal-out {
+  to {
+    width: 0;
+  }
+}
+
+.terminal-grip {
+  position: absolute;
+  z-index: 3;
+  transition: background var(--motion-hover) var(--ease);
+}
+
+.terminal-pane.bottom > .terminal-grip {
+  top: -3px;
+  left: 0;
+  right: 0;
+  height: 6px;
+  cursor: row-resize;
+}
+
+.terminal-pane.right > .terminal-grip {
+  top: 0;
+  bottom: 0;
+  left: -3px;
+  width: 6px;
+  cursor: col-resize;
+}
+
+.terminal-grip:hover,
+.terminal-pane.resizing > .terminal-grip {
+  background: rgba(45, 212, 191, 0.35);
+}
+
+.terminal-bar {
+  flex: none;
+  display: flex;
+  align-items: stretch;
+  height: 30px;
+  padding-right: 4px;
+  border-bottom: 1px solid #262626;
+  background: #171717;
+}
+
+.terminal-tabs {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  overflow: hidden;
+}
+
+.terminal-tab {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  border-right: 1px solid #242424;
+  color: var(--muted);
+  transition: color var(--motion-hover) var(--ease), background var(--motion-hover) var(--ease);
+}
+
+.terminal-tab.current {
+  background: #121212;
+  box-shadow: inset 0 -2px 0 var(--teal);
+  color: var(--text);
+}
+
+.terminal-tab:not(.current):hover {
+  background: #1d1d1d;
+  color: var(--text-soft);
+}
+
+.terminal-tab-name {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 100%;
+  padding: 0 4px 0 10px;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font-size: 12px;
+}
+
+.terminal-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.terminal-exited {
+  color: var(--dim);
+  font-size: 11px;
+}
+
+.terminal-tab-close,
+.terminal-add {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  margin: auto 4px auto 0;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--dim);
+  transition: color var(--motion-hover) var(--ease), background var(--motion-hover) var(--ease);
+}
+
+.terminal-add {
+  margin-left: 4px;
+}
+
+.terminal-tab-close:hover,
+.terminal-add:not(:disabled):hover {
+  background: #262626;
+  color: var(--text);
+}
+
+.terminal-tab-close:active,
+.terminal-add:not(:disabled):active,
+.terminal-tab-name:active {
+  transform: scale(var(--press-scale));
+}
+
+.terminal-controls {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.terminal-machine {
+  margin-right: 4px;
+  padding: 0 6px;
+  border: 1px solid #2e2e2e;
+  border-radius: 4px;
+  color: var(--dim);
+  font-size: 11px;
+}
+
+.terminal-move-anchor {
+  position: relative;
+}
+
+.terminal-move.open {
+  background: #262626;
+  color: var(--text);
+}
+
+.terminal-move-menu {
+  position: absolute;
+  z-index: 8;
+  top: calc(100% + 4px);
+  right: 0;
+  width: 210px;
+  padding: 4px;
+  border: 1px solid #3a3a3a;
+  border-radius: 8px;
+  background: #222222;
+  box-shadow: var(--shadow);
+  animation: popover-in var(--motion-in) var(--ease-out) backwards;
+}
+
+.terminal-move-head {
+  padding: 5px 8px 3px;
+  color: var(--dim);
+  font-size: 11px;
+}
+
+.terminal-move-item {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--text-soft);
+  font-size: 12.5px;
+  text-align: left;
+  transition: background var(--motion-hover) var(--ease);
+}
+
+.terminal-move-item:hover {
+  background: #2f2f2f;
+  color: var(--text);
+}
+
+.terminal-move-item:active {
+  background: var(--pressed);
+}
+
+.terminal-move-check {
+  display: inline-flex;
+  width: 12px;
+  color: var(--teal);
+}
+
+.terminal-screen {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  padding: 4px 0 0 8px;
+  overflow: hidden;
+}
+
+.terminal-box {
+  width: 100%;
+  height: 100%;
+}
+
 .files-pane {
   flex: none;
   width: var(--files-width);

@@ -92,7 +92,10 @@ pub fn selected(state: &AppState) -> Option<(AgentId, &AgentTerminals)> {
 }
 
 fn terminals_mut(state: &mut AppState, agent: AgentId) -> Option<&mut AgentTerminals> {
-    state.agents.get_mut(&agent).map(|entry| &mut entry.terminals)
+    state
+        .agents
+        .get_mut(&agent)
+        .map(|entry| &mut entry.terminals)
 }
 
 fn outgoing(request: Request, purpose: Purpose) -> Outgoing {
@@ -384,16 +387,25 @@ mod tests {
 
         apply_update(
             &mut state,
-            update(5, TerminalChange::Opened {
-                title: "bash".to_owned(),
-            }),
+            update(
+                5,
+                TerminalChange::Opened {
+                    title: "bash".to_owned(),
+                },
+            ),
         );
-        apply_update(&mut state, update(5, TerminalChange::Exited { code: Some(2) }));
         apply_update(
             &mut state,
-            update(6, TerminalChange::Opened {
-                title: "bash".to_owned(),
-            }),
+            update(5, TerminalChange::Exited { code: Some(2) }),
+        );
+        apply_update(
+            &mut state,
+            update(
+                6,
+                TerminalChange::Opened {
+                    title: "bash".to_owned(),
+                },
+            ),
         );
         apply_update(&mut state, update(6, TerminalChange::Closed));
 

@@ -11,13 +11,13 @@ use cockpit_protocol::{
 use serde::Serialize;
 use strum::{EnumString, IntoStaticStr, VariantArray};
 
-use super::terminals::Screen;
 use super::accounts::{AccountsView, AddAccountForm};
 use super::agent_map::MapView;
 use super::app_state::Loadable;
 use super::find::FindFocus;
 use super::mcp_reconnect::Reconnects;
 use super::projects::{ProjectKey, RuleKind};
+use super::terminals::Screen;
 use crate::keymap::{Chord, Command, Refusal};
 use crate::machine::MachineId;
 use crate::prefs::ProjectId;

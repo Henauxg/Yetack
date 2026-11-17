@@ -134,7 +134,7 @@ The snapshot holds no transcripts: the app asks for them with `agent.history`, a
 ### Requests
 
 The requests are the methods of one enum, with fixed strings ([standards/rust/api_design.md](standards/rust/api_design.md#declare-a-reusable-string-once)).
-[Machine load](#machine-load), [Accounts](#accounts-1) and "Working folder" describe theirs.
+[Machine load](#machine-load), [Accounts](#accounts-1), [Terminals](#terminals) and "Working folder" describe theirs.
 A daemon answers an unknown method with ``unknown method `<name>` ``. The app looks for that text to tell an older daemon, so a test pins it.
 
 `agent.close` ends an agent even while its process runs, which `agent.stop` then `agent.remove` cannot do.
@@ -311,6 +311,16 @@ On Windows, an agent's processes are those of its Job Object.
 `agent.stop_process` ends one of an agent's processes, but never `claude` itself.
 It checks that the process is the agent's, then acts through the same pidfd on Unix, or the same handle on Windows, so a reused pid is never hit.
 
+### Terminals
+
+`agent.terminal_open` starts the user's shell (`$SHELL`, else `/bin/sh`; `%COMSPEC%` on Windows) on a PTY in the agent's folder, with `TERM=xterm-256color` (module `hub::terminals`, crate `portable-pty`).
+Three threads serve each shell, since a PTY's reads, writes and wait block: one reads the output, one writes what the user types (`terminal.input`), and one waits for the shell to end.
+The hub keeps each terminal's last 512 KB of output, and sends what comes to every client as `ServerMessage::Terminal`.
+That message has no `Seq` and no log: a shell can write megabytes a second, and an old screen is worth nothing in a replay.
+A client whose queue is full misses it rather than being dropped.
+Each output carries its byte `offset` in all the shell wrote. `terminal.attach` answers the kept output and its offset, so a client that shows a terminal again writes the kept output, then only the output past it.
+A terminal stays, with its output, after its shell ends, until `terminal.close`. Removing the agent closes its terminals, and stopping the daemon kills their shells.
+
 ### Server and peer checks
 
 The daemon listens only on the Unix socket: no TCP port.
@@ -424,6 +434,11 @@ The daemon in the app has no socket to check (see [The daemon in the app](#the-d
   - "All" lists a folder with `agent.list_dir` when it opens, then the outside folders where the agent changed or read a file. Such a folder shows only those files unless it is a git checkout's top folder, so that a folder such as `/etc` does not bury them.
   - The shown listings are read again when the agent finishes an edit or a Bash call, when it comes back on screen, and on F5.
   - `file_tree::reveal` keeps the row to show in `FileTree.reveal` until it shows, since a folder may wait for its listing.
+- **Terminal pane** (`state/terminals.rs`, `ui/terminal_pane.rs`, `terminal_feed.rs`): the selected agent's terminals as tabs, in the bottom panel or at the right edge (`TerminalPrefs`). The header's terminal button and Ctrl+\` show and hide it; while it shows, the app lists the agent's terminals and opens one for an agent with none.
+  - The page owns the terminals: its script keeps one [ghostty-web](https://github.com/coder/ghostty-web) terminal per shell, in a box of its own, and puts the shown one's box in the pane wherever the pane is. Moving the pane keeps the screen; a terminal the page has not shown yet asks `terminal.attach` first. `assets/ghostty-web/` holds the library, which carries its WebAssembly inline.
+  - Output goes from the connection to the page apart from the state (`terminal_feed`), since each change of the state renders the window again.
+  - The screen carries `data-records-keys`, so the page script leaves every key typed there to the terminal, Esc included. Ctrl+\` in the terminal still hides the pane. ghostty-web skips a key its custom key handler returns `true` for, unlike xterm.js.
+  - The terminal fits its box once the box's size stays the same for 180 ms: the pane grows as it opens, and a fit at each step would give the shell several sizes.
 - **Find** (`state/find.rs`, `ui/find.rs`, `ui/find_folds.rs`): the chat and the file view each have a find. `UiState.chat_finds` and `FileView.find` hold which are open. `Drafts.finds` holds the text and the results, so typing renders neither the chat nor the sidebar.
   - A page script searches the text the page shows and highlights the matches with the CSS Custom Highlight API. Each match is a `StaticRange`, which no change of the page has to update. The app drops a report (`FindReport`) about an older text.
   - The chat's folds put nothing on the page until they open. So the app counts their matches from the transcript (`FoldTexts`), and the script opens a fold when the find reaches it. The counts include Markdown marks, so the page counts again once the fold opens.
@@ -510,6 +525,7 @@ The daemon in the app has no socket to check (see [The daemon in the app](#the-d
 - The SSH key is the only login to a server: the app runs `ssh <host> yetack bridge`, with `ForwardAgent=no` (see [Client](#client-cockpit_client)).
 - A prompt goes to `claude` only through stdin (see [Claude Code processes](#claude-code-processes)).
 - The daemon never reads, stores or passes a credential on its own. The file view is the exception, as in an IDE: it shows any file the user opens, and sends it only to the user's app.
+- A terminal runs the user's shell as the daemon's user, in the agent's folder: it can do what the agents' commands can. Its output goes only to clients that passed the peer checks.
 - Choosing a folder in the app trusts it: `claude` runs without a terminal, so it shows no trust prompt, and a repository's project MCP servers and settings start with the agent. The app asks no confirmation.
 - An install from the app writes only under `~/.cache/yetack/`, `~/.local/share/yetack/`, `~/.config/systemd/user/` and `~/.config/yetack/` on the server, plus one crontab line when the user clicks for it. An update replaces only a daemon in `~/.local/share/yetack/bin` or `~/.local/bin`. The server's script checks the binary's checksum and version before it replaces anything. The app never runs `sudo`.
 

@@ -24,7 +24,6 @@ use crate::notifications::Notifier;
 use crate::prefs::NotificationLevel;
 use crate::reach::{self, Places, Reached, Unreached};
 use crate::service_update::{self, BusyCheck, SystemService};
-use crate::terminal_feed::{self, FeedSender, Output};
 use crate::state::daemon_probe::{LinuxCpu, ProbeTarget};
 use crate::state::daemon_start::{self, StartRun};
 use crate::state::daemon_update::{self, OutputLine, OutputStream};
@@ -42,6 +41,7 @@ use crate::state::{
     self, AgentEntry, AppState, ConnectionState, Dialog, Drafts, MachineState, Outgoing, Purpose,
     TitlePlace, Utf16Offset, actions, file_reread, notification_levels,
 };
+use crate::terminal_feed::{self, FeedSender, Output};
 use crate::update_script::APP_VERSION;
 use crate::{bridge, demo, format, release_daemon, server_daemon, update_script};
 
