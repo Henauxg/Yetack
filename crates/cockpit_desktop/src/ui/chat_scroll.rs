@@ -18,7 +18,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::bridge::RECORDS_KEYS_ATTRIBUTE;
 use crate::connection::Cockpit;
-use crate::state::{RevealPlace, actions};
+use crate::state::{ChatReveal, RevealPlace, actions};
 use crate::ui::find::REVEAL_EVENT;
 use crate::ui::icons::{Icon, IconKind};
 use crate::ui::splitter::FILE_VIEW_ID;
@@ -594,11 +594,13 @@ pub fn NewDivider() -> Element {
 
 /// Runs the script for the window's life, and keeps `in_view` on the entries in view. `in_view` is
 /// a signal of its own: it changes while the user scrolls, and only the views that read it render
-/// again.
+/// again. `near_top` takes the script's asks for older messages. `reveal` is the last reveal asked,
+/// once the chat draws its entry: the script scrolls to it once.
 pub fn use_chat_scroll(
     cockpit: Cockpit,
     mut in_view: Signal<Option<InView>>,
     near_top: Callback<AgentId>,
+    reveal: Memo<Option<ChatReveal>>,
 ) {
     let script = use_hook(|| {
         let mut script = document::eval(SCRIPT);
@@ -672,11 +674,16 @@ pub fn use_chat_scroll(
             tracing::warn!("cannot take the chat to its bottom: {error}");
         }
     });
-    let reveal = use_memo(move || cockpit.state.read().ui.chat_reveal);
+    // A reveal goes to the script once: its entry is drawn again each time its agent opens.
+    let mut sent = use_hook(|| CopyValue::new(None::<ChatReveal>));
     use_effect(move || {
         let Some(reveal) = reveal() else {
             return;
         };
+        if *sent.peek() == Some(reveal) {
+            return;
+        }
+        sent.set(Some(reveal));
         let command = ScrollCommand::Reveal {
             entry_id: entry_id(reveal.agent, reveal.item),
             place: reveal.place,

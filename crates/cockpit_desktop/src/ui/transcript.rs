@@ -23,8 +23,8 @@ use crate::prefs::ToolCallDetail;
 use crate::render::{self, Diff, Found, Language, OutputPart, SearchTool, diff_lines};
 use crate::state::sending::{SendingPlace, SendingPrompt};
 use crate::state::{
-    self, AgentEntry, AppState, HistoryState, Revision, TurnStart, accounts, actions, chat_images,
-    file_edits,
+    self, AgentEntry, AppState, ChatReveal, HistoryState, Revision, TurnStart, accounts, actions,
+    chat_images, file_edits,
 };
 use crate::ui::accounts::SignInCard;
 use crate::ui::cards::{ApprovalCard, PlanCard};
@@ -347,6 +347,32 @@ fn more_drawn(agent: AgentId, drawn: Option<Drawn>, rows: &[ItemId]) -> Option<D
     (first > 0).then(|| drawn_from(agent, rows, first.saturating_sub(MORE_ROWS)))
 }
 
+/// The rows to draw for a reveal of the top-level `item`, whose row is above the drawn ones: from
+/// [`FIRST_ROWS`] above it. `None` when its row is drawn, or the chat draws no row of `agent` yet.
+fn revealed_drawn(
+    agent: AgentId,
+    drawn: Option<Drawn>,
+    rows: &[ItemId],
+    item: ItemId,
+) -> Option<Drawn> {
+    let Some(Drawn::From(shown, from)) = drawn else {
+        return None;
+    };
+    if shown != agent {
+        return None;
+    }
+    let row = rows.iter().rposition(|id| *id <= item)?;
+    let first = rows.iter().position(|id| *id >= from)?;
+    (row < first).then(|| drawn_from(agent, rows, row.saturating_sub(FIRST_ROWS)))
+}
+
+/// Whether `shown` of `rows` draws the row of the top-level `item`.
+fn draws_item(shown: ShownRows, rows: &[ItemId], item: ItemId) -> bool {
+    rows.iter()
+        .rposition(|id| *id <= item)
+        .is_some_and(|row| row >= shown.first(rows.len()))
+}
+
 /// The rows from index `first` on.
 fn drawn_from(agent: AgentId, rows: &[ItemId], first: usize) -> Drawn {
     match rows.get(first) {
@@ -626,7 +652,6 @@ pub fn TranscriptView(in_view: Signal<Option<InView>>) -> Element {
             None => cockpit.change(|state| actions::load_older(state, agent)),
         }
     });
-    chat_scroll::use_chat_scroll(cockpit, in_view, near_top);
     // The first row in view of each agent whose chat is scrolled up.
     let mut places = use_hook(|| CopyValue::new(BTreeMap::<AgentId, ItemId>::new()));
     use_effect(move || {
@@ -672,6 +697,44 @@ pub fn TranscriptView(in_view: Signal<Option<InView>>) -> Element {
         let entry = state.agents.get(&inputs.agent)?;
         Some(ChatView::of(&state, entry, drawn(), today()))
     });
+    // The scroll script reveals only an entry the chat draws: a reveal of a row above the drawn
+    // ones draws from above it first, once per reveal, and goes to the script once it is drawn.
+    let reveal = use_memo(move || cockpit.state.read().ui.chat_reveal);
+    let mut widened = use_hook(|| CopyValue::new(None::<ChatReveal>));
+    use_effect(move || {
+        let Some(reveal) = reveal() else {
+            return;
+        };
+        let current = drawn();
+        if *widened.peek() == Some(reveal) {
+            return;
+        }
+        let wider = {
+            let (rows_agent, ids) = &*rows.peek();
+            let drawing = matches!(
+                current,
+                Some(Drawn::From(agent, _) | Drawn::All(agent)) if agent == reveal.agent
+            );
+            if *rows_agent != Some(reveal.agent) || !drawing {
+                return;
+            }
+            revealed_drawn(reveal.agent, current, ids, reveal.item)
+        };
+        widened.set(Some(reveal));
+        if let Some(wider) = wider {
+            drawn.set(Some(wider));
+        }
+    });
+    let drawn_reveal = use_memo(move || {
+        let reveal = reveal()?;
+        let view = view.read();
+        view.as_ref()
+            .filter(|view| {
+                view.agent == reveal.agent && draws_item(view.shown, &view.row_ids, reveal.item)
+            })
+            .map(|_| reveal)
+    });
+    chat_scroll::use_chat_scroll(cockpit, in_view, near_top, drawn_reveal);
     // The performance info notes the chat's first rows of an agent, then the rows it opens with.
     let mut timed = use_hook(|| CopyValue::new((None::<AgentId>, false)));
     use_effect(move || {
@@ -2558,6 +2621,36 @@ mod tests {
             next_drawn(agent, far, &rows, last_seen, Some(ItemId::new(60))),
             None
         );
+    }
+
+    /// The scroll script reveals only an entry the chat draws, such as the message the last
+    /// instruction bar shows, which a long turn leaves far above the rows a chat opens with.
+    #[test]
+    fn a_reveal_above_the_drawn_rows_draws_from_above_its_row() {
+        let agent = AgentId::new(7);
+        // 300 rows, two items each: the row of item 41 starts at item 40.
+        let rows: Vec<ItemId> = (0..300).map(|row| ItemId::new(row * 2)).collect();
+        let drawn = Some(Drawn::From(agent, ItemId::new(360)));
+        let shown = ShownRows::of(agent, drawn, &rows, false);
+
+        let wider = revealed_drawn(agent, drawn, &rows, ItemId::new(41));
+
+        assert!(!draws_item(shown, &rows, ItemId::new(41)));
+        assert!(draws_item(shown, &rows, ItemId::new(361)));
+        assert_eq!(wider, Some(Drawn::All(agent)), "row 20, 40 rows above: all");
+        assert_eq!(
+            revealed_drawn(agent, drawn, &rows, ItemId::new(201)),
+            Some(Drawn::From(agent, ItemId::new(120)))
+        );
+        let wider_shown = ShownRows::of(agent, wider, &rows, false);
+        assert!(draws_item(wider_shown, &rows, ItemId::new(41)));
+        assert_eq!(revealed_drawn(agent, drawn, &rows, ItemId::new(400)), None);
+        assert_eq!(
+            revealed_drawn(AgentId::new(8), drawn, &rows, ItemId::new(41)),
+            None,
+            "the chat draws another agent"
+        );
+        assert!(!draws_item(ShownRows::Skeleton, &rows, ItemId::new(599)));
     }
 
     #[test]
