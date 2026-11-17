@@ -675,7 +675,8 @@ pub fn TranscriptView(in_view: Signal<Option<InView>>) -> Element {
     // The performance info notes the chat's first rows of an agent, then the rows it opens with.
     let mut timed = use_hook(|| CopyValue::new((None::<AgentId>, false)));
     use_effect(move || {
-        let Some(view) = view() else {
+        let view = view.read();
+        let Some(view) = view.as_ref() else {
             return;
         };
         let (agent, opened) = *timed.peek();

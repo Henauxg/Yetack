@@ -62,10 +62,23 @@ static BUILDS_US: AtomicU64 = AtomicU64::new(0);
 static RENDERS: AtomicU64 = AtomicU64::new(0);
 static RENDERS_US: AtomicU64 = AtomicU64::new(0);
 
-/// Turns the measures on or off. Off, the log empties.
+/// Turns the measures on or off. Off, the log and the counts empty.
 pub fn set_on(on: bool) {
     ON.store(on, Ordering::Relaxed);
-    if !on && let Ok(mut log) = LOG.lock() {
+    if on {
+        return;
+    }
+    for count in [
+        &EVENTS,
+        &EVENTS_US,
+        &BUILDS,
+        &BUILDS_US,
+        &RENDERS,
+        &RENDERS_US,
+    ] {
+        count.store(0, Ordering::Relaxed);
+    }
+    if let Ok(mut log) = LOG.lock() {
         *log = Log {
             switched: None,
             lines: VecDeque::new(),
@@ -121,6 +134,9 @@ pub fn note(text: impl Display) {
 
 /// The connection to the daemon changed, at this clock time.
 pub fn connection(text: impl Display) {
+    if !is_on() {
+        return;
+    }
     let clock = chrono::Local::now().format("%H:%M:%S");
     note(format_args!("{clock} {text}"));
 }
@@ -285,11 +301,17 @@ fn held(state: &AppState) -> String {
 }
 
 /// Reports the frames of the page that take long, while the box shows.
-const PAGE_MONITOR: &str = r"
+const PAGE_MONITOR: &str = r#"
 window.yetackPerf = true;
 let last = performance.now();
+// A hidden page draws no frame: the first one after it is no long frame.
+const shown = () => {
+    last = performance.now();
+};
+document.addEventListener("visibilitychange", shown);
 function frame(now) {
     if (!window.yetackPerf) {
+        document.removeEventListener("visibilitychange", shown);
         return;
     }
     const gap = now - last;
@@ -299,7 +321,7 @@ function frame(now) {
 }
 requestAnimationFrame(frame);
 await new Promise(() => {});
-";
+"#;
 
 /// The box, in the bottom right corner, above everything, and blind to the pointer.
 #[component]
@@ -373,5 +395,29 @@ pub fn PerfBox() -> Element {
                 div { key: "{index}", "{line}" }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn turning_the_box_off_empties_its_counts() {
+        set_on(true);
+        event(Duration::from_millis(2));
+        drop(Timer::start(Timed::ChatBuild));
+        let counted = EVENTS.load(Ordering::Relaxed);
+
+        set_on(false);
+
+        assert!(counted >= 1);
+        assert_eq!(
+            [
+                EVENTS.load(Ordering::Relaxed),
+                BUILDS.load(Ordering::Relaxed)
+            ],
+            [0, 0]
+        );
     }
 }

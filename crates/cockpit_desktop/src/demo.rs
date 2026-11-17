@@ -1706,7 +1706,7 @@ pub fn state(daemon: DaemonLabel) -> AppState {
         if [1, SIGN_IN_AGENT].contains(&sample.summary.id.get()) {
             sample
                 .items
-                .extend((FILL_FIRST_ID..FILL_FIRST_ID + fill).map(filled_entry));
+                .extend((FILL_FIRST_ID..FILL_FIRST_ID.saturating_add(fill)).map(filled_entry));
         }
         date_messages(&mut sample.items, now);
         let mut entry = AgentEntry::new(sample.summary);
