@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 
 use cockpit_protocol::{
     AgentId, AgentStatus, Completeness, Effort, MAX_TITLE_CHARS, PastSession, PermissionMode,
-    Timestamp, default_title,
+    Timestamp,
 };
 use dioxus::html::geometry::ScreenPoint;
 use dioxus::html::input_data::MouseButton;
@@ -675,7 +675,7 @@ fn StartForm(form: NewAgentForm) -> Element {
     let default_name = if typed_folder_path.is_empty() && typed_prompt.trim().is_empty() {
         "Its first message's first line, or its folder's name".to_owned()
     } else {
-        default_title(Some(&typed_prompt), Path::new(typed_folder_path))
+        cockpit_protocol::default_title(Some(&typed_prompt), Path::new(typed_folder_path))
     };
     let focus = use_hook(|| actions::start_focus(&cockpit.drafts.peek().new_agent));
     // The recent folder under the pointer, the one row lit. The field's folder is only marked.

@@ -11,7 +11,6 @@ use cockpit_protocol::{
     CostUsd, EffortSource, ErrorBody, ErrorCode, Event, MAX_TITLE_CHARS, Mark, MarkParams,
     Position, Prompt, PromptDelivery, PromptId, QueuedPromptParams, RenameParams, ResponseBody,
     ResponseResult, SetEffortParams, SignInWait, StartParams, TranscriptItem, WaitingState,
-    default_title,
 };
 
 use crate::accounts::ClaudeEnv;
@@ -25,7 +24,6 @@ use crate::transcript::prompts::TypedSetting;
 use crate::transcript::{AgentView, AnswerError, FollowUp, ProcessSession, prompts, words};
 use crate::{machine_load, read_file, repository, sessions};
 
-/// A title made from a prompt keeps this many characters.
 /// The longest model name a client may set: every summary carries it.
 const MODEL_MAX_CHARS: usize = 100;
 
@@ -53,7 +51,7 @@ impl Hub {
         let folder = agent_folder(&params.folder)?;
         let account = self.account(params.account)?;
         let title = title.unwrap_or_else(|| {
-            default_title(
+            cockpit_protocol::default_title(
                 params.prompt.as_ref().map(|prompt| prompt.text.as_str()),
                 &folder,
             )

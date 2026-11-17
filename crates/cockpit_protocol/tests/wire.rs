@@ -37,7 +37,7 @@ use cockpit_protocol::{
     TaskListItem, TaskProgress, TaskStatus, TerminalChange, TerminalExit, TerminalId, TerminalInfo,
     TerminalInputParams, TerminalOpenParams, TerminalParams, TerminalResizeParams, TerminalSize,
     TerminalUpdate, Timestamp, TokenUsage, ToolCall, ToolCallStatus, TranscriptItem, TurnEnd,
-    TurnOutcome, UsageWindow, UserMessage, WaitingPrompt, WaitingState, WindowUsage, default_title,
+    TurnOutcome, UsageWindow, UserMessage, WaitingPrompt, WaitingState, WindowUsage,
 };
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -3027,12 +3027,15 @@ fn a_refusal_that_names_the_daemons_build_on_the_wire() {
 fn a_default_title_comes_from_the_first_message_or_the_folder() {
     let folder = Path::new("/srv/work/shop");
 
-    let long = default_title(Some(&"word ".repeat(40)), folder);
+    let long = cockpit_protocol::default_title(Some(&"word ".repeat(40)), folder);
 
-    assert_eq!(default_title(None, folder), "shop");
-    assert_eq!(default_title(Some("  \n "), folder), "shop");
+    assert_eq!(cockpit_protocol::default_title(None, folder), "shop");
     assert_eq!(
-        default_title(Some("\n  Fix the cart\nthen test"), folder),
+        cockpit_protocol::default_title(Some("  \n "), folder),
+        "shop"
+    );
+    assert_eq!(
+        cockpit_protocol::default_title(Some("\n  Fix the cart\nthen test"), folder),
         "Fix the cart"
     );
     assert_eq!(long.chars().count(), DEFAULT_TITLE_MAX_CHARS);
