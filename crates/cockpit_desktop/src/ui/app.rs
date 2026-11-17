@@ -33,7 +33,7 @@ use crate::ui::splitter::{
 };
 use crate::ui::tab_menu::TabMenu;
 use crate::ui::terminal_pane::{TerminalPane, use_terminal_script};
-use crate::ui::transcript::{TranscriptView, use_call_detail};
+use crate::ui::transcript::{TranscriptView, use_call_detail, use_undrawn_rows};
 
 #[component]
 pub fn App() -> Element {
@@ -54,6 +54,7 @@ pub fn App() -> Element {
     use_reorder(cockpit);
     use_held_release(cockpit);
     use_page_copies(cockpit);
+    use_undrawn_rows();
     // The entries in the chat's view: the bubble and the Messages block follow them.
     let in_view = use_signal(|| None::<InView>);
     let perf_info = use_memo(move || cockpit.state.read().ui.perf_info);

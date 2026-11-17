@@ -21,7 +21,7 @@ use crate::ui::icons::{Icon, IconKind};
 use crate::ui::last_instruction::MESSAGE_CLASS as LAST_INSTRUCTION_CLASS;
 use crate::ui::presence::use_agent_presence;
 use crate::ui::splitter::FILE_VIEW_ID;
-use crate::ui::transcript::{IO_CLIP_CLASS, MESSAGE_CLIP_CLASS};
+use crate::ui::transcript::{IO_CLIP_CLASS, MESSAGE_CLIP_CLASS, UndrawnRows};
 
 /// The chat find's field.
 const CHAT_FIELD_ID: &str = "chat-find-field";
@@ -785,6 +785,13 @@ pub(super) fn ChatFindBar() -> Element {
         .get(FindPane::Chat, agent)
         .and_then(|draft| draft.found);
     let folded = found.map_or(0, |found| found.folded);
+    let UndrawnRows {
+        count: undrawn,
+        mut draw_all,
+    } = use_context();
+    let undrawn = undrawn()
+        .filter(|(shown, _)| *shown == agent)
+        .map_or(0, |(_, count)| count);
     rsx! {
         div {
             key: "{shown.opening}",
@@ -798,6 +805,17 @@ pub(super) fn ChatFindBar() -> Element {
                     span { class: "find-note", title: "Their calls open as the find reaches them",
                         span { class: "find-note-count", "{folded}" }
                         " of them in folded calls"
+                    }
+                }
+                if undrawn > 0 {
+                    span { class: "find-note",
+                        span { class: "find-note-count", "{undrawn}" }
+                        if undrawn == 1 { " older row is not searched." } else { " older rows are not searched." }
+                    }
+                    button {
+                        class: "link-button find-load",
+                        onclick: move |_| draw_all.set(Some(agent)),
+                        "Search them"
                     }
                 }
                 match history {
@@ -864,6 +882,11 @@ fn FindControls(pane: FindPane, agent: AgentId) -> Element {
             bridge::select_field(field_id);
         }
     });
+    // The field takes its text when it mounts, so a render that lags behind the typing never
+    // writes an older query back over the keys typed since. A find opened on a selection, or
+    // another agent's find, mounts it again with its query.
+    let serial = use_memo(move || cockpit.state.read().ui.find_focus.serial);
+    let field_key = format!("{}-{}", agent.get(), serial());
     let count = count_text(&draft);
     let none = draft.found.is_some_and(|found| found.total == 0) && !draft.query.is_empty();
     let match_case = draft.match_case;
@@ -874,18 +897,21 @@ fn FindControls(pane: FindPane, agent: AgentId) -> Element {
     rsx! {
         label { class: if none { "find-field none" } else { "find-field" },
             Icon { kind: IconKind::Search, size: 13 }
-            input {
-                id: field_id,
-                r#type: "text",
-                placeholder,
-                aria_label: placeholder,
-                spellcheck: false,
-                autocomplete: "off",
-                value: "{draft.query}",
-                oninput: move |event| {
-                    let query = event.value();
-                    cockpit.with_drafts(|_, drafts| drafts.finds.get_mut(pane, agent).query = query);
-                },
+            for key in [field_key] {
+                input {
+                    key: "{key}",
+                    id: field_id,
+                    r#type: "text",
+                    placeholder,
+                    aria_label: placeholder,
+                    spellcheck: false,
+                    autocomplete: "off",
+                    initial_value: "{draft.query}",
+                    oninput: move |event| {
+                        let query = event.value();
+                        cockpit.with_drafts(|_, drafts| drafts.finds.get_mut(pane, agent).query = query);
+                    },
+                }
             }
         }
         span { class: if none { "find-count none" } else { "find-count" }, aria_live: "polite", "{count}" }

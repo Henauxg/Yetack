@@ -445,6 +445,8 @@ The daemon in the app has no socket to check (see [The daemon in the app](#the-d
   - The chat's folds put nothing on the page until they open. So the app counts their matches from the transcript (`FoldTexts`), and the script opens a fold when the find reaches it. The counts include Markdown marks, so the page counts again once the fold opens.
     The app gathers the fold texts once per change of the transcript (`Transcript::revision`). That number comes from one count for every transcript, so a transcript a reconnect builds again never takes an older one's number.
   - The chat's scroll script scrolls to a match (`REVEAL_EVENT`), so the entry stays in place as the entries above it take their height.
+  - Rows the chat holds but has not drawn are not on the page either. The find bar says how many (`UndrawnRows`), and its "Search them" draws them all.
+  - The field takes its text when it mounts (`initial_value`), so a render that lags behind the typing never writes an older query over the keys typed since. A Ctrl+F on a selection, or another agent's find, mounts it again.
   - Text that changes every second carries the `find-skip` class (`SKIP_CLASS`): the find leaves it out, and a change in it starts no search.
 - **Markdown preview** (`ViewMode::Preview`, `FilePreview` in `ui/file_view.rs`): a Markdown file gets a preview mode, rendered with the chat's markdown component up to `MAX_RENDERED_LINES` lines.
 - **Open in browser** (`OpenInBrowserButton` in `ui/file_view.rs`, `state/page_copy.rs`, `page_files.rs`): an HTML file gets a button that opens it in the browser.

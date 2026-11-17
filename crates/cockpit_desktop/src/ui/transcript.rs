@@ -630,6 +630,24 @@ impl ChatView {
     }
 }
 
+/// What the chat's find learns of the rows the chat holds but has not drawn, which the page, and
+/// so the find, cannot search. Its "Search them" asks the chat to draw them all.
+#[derive(Clone, Copy)]
+pub struct UndrawnRows {
+    /// The selected agent's rows not drawn yet.
+    pub count: Signal<Option<(AgentId, usize)>>,
+    /// The agent whose rows the chat must all draw.
+    pub draw_all: Signal<Option<AgentId>>,
+}
+
+/// Provides [`UndrawnRows`] to the chat and its find.
+pub fn use_undrawn_rows() {
+    use_context_provider(|| UndrawnRows {
+        count: Signal::new(None),
+        draw_all: Signal::new(None),
+    });
+}
+
 #[component]
 pub fn TranscriptView(in_view: Signal<Option<InView>>) -> Element {
     let _timer = perf::Timer::start(Timed::ChatRender);
@@ -743,6 +761,30 @@ pub fn TranscriptView(in_view: Signal<Option<InView>>) -> Element {
             .map(|_| reveal)
     });
     chat_scroll::use_chat_scroll(cockpit, in_view, near_top, drawn_reveal);
+    let UndrawnRows {
+        count: mut undrawn,
+        mut draw_all,
+    } = use_context();
+    use_effect(move || {
+        let Some(agent) = draw_all() else {
+            return;
+        };
+        draw_all.set(None);
+        if rows.peek().0 == Some(agent) {
+            drawn.set(Some(Drawn::All(agent)));
+        }
+    });
+    use_effect(move || {
+        let now = view.read().as_ref().map(|view| {
+            (
+                view.agent,
+                view.row_ids.len().saturating_sub(view.top.len()),
+            )
+        });
+        if *undrawn.peek() != now {
+            undrawn.set(now);
+        }
+    });
     // The performance info notes the chat's first rows of an agent, then the rows it opens with.
     let mut timed = use_hook(|| CopyValue::new((None::<AgentId>, false)));
     use_effect(move || {
