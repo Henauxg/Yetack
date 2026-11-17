@@ -44,6 +44,13 @@ const SUMMARY_MAX_CHARS: usize = 200;
 
 /// Claude Code's record of a `Write` call holds the file as it was before.
 const ORIGINAL_FILE_FIELD: &str = "originalFile";
+
+/// The field of Claude Code's record of an `Agent` call that says how the subagent started.
+const LAUNCH_STATUS_FIELD: &str = "status";
+
+/// What [`LAUNCH_STATUS_FIELD`] holds when the call started the subagent in the background and
+/// returned at once.
+const ASYNC_LAUNCHED: &str = "async_launched";
 /// How Claude Code starts the output of a command that failed.
 const EXIT_CODE_PREFIX: &str = "Exit code ";
 const IMAGE_PLACEHOLDER: &str = "[image]";
@@ -193,6 +200,15 @@ pub(crate) fn original_file(tool_use_result: Option<&Value>) -> Option<String> {
         .get(ORIGINAL_FILE_FIELD)?
         .as_str()
         .map(str::to_owned)
+}
+
+/// Whether Claude Code's record of an `Agent` call says the subagent started in the background.
+/// Its input may not ask for it: without `run_in_background`, Claude Code may still start it there.
+pub(crate) fn launched_in_background(tool_use_result: Option<&Value>) -> bool {
+    tool_use_result
+        .and_then(|record| record.get(LAUNCH_STATUS_FIELD))
+        .and_then(Value::as_str)
+        == Some(ASYNC_LAUNCHED)
 }
 
 /// The text of a tool result, cut at [`MAX_OUTPUT_BYTES`].

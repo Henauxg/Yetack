@@ -407,6 +407,7 @@ fn user_task_notification() {
                     .to_owned()
             ),
             tool_use_id: Some(tool_use_id("toolu_01Example")),
+            result: None,
         }]
     );
 }

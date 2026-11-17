@@ -139,7 +139,8 @@ pub struct ToolCall {
     pub summary: String,
     pub input: Value,
     pub status: ToolCallStatus,
-    /// `None` while the call runs.
+    /// `None` while the call runs. For a subagent started in the background, whose call returns only
+    /// Claude Code's notes for Claude, the result its task ends with, and `None` until then.
     pub output: Option<String>,
     /// The exit code of a command, when Claude Code reports it.
     pub exit_code: Option<i32>,

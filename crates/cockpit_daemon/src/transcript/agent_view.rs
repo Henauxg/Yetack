@@ -1286,6 +1286,14 @@ impl AgentView {
             self.expected_context = Some(ExpectedContext::Skill(skill));
         }
         let output = tools::result_text(&result.content);
+        // Claude Code's record says so, or the call's input asked for it.
+        let launched = !result.is_error
+            && (tools::launched_in_background(tool_use_result)
+                || subagents::find_mut(&mut self.details.subagents, item_id)
+                    .is_some_and(|subagent| subagent.run == SubagentRun::Background));
+        if launched {
+            self.subagent_runs_in_background(item_id);
+        }
         self.subagent_call_finished(item_id, result.is_error, &output, now);
         let Some(item) = self.item_mut(item_id) else {
             return;
@@ -1303,7 +1311,9 @@ impl AgentView {
             return;
         }
         call.status = ToolCallStatus::Done;
-        call.output = Some(output);
+        // A background launch returns Claude Code's notes for Claude, such as the subagent's id:
+        // the subagent's own lines and its end say what it did.
+        call.output = (!launched).then_some(output);
         if call.edit.is_none() {
             return;
         }
@@ -1611,6 +1621,16 @@ impl AgentView {
         }
     }
 
+    /// Claude Code started the subagent of `item` in the background, whatever its input asked.
+    fn subagent_runs_in_background(&mut self, item: ItemId) {
+        if let Some(subagent) = subagents::find_mut(&mut self.details.subagents, item)
+            && subagent.run != SubagentRun::Background
+        {
+            subagent.run = SubagentRun::Background;
+            self.details_changed = true;
+        }
+    }
+
     /// A subagent's call returned. A foreground subagent ends with it; a background one runs on,
     /// unless its call failed to start it.
     fn subagent_call_finished(&mut self, item: ItemId, failed: bool, output: &str, now: Timestamp) {
@@ -1642,7 +1662,30 @@ impl AgentView {
             };
             if let (Some(item), Some(status)) = (item, status) {
                 self.end_subagent(item, status, notification.summary, now);
+                if let Some(result) = notification.result {
+                    self.note_subagent_result(item, result);
+                }
             }
+        }
+    }
+
+    /// The result a background subagent's task ended with, as the output of the call that started
+    /// it: that call returned before the subagent did anything.
+    fn note_subagent_result(&mut self, item: ItemId, result: String) {
+        let background = subagents::find_mut(&mut self.details.subagents, item)
+            .is_some_and(|subagent| subagent.run == SubagentRun::Background);
+        let launched = background
+            && find_item(&self.items, item).is_some_and(|item| {
+                matches!(&item.body, ItemBody::Subagent(call)
+                    if call.status == ToolCallStatus::Done && call.output.is_none())
+            });
+        if !launched {
+            return;
+        }
+        if let Some(item) = self.item_mut(item)
+            && let ItemBody::Subagent(call) = &mut item.body
+        {
+            call.output = Some(tools::truncate(result, tools::MAX_OUTPUT_BYTES));
         }
     }
 
@@ -3170,10 +3213,120 @@ mod tests {
         );
         assert_eq!(subagent_statuses(&view), [SubagentStatus::Running]);
         assert_eq!(view.details().subagents[0].run, SubagentRun::Background);
+        let ItemBody::Subagent(call) = &view.items()[0].body else {
+            panic!("expected a subagent");
+        };
+        assert_eq!(call.output, None, "the launch's notes are for Claude");
 
         apply(&mut view, fixture(USER_TASK_NOTIFICATION));
 
         assert_eq!(subagent_statuses(&view), [SubagentStatus::Stopped]);
+    }
+
+    #[test]
+    fn a_background_subagent_shows_the_result_its_task_ended_with() {
+        let mut view = view();
+        apply(&mut view, agent_call("toolu_01Example", "Review", true));
+        apply(
+            &mut view,
+            tool_result("toolu_01Example", "Async agent launched", false),
+        );
+
+        let mut ended = fixture(USER_TASK_NOTIFICATION);
+        ended["message"]["content"] = json!(
+            "<task-notification>\n<task-id>a1b2c3</task-id>\n\
+             <tool-use-id>toolu_01Example</tool-use-id>\n<status>completed</status>\n\
+             <summary>Agent \"Review\" finished</summary>\n\
+             <result>The change holds. One test was missing.</result>\n</task-notification>"
+        );
+        apply(&mut view, ended);
+
+        assert_eq!(subagent_statuses(&view), [SubagentStatus::Done]);
+        let ItemBody::Subagent(call) = &view.items()[0].body else {
+            panic!("expected a subagent");
+        };
+        assert_eq!(
+            call.output.as_deref(),
+            Some("The change holds. One test was missing.")
+        );
+    }
+
+    #[test]
+    fn a_task_result_leaves_the_call_of_a_foreground_subagent_alone() {
+        let mut view = view();
+        apply(&mut view, agent_call("toolu_01Example", "Review", false));
+
+        let mut ended = fixture(USER_TASK_NOTIFICATION);
+        ended["message"]["content"] = json!(
+            "<task-notification>\n<tool-use-id>toolu_01Example</tool-use-id>\n\
+             <status>completed</status>\n<result>Not this call's output.</result>\n\
+             </task-notification>"
+        );
+        apply(&mut view, ended);
+
+        let ItemBody::Subagent(call) = &view.items()[0].body else {
+            panic!("expected a subagent");
+        };
+        assert_eq!(
+            (call.status, call.output.as_deref()),
+            (ToolCallStatus::Running, None),
+            "the call's own result gives its output"
+        );
+    }
+
+    #[test]
+    fn a_subagent_claude_code_starts_in_the_background_runs_on_and_shows_no_launch_notes() {
+        let mut view = view();
+        apply(
+            &mut view,
+            tool_use(
+                "toolu_01Example",
+                "Agent",
+                json!({"description": "Review the change", "prompt": "Look"}),
+            ),
+        );
+
+        let mut launched = tool_result(
+            "toolu_01Example",
+            "Async agent launched successfully. agentId: a1b2c3",
+            false,
+        );
+        launched["tool_use_result"] =
+            json!({"isAsync": true, "status": "async_launched", "agentId": "a1b2c3"});
+        apply(&mut view, launched);
+
+        assert_eq!(subagent_statuses(&view), [SubagentStatus::Running]);
+        assert_eq!(view.details().subagents[0].run, SubagentRun::Background);
+        let ItemBody::Subagent(call) = &view.items()[0].body else {
+            panic!("expected a subagent");
+        };
+        assert_eq!(call.status, ToolCallStatus::Done);
+        assert_eq!(call.output, None);
+    }
+
+    #[test]
+    fn a_session_files_record_of_a_background_launch_reads_as_the_streams_does() {
+        let mut view = view();
+        apply(
+            &mut view,
+            tool_use(
+                "toolu_01Example",
+                "Agent",
+                json!({"description": "Review the change", "prompt": "Look"}),
+            ),
+        );
+
+        let mut launched = tool_result(
+            "toolu_01Example",
+            "Async agent launched successfully. agentId: a1b2c3",
+            false,
+        );
+        launched["toolUseResult"] =
+            json!({"isAsync": true, "status": "async_launched", "agentId": "a1b2c3"});
+        apply(&mut view, launched);
+
+        assert_eq!(subagent_statuses(&view), [SubagentStatus::Running]);
+        assert_eq!(view.details().subagents[0].run, SubagentRun::Background);
     }
 
     #[test]

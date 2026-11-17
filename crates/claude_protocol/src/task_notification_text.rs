@@ -20,6 +20,7 @@ use crate::tagged;
 ///         status: Some(OpenWord::Known(TaskStatus::Failed)),
 ///         summary: Some("Background command \"make\" failed".to_owned()),
 ///         tool_use_id: None,
+///         result: None,
 ///     }],
 /// );
 /// ```
@@ -30,6 +31,8 @@ pub struct TaskNotificationText {
     pub summary: Option<String>,
     /// The tool call that started the task, such as the `Agent` call of a background subagent.
     pub tool_use_id: Option<ToolUseId>,
+    /// What the task ended with, such as a background subagent's last message.
+    pub result: Option<String>,
 }
 
 /// The elements read from a task notification's text.
@@ -40,6 +43,7 @@ enum Tag {
     Status,
     Summary,
     ToolUseId,
+    Result,
 }
 
 impl TaskNotificationText {
@@ -62,6 +66,7 @@ impl TaskNotificationText {
                 }),
                 summary: content(Tag::Summary).map(str::to_owned),
                 tool_use_id: content(Tag::ToolUseId).map(|id| ToolUseId::new(id.to_owned())),
+                result: content(Tag::Result).map(str::to_owned),
             });
             rest = after;
         }
@@ -78,7 +83,13 @@ mod tests {
         let tags: Vec<&str> = Tag::VARIANTS.iter().map(|&tag| tag.into()).collect();
         assert_eq!(
             tags,
-            ["task-notification", "status", "summary", "tool-use-id"]
+            [
+                "task-notification",
+                "status",
+                "summary",
+                "tool-use-id",
+                "result"
+            ]
         );
     }
 
@@ -86,7 +97,7 @@ mod tests {
     fn reads_each_notification_and_skips_what_does_not_close() {
         let text = "Two tasks ended.\n\
             <task-notification><tool-use-id>toolu_7</tool-use-id><status>killed</status>\
-            <summary> Task \"Watch\" was stopped </summary></task-notification>\n\
+            <summary> Task \"Watch\" was stopped </summary><result>\n The log ends.\n</result></task-notification>\n\
             <task-notification><status>archived</status><summary></summary></task-notification>\n\
             <task-notification><status>completed</status>";
 
@@ -99,11 +110,13 @@ mod tests {
                     status: Some(OpenWord::Known(TaskStatus::Killed)),
                     summary: Some("Task \"Watch\" was stopped".to_owned()),
                     tool_use_id: Some(ToolUseId::new("toolu_7".to_owned())),
+                    result: Some("The log ends.".to_owned()),
                 },
                 TaskNotificationText {
                     status: Some(OpenWord::Unknown("archived".to_owned())),
                     summary: None,
                     tool_use_id: None,
+                    result: None,
                 },
             ]
         );

@@ -294,7 +294,7 @@ The daemon does not pass `--enable-auth-status`: its lines report a login in pro
 
 The daemon builds `AgentDetails.subagents` from `claude`'s lines (module `transcript::subagents`).
 An `Agent` or `Task` call starts a subagent, and the lines whose `parent_tool_use_id` names that call are its own.
-A background subagent ends with its task, since its call returns at once. The turn's end stops the turn's foreground subagents.
+A background subagent ends with its task, since its call returns at once. Claude Code may start a subagent in the background without `run_in_background` in its input, and its record of the call then says `"status": "async_launched"`: the daemon reads that, and drops the call's output, which holds only notes for Claude. The `<result>` of the task notification that ends a background subagent becomes the call's output. The turn's end stops the turn's foreground subagents.
 The list keeps the running subagents and the latest ended ones, 200 in all.
 
 `agent.stop_task` stops a subagent with a task. The control protocol cannot stop one foreground subagent without a task: only `agent.interrupt` stops it, with the whole turn.
