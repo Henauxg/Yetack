@@ -50,6 +50,9 @@ impl Hub {
         }
         let folder = agent_folder(&params.folder)?;
         let account = self.account(params.account)?;
+        // A name the client gave goes into the Claude session too, as a rename does, so the
+        // session keeps it after the agent closes, in the resume list and in `claude --resume`.
+        let named = title.is_some();
         let title = title.unwrap_or_else(|| {
             cockpit_protocol::default_title(
                 params.prompt.as_ref().map(|prompt| prompt.text.as_str()),
@@ -74,6 +77,9 @@ impl Hub {
             resume_as: ResumeAs::Same,
         };
         let agent = self.add_agent(record, params.prompt, None)?;
+        if named {
+            self.rename_session(agent);
+        }
         Ok(ResponseBody::AgentStarted { agent })
     }
 

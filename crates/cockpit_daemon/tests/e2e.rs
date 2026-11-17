@@ -821,6 +821,12 @@ async fn a_start_reads_its_title_as_a_rename_does() {
         panic!("expected AgentStarted");
     };
     let named = client.summary_with(titled, |_| true).await;
+    // The Claude session takes the name too, once the first turn ends.
+    client
+        .item_with(titled, |body| {
+            matches!(body, ItemBody::Notice { text, .. } if text == "Session renamed to: Cart total")
+        })
+        .await;
     let ResponseBody::AgentStarted { agent: untitled } = client.ok(start(None)).await else {
         panic!("expected AgentStarted");
     };
