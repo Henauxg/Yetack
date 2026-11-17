@@ -318,11 +318,13 @@ pub fn screen(state: &mut AppState, screen: Screen) {
 mod tests {
     use std::time::Instant;
 
-    use cockpit_protocol::{AgentStatus, Catchup};
+    use cockpit_client::RequestError;
+    use cockpit_protocol::{AgentStatus, Catchup, Method};
 
     use super::*;
     use crate::state::{
-        Drafts, apply_update as apply_session_update, connected_update, state_with, summary,
+        Drafts, apply_response, apply_update as apply_session_update, connected_update, state_with,
+        summary,
     };
 
     fn agent() -> AgentId {
@@ -527,12 +529,7 @@ mod tests {
     }
 
     #[test]
-    fn a_key_the_terminal_refuses_leaves_no_note() {
-        use cockpit_client::RequestError;
-        use cockpit_protocol::Method;
-
-        use crate::state::{Drafts, apply_response};
-
+    fn a_refused_key_leaves_no_note() {
         let mut state = state_with(vec![summary(1, AgentStatus::Idle)]);
         let key = input(agent(), TerminalId::new(2), "l".to_owned());
 

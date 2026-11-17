@@ -138,10 +138,10 @@ impl Cockpit {
         }
     }
 
-    /// Sends a terminal's keys or size (`Purpose::TerminalKeys`) without writing the state, which
-    /// would render the window again for each key. Another purpose would lose the requests that
-    /// `change` adds.
+    /// Sends a terminal's keys or size without writing the state, which would render the window
+    /// again for each key. Only `Purpose::TerminalKeys` may skip the state.
     pub fn send_terminal_keys(&self, request: Outgoing) {
+        debug_assert!(matches!(request.purpose, Purpose::TerminalKeys));
         self.daemon.send(ToDaemon::Send(request));
     }
 

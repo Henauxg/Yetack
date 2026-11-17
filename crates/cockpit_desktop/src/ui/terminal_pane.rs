@@ -135,10 +135,8 @@ function forget(entry) {
   }
 }
 
-// Puts the shown terminal's box in the screen, wherever the pane is.
-let shown = null;
-// ghostty-web draws each open terminal on every frame, even one out of the page: the terminals
-// not on screen stop drawing, and a write still reaches them.
+// ghostty-web draws every open terminal on each frame, even one out of the page. Only `drawn`
+// keeps drawing. A paused terminal still takes writes.
 function drawOnly(drawn) {
   for (const entry of terminals.values()) {
     const term = entry.term;
@@ -152,6 +150,8 @@ function drawOnly(drawn) {
   }
 }
 
+// Puts the shown terminal's box in the screen, wherever the pane is.
+let shown = null;
 function place() {
   const screen = document.getElementById(settings.screen_id);
   if (screen === null) {
