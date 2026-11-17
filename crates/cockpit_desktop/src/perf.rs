@@ -10,12 +10,14 @@
 //! - "page frame took": the web page's layout and paint held one frame.
 //! - A switch whose first rows took over half a second to paint stays pinned at the top, in amber.
 
+use std::cmp::Reverse;
 use std::collections::VecDeque;
 use std::fmt::Display;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
+use chrono::Local;
 use cockpit_client::RequestError;
 use cockpit_protocol::{Method, ResponseBody};
 use dioxus::prelude::*;
@@ -25,6 +27,8 @@ use crate::state::AppState;
 
 /// The lines the box keeps, newest last.
 const KEPT_LINES: usize = 26;
+/// How a line shows the clock time.
+const CLOCK_FORMAT: &str = "%H:%M:%S";
 /// The longest gap between two ticks of the box's timer that is not a stall.
 const STALL: Duration = Duration::from_millis(120);
 const TICK: Duration = Duration::from_millis(40);
@@ -46,21 +50,27 @@ struct Log {
     pinned: VecDeque<Vec<String>>,
 }
 
-static LOG: Mutex<Log> = Mutex::new(Log {
-    switched: None,
-    lines: VecDeque::new(),
-    switch: Vec::new(),
-    painted: false,
-    pinned: VecDeque::new(),
-});
+impl Log {
+    const fn new() -> Self {
+        Self {
+            switched: None,
+            lines: VecDeque::new(),
+            switch: Vec::new(),
+            painted: false,
+            pinned: VecDeque::new(),
+        }
+    }
+}
+
+static LOG: Mutex<Log> = Mutex::new(Log::new());
 static ON: AtomicBool = AtomicBool::new(false);
 static VERSION: AtomicU64 = AtomicU64::new(0);
 static EVENTS: AtomicU64 = AtomicU64::new(0);
-static EVENTS_US: AtomicU64 = AtomicU64::new(0);
+static EVENTS_MICROS: AtomicU64 = AtomicU64::new(0);
 static BUILDS: AtomicU64 = AtomicU64::new(0);
-static BUILDS_US: AtomicU64 = AtomicU64::new(0);
+static BUILDS_MICROS: AtomicU64 = AtomicU64::new(0);
 static RENDERS: AtomicU64 = AtomicU64::new(0);
-static RENDERS_US: AtomicU64 = AtomicU64::new(0);
+static RENDERS_MICROS: AtomicU64 = AtomicU64::new(0);
 
 /// Turns the measures on or off. Off, the log and the counts empty.
 pub fn set_on(on: bool) {
@@ -70,22 +80,16 @@ pub fn set_on(on: bool) {
     }
     for count in [
         &EVENTS,
-        &EVENTS_US,
+        &EVENTS_MICROS,
         &BUILDS,
-        &BUILDS_US,
+        &BUILDS_MICROS,
         &RENDERS,
-        &RENDERS_US,
+        &RENDERS_MICROS,
     ] {
         count.store(0, Ordering::Relaxed);
     }
     if let Ok(mut log) = LOG.lock() {
-        *log = Log {
-            switched: None,
-            lines: VecDeque::new(),
-            switch: Vec::new(),
-            painted: false,
-            pinned: VecDeque::new(),
-        };
+        *log = Log::new();
     }
 }
 
@@ -113,7 +117,7 @@ pub fn switched(title: &str) {
         log.switched = Some(Instant::now());
         log.switch.clear();
         log.painted = false;
-        let clock = chrono::Local::now().format("%H:%M:%S");
+        let clock = Local::now().format(CLOCK_FORMAT);
         push(&mut log, format!("---- {clock} switch to {title}"));
     }
 }
@@ -137,7 +141,7 @@ pub fn connection(text: impl Display) {
     if !is_on() {
         return;
     }
-    let clock = chrono::Local::now().format("%H:%M:%S");
+    let clock = Local::now().format(CLOCK_FORMAT);
     note(format_args!("{clock} {text}"));
 }
 
@@ -179,7 +183,7 @@ pub fn event(took: Duration) {
         return;
     }
     EVENTS.fetch_add(1, Ordering::Relaxed);
-    EVENTS_US.fetch_add(micros(took), Ordering::Relaxed);
+    EVENTS_MICROS.fetch_add(micros(took), Ordering::Relaxed);
     if took > Duration::from_millis(30) {
         note(format_args!("one event applied in {} ms", took.as_millis()));
     }
@@ -219,26 +223,33 @@ impl Drop for Timer {
             return;
         };
         let (count, total) = match self.timed {
-            Timed::ChatBuild => (&BUILDS, &BUILDS_US),
-            Timed::ChatRender => (&RENDERS, &RENDERS_US),
+            Timed::ChatBuild => (&BUILDS, &BUILDS_MICROS),
+            Timed::ChatRender => (&RENDERS, &RENDERS_MICROS),
         };
         count.fetch_add(1, Ordering::Relaxed);
         total.fetch_add(micros(started.elapsed()), Ordering::Relaxed);
     }
 }
 
-/// The chat drew `drawn` of its `rows` rows: its first frame, or the rows it opens with
-/// (`opened`). The next painted frame shows too.
-pub fn chat_drawn(drawn: usize, rows: usize, opened: bool) {
+/// How far the chat of the agent switched to got.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChatStage {
+    /// The chat drew its first rows.
+    First,
+    /// The chat drew the rows it opens with.
+    Opened,
+}
+
+/// The chat drew `drawn` of its `rows` rows, at `stage`. The next painted frame shows too.
+pub fn chat_drawn(drawn: usize, rows: usize, stage: ChatStage) {
     if !is_on() {
         return;
     }
-    if opened {
-        note(format_args!(
+    match stage {
+        ChatStage::First => note(format_args!("chat: first {drawn} of {rows} rows drawn")),
+        ChatStage::Opened => note(format_args!(
             "chat: {drawn} of {rows} rows drawn, the rest on a scroll up"
-        ));
-    } else {
-        note(format_args!("chat: first {drawn} of {rows} rows drawn"));
+        )),
     }
     spawn(async move {
         let mut painted = document::eval(
@@ -246,13 +257,12 @@ pub fn chat_drawn(drawn: usize, rows: usize, opened: bool) {
         );
         let _ = painted.recv::<f64>().await;
         let _ = painted.await;
-        note(if opened {
-            "chat: its rows painted"
-        } else {
-            "chat: first rows painted"
-        });
-        if !opened {
-            first_painted();
+        match stage {
+            ChatStage::First => {
+                note("chat: first rows painted");
+                first_painted();
+            }
+            ChatStage::Opened => note("chat: its rows painted"),
         }
     });
 }
@@ -284,10 +294,15 @@ fn held(state: &AppState) -> String {
     let mut agents: Vec<(usize, &str)> = state
         .agents
         .values()
-        .map(|entry| (entry.transcript.len(), entry.summary.title.as_str()))
+        .map(|entry| {
+            (
+                entry.transcript.items().count(),
+                entry.summary.title.as_str(),
+            )
+        })
         .collect();
     let total: usize = agents.iter().map(|(count, _)| count).sum();
-    agents.sort_by_key(|(count, _)| std::cmp::Reverse(*count));
+    agents.sort_by_key(|(count, _)| Reverse(*count));
     let named: Vec<String> = agents
         .iter()
         .take(NAMED_AGENTS)
@@ -350,11 +365,11 @@ pub fn PerfBox() -> Element {
                 rates.set(format!(
                     "last 1 s: {} events ({} ms), {} chat builds ({} ms), {} chat renders ({} ms)",
                     EVENTS.swap(0, Ordering::Relaxed),
-                    EVENTS_US.swap(0, Ordering::Relaxed) / 1000,
+                    EVENTS_MICROS.swap(0, Ordering::Relaxed) / 1000,
                     BUILDS.swap(0, Ordering::Relaxed),
-                    BUILDS_US.swap(0, Ordering::Relaxed) / 1000,
+                    BUILDS_MICROS.swap(0, Ordering::Relaxed) / 1000,
                     RENDERS.swap(0, Ordering::Relaxed),
-                    RENDERS_US.swap(0, Ordering::Relaxed) / 1000,
+                    RENDERS_MICROS.swap(0, Ordering::Relaxed) / 1000,
                 ));
                 holding.set(held(&cockpit.state.peek()));
             }

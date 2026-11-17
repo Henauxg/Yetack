@@ -18,7 +18,7 @@ use serde_json::Value;
 
 use crate::connection::{Clock, Cockpit, Today};
 use crate::keymap::Command;
-use crate::perf::{self, Timed};
+use crate::perf::{self, ChatStage, Timed};
 use crate::prefs::ToolCallDetail;
 use crate::render::{self, Diff, Found, Language, OutputPart, SearchTool, diff_lines};
 use crate::state::sending::{SendingPlace, SendingPrompt};
@@ -279,8 +279,8 @@ const FIRST_ROWS: usize = 40;
 /// The older rows each following frame adds.
 const CHUNK_ROWS: usize = 40;
 /// The rows a chat draws on its own when it opens. Older rows it holds wait until the view nears
-/// the top: each render compares every row drawn, so a chat that drew the 2,000 rows a morning of
-/// work leaves took 350 to 900 ms per chunk.
+/// the top: each render compares every row drawn, and with the 2,000 rows a morning of work leaves
+/// drawn, each chunk takes 350 to 900 ms.
 const OPEN_ROWS: usize = 120;
 /// The older rows the chat adds each time the view nears its top.
 const MORE_ROWS: usize = 60;
@@ -294,6 +294,20 @@ enum Drawn {
     All(AgentId),
 }
 
+/// An agent's chat is scrolled up.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ScrolledUp {
+    /// The agent's last entry when the chat left its bottom.
+    last_seen: Option<ItemId>,
+}
+
+impl ScrolledUp {
+    fn of(state: &AppState, agent: AgentId) -> Option<Self> {
+        let last_seen = *state.ui.chat_scrolled_up.get(&agent)?;
+        Some(Self { last_seen })
+    }
+}
+
 /// The next step after the chat drew `drawn` of `rows`, the ids of its rows, oldest first: the
 /// next chunk's edge, until [`OPEN_ROWS`] rows are drawn. A chat that opens on a place scrolled
 /// up draws at once, since its skeleton shows until then: from [`OPEN_ROWS`] above the last entry
@@ -303,7 +317,7 @@ fn next_drawn(
     agent: AgentId,
     drawn: Option<Drawn>,
     rows: &[ItemId],
-    scrolled_up: Option<Option<ItemId>>,
+    scrolled_up: Option<ScrolledUp>,
     place: Option<ItemId>,
 ) -> Option<Drawn> {
     let next = match drawn {
@@ -316,7 +330,7 @@ fn next_drawn(
             first.saturating_sub(CHUNK_ROWS)
         }
         _ => match scrolled_up {
-            Some(last_seen) => {
+            Some(ScrolledUp { last_seen }) => {
                 let after = last_seen.map_or(rows.len(), |seen| {
                     rows.iter().position(|id| *id > seen).unwrap_or(rows.len())
                 });
@@ -452,7 +466,7 @@ struct ChatInputs {
     turn_start: Option<TurnStart>,
     quiet_since: Option<Timestamp>,
     sign_in_wait: SignInWait,
-    scrolled_up: Option<Option<ItemId>>,
+    scrolled_up: Option<ScrolledUp>,
     new_from: Option<ItemId>,
     sending: Vec<SendingPrompt>,
 }
@@ -470,7 +484,7 @@ impl ChatInputs {
             turn_start: entry.turn_start(),
             quiet_since: entry.summary.quiet_since,
             sign_in_wait: entry.summary.sign_in_wait,
-            scrolled_up: state.ui.chat_scrolled_up.get(&agent).copied(),
+            scrolled_up: ScrolledUp::of(state, agent),
             new_from: state.ui.chat_new_from.get(&agent).copied(),
             sending: entry
                 .sending
@@ -670,13 +684,7 @@ pub fn TranscriptView(in_view: Signal<Option<InView>>) -> Element {
             return;
         };
         let current = drawn();
-        let scrolled_up = cockpit
-            .state
-            .peek()
-            .ui
-            .chat_scrolled_up
-            .get(&agent)
-            .copied();
+        let scrolled_up = ScrolledUp::of(&cockpit.state.peek(), agent);
         let place = places.peek().get(&agent).copied();
         let next = {
             let (rows_agent, ids) = &*rows.read();
@@ -746,10 +754,10 @@ pub fn TranscriptView(in_view: Signal<Option<InView>>) -> Element {
         let rows = view.row_ids.len();
         if agent != Some(view.agent) {
             timed.set((Some(view.agent), view.named));
-            perf::chat_drawn(view.top.len(), rows, false);
+            perf::chat_drawn(view.top.len(), rows, ChatStage::First);
         } else if view.named && !opened {
             timed.set((Some(view.agent), true));
-            perf::chat_drawn(view.top.len(), rows, true);
+            perf::chat_drawn(view.top.len(), rows, ChatStage::Opened);
         }
     });
     let new_agent_keys = use_memo(move || {
@@ -2590,12 +2598,28 @@ mod tests {
         );
         assert_eq!(more_drawn(AgentId::new(8), from(180), &rows), None);
         assert_eq!(
-            next_drawn(agent, None, &rows, Some(Some(ItemId::new(250))), None),
+            next_drawn(
+                agent,
+                None,
+                &rows,
+                Some(ScrolledUp {
+                    last_seen: Some(ItemId::new(250))
+                }),
+                None
+            ),
             from(131),
             "a chat scrolled up draws from 120 rows above the last entry seen"
         );
         assert_eq!(
-            next_drawn(agent, None, &rows[..100], Some(Some(ItemId::new(90))), None),
+            next_drawn(
+                agent,
+                None,
+                &rows[..100],
+                Some(ScrolledUp {
+                    last_seen: Some(ItemId::new(90))
+                }),
+                None
+            ),
             Some(Drawn::All(agent))
         );
     }
@@ -2606,10 +2630,12 @@ mod tests {
     fn a_chat_scrolled_up_far_draws_from_above_the_place_it_goes_back_to() {
         let agent = AgentId::new(7);
         let rows: Vec<ItemId> = (0..300).map(ItemId::new).collect();
-        let last_seen = Some(Some(ItemId::new(250)));
+        let scrolled_up = Some(ScrolledUp {
+            last_seen: Some(ItemId::new(250)),
+        });
 
-        let far = next_drawn(agent, None, &rows, last_seen, Some(ItemId::new(60)));
-        let near = next_drawn(agent, None, &rows, last_seen, Some(ItemId::new(200)));
+        let far = next_drawn(agent, None, &rows, scrolled_up, Some(ItemId::new(60)));
+        let near = next_drawn(agent, None, &rows, scrolled_up, Some(ItemId::new(200)));
 
         assert_eq!(far, Some(Drawn::From(agent, ItemId::new(20))));
         assert_eq!(
@@ -2618,7 +2644,7 @@ mod tests {
             "a place below 120 rows above the last entry seen changes nothing"
         );
         assert_eq!(
-            next_drawn(agent, far, &rows, last_seen, Some(ItemId::new(60))),
+            next_drawn(agent, far, &rows, scrolled_up, Some(ItemId::new(60))),
             None
         );
     }

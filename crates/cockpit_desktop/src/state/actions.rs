@@ -735,12 +735,15 @@ pub fn palette_pick(
         },
         MenuAction::PerformanceInfo => {
             state.ui.perf_info = !state.ui.perf_info;
+            let label = MenuAction::PerformanceInfo.label();
             let note = if state.ui.perf_info {
-                "Performance info is on: the box at the bottom right times each switch of agent. Pick \"Performance info\" again to hide it."
+                format!(
+                    "{label} is on: the box at the bottom right times each switch of agent. Pick \"{label}\" again to hide it."
+                )
             } else {
-                "Performance info is off."
+                format!("{label} is off.")
             };
-            state.ui.inform(note.to_owned());
+            state.ui.inform(note);
             Picked::default()
         }
         MenuAction::Model | MenuAction::Effort | MenuAction::Mode => Picked::default(),

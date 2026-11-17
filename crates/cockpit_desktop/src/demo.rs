@@ -3962,7 +3962,6 @@ const LIVE_READ: u32 = 2;
 /// How many kinds of entries `live_entry_of` makes.
 const LIVE_KINDS: u32 = 6;
 
-/// A made-up entry of the live agent, picked by its id.
 /// One of the entries `YETACK_DEMO_FILL` adds: the live agent's, with a test output a dozen
 /// times longer, as real ones are.
 fn filled_entry(id: u32) -> TranscriptItem {
@@ -3976,6 +3975,7 @@ fn filled_entry(id: u32) -> TranscriptItem {
     item(id, None, body)
 }
 
+/// A made-up entry of the live agent, picked by its id.
 fn live_entry(id: u32) -> ItemBody {
     live_entry_of(id % LIVE_KINDS, id)
 }

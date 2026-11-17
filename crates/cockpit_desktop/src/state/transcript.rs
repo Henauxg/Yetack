@@ -134,11 +134,6 @@ impl Transcript {
         self.revision = Revision(REVISIONS.fetch_add(1, Ordering::Relaxed).wrapping_add(1));
     }
 
-    /// How many items the app holds.
-    pub fn len(&self) -> usize {
-        self.items.len()
-    }
-
     pub fn first_id(&self) -> Option<ItemId> {
         self.items.keys().next().copied()
     }

@@ -7,6 +7,7 @@ use dioxus::prelude::*;
 
 use crate::bridge::use_bridge;
 use crate::connection::{Cockpit, Startup, use_clock, use_cockpit};
+use crate::perf::{self, PerfBox};
 use crate::prefs::{TerminalPlace, use_prefs_saver};
 use crate::state::{ConnectionState, NoteKind, actions, daemon_update, file_tree, sending};
 use crate::ui::app_update::use_release_checks;
@@ -56,7 +57,7 @@ pub fn App() -> Element {
     // The entries in the chat's view: the bubble and the Messages block follow them.
     let in_view = use_signal(|| None::<InView>);
     let perf_info = use_memo(move || cockpit.state.read().ui.perf_info);
-    use_effect(move || crate::perf::set_on(perf_info()));
+    use_effect(move || perf::set_on(perf_info()));
     let state = cockpit.state.read();
     let selected = state.ui.selected;
     let switching = use_switching(cockpit, selected);
@@ -138,7 +139,7 @@ pub fn App() -> Element {
     rsx! {
         div { id: APP_ID, class: app_class, style: "{SHARE_PROPERTY}: {share}; {SIDEBAR_WIDTH_PROPERTY}: {sidebar_width}px; {FILES_WIDTH_PROPERTY}: {files_width}px",
             if perf_info() {
-                crate::perf::PerfBox {}
+                PerfBox {}
             }
             Sidebar {}
             SidebarSplitter { width: sidebar_width }
