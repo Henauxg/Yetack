@@ -7,7 +7,8 @@
 //! not, so the script does it. It tells the app only when the chat reaches or leaves its bottom,
 //! and when another entry comes to the top of the view.
 //!
-//! Within [`NEAR_TOP_SCREENS`] of the top, it asks for the page of older messages, once per first
+//! Within [`NEAR_TOP_SCREENS`] of the top, while the chat has `data-loads-older` (older messages
+//! exist and none is on its way), it asks for the page of older messages, once per first
 //! entry: a page that comes changes the first entry, so the next one follows if the view is still
 //! near the top.
 
@@ -197,8 +198,10 @@ const report = () => {
     reportedView = view;
     dioxus.send({ type: "in_view", agent: Number(agent), at_bottom: following, top, bottom });
   }
+  // The app refuses the ask while the chat has no `data-loads-older`, as while a page is on its
+  // way: the ask waits for the mark.
   const above = boxTop() - column.getBoundingClientRect().top;
-  if (above >= settings.near_top_screens * box.clientHeight) {
+  if (box.dataset.loadsOlder === undefined || above >= settings.near_top_screens * box.clientHeight) {
     reportedNearTop = "";
     return;
   }
@@ -360,7 +363,7 @@ const attach = () => {
       }
     }
   }, { passive: true });
-  mutations.observe(box, { childList: true, subtree: true, characterData: true });
+  mutations.observe(box, { childList: true, subtree: true, characterData: true, attributes: true, attributeFilter: ["data-loads-older"] });
   resizes.observe(column);
   resizes.observe(box);
   knowGap();

@@ -488,6 +488,7 @@ pub fn TranscriptView(in_view: Signal<Option<InView>>) -> Element {
         })
         .collect();
     let history = entry.transcript.history().clone();
+    let loads_older = history == HistoryState::Loaded { has_older: true };
     let sending: Vec<SendingPrompt> = entry
         .sending
         .in_place(SendingPlace::Chat)
@@ -504,6 +505,8 @@ pub fn TranscriptView(in_view: Signal<Option<InView>>) -> Element {
             // The chat's scroll script keeps each agent's place. It goes back to that place once
             // the chat draws all the agent's rows.
             "data-agent": (shown == ShownRows::All).then(|| agent.get().to_string()),
+            // The script asks for older messages near the top only while this mark is on.
+            "data-loads-older": loads_older.then_some("true"),
             div { class: "chat-column",
                 if shown == ShownRows::Skeleton {
                     TranscriptSkeleton {}
