@@ -48,6 +48,10 @@ pub struct Welcome {
     /// The commit of the program that runs the daemon, when its build knew it.
     pub daemon_commit: Option<BuildCommit>,
     pub catchup: Catchup,
+    /// With a replay, the daemon's last event when the client joined: the events up to it
+    /// happened while the client was away. `None` with a snapshot, and from a daemon that does
+    /// not say.
+    pub replayed_through: Option<Seq>,
 }
 
 type Reply = oneshot::Sender<Result<ResponseBody, RequestError>>;
@@ -191,12 +195,14 @@ where
             daemon_version,
             daemon_commit,
             catchup,
+            replayed_through,
         }) => {
             if protocol_version == PROTOCOL_VERSION {
                 Ok(Welcome {
                     daemon_version,
                     daemon_commit,
                     catchup,
+                    replayed_through,
                 })
             } else {
                 Err(ConnectError::VersionMismatch {
@@ -430,8 +436,34 @@ mod tests {
                 daemon_version: test_daemon::daemon_version(),
                 daemon_commit: Some(test_daemon::daemon_commit()),
                 catchup: Catchup::Snapshot(test_daemon::snapshot(Some(9))),
+                replayed_through: None,
             }
         );
+    }
+
+    #[tokio::test]
+    async fn welcome_gives_the_end_of_the_replay() {
+        let daemon = TestDaemon::new();
+        let transport = daemon.transport();
+        let welcome = async {
+            let mut peer = daemon.accept().await;
+            peer.hello().await;
+            peer.send(&ServerMessage::Welcome {
+                protocol_version: PROTOCOL_VERSION,
+                daemon_version: test_daemon::daemon_version(),
+                daemon_commit: None,
+                catchup: Catchup::Replay,
+                replayed_through: Some(Seq::new(8)),
+            })
+            .await;
+            peer
+        };
+
+        let (connected, _peer) =
+            tokio::join!(Connection::connect(&transport, Some(Seq::new(5))), welcome);
+
+        let (_connection, welcome) = connected.unwrap();
+        assert_eq!(welcome.replayed_through, Some(Seq::new(8)));
     }
 
     #[tokio::test]
@@ -483,6 +515,7 @@ mod tests {
                 daemon_version: ReleaseVersion::new("9.0.0".to_owned()),
                 daemon_commit: None,
                 catchup: Catchup::Replay,
+                replayed_through: None,
             })
             .await;
             peer

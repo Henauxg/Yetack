@@ -100,6 +100,7 @@ impl TestDaemon {
             daemon_version: daemon_version(),
             daemon_commit: Some(daemon_commit()),
             catchup,
+            replayed_through: None,
         })
         .await;
         (peer, last_seq)

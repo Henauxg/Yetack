@@ -12,7 +12,7 @@ use cockpit_protocol::{
 };
 
 use super::accounts::{self, SignIns};
-use super::app_state::{AgentEntry, AppState, ConnectionState};
+use super::app_state::{AgentEntry, AppState, Arrival, ConnectionState, HeldFinish};
 use super::drafts::Drafts;
 use super::sending::Sending;
 use super::{
@@ -73,10 +73,15 @@ fn apply_session_update(
             daemon_version,
             daemon_commit,
             catchup,
+            replayed_through,
         }) => {
             known.connection = ConnectionState::Connected;
             known.daemon_version = Some(daemon_version);
             known.daemon_commit = daemon_commit;
+            known.replayed_through = match catchup {
+                Catchup::Replay => replayed_through,
+                Catchup::Snapshot(_) => None,
+            };
             // The daemon may have been updated.
             known.folders_unknown = false;
             daemon_start::connected(known);
@@ -93,9 +98,21 @@ fn apply_session_update(
             Vec::new()
         }
         SessionUpdate::Event(record) => {
+            let arrival = if known
+                .replayed_through
+                .is_some_and(|last| record.seq <= last)
+            {
+                Arrival::Replayed
+            } else {
+                Arrival::Live
+            };
             note_turn_start(state, &record.event, now);
-            hold_finish(state, &record.event, now);
-            apply(state, drafts, record, machine).into_iter().collect()
+            hold_finish(state, &record.event, now, arrival);
+            let alert = apply(state, drafts, record, machine);
+            match arrival {
+                Arrival::Live => alert.into_iter().collect(),
+                Arrival::Replayed => Vec::new(),
+            }
         }
         SessionUpdate::Terminal(update) => {
             terminals::apply_update(state, update);
@@ -507,7 +524,7 @@ fn update_agent(state: &mut AppState, summary: AgentSummary) -> Option<Alert> {
 
 /// Holds the finish of an idle agent whose last background task ends, until [`FINISH_HOLD`] has
 /// passed: [`release_finishes`] announces it then. Any other status drops the hold.
-fn hold_finish(state: &mut AppState, event: &Event, now: Instant) {
+fn hold_finish(state: &mut AppState, event: &Event, now: Instant, arrival: Arrival) {
     let Event::AgentUpdated(summary) = event else {
         return;
     };
@@ -516,9 +533,12 @@ fn hold_finish(state: &mut AppState, event: &Event, now: Instant) {
     };
     let idle = |summary: &AgentSummary| summary.status == AgentStatus::Idle;
     if !idle(summary) || summary.background_running > 0 {
-        entry.finish_due = None;
+        entry.held_finish = None;
     } else if idle(&entry.summary) && entry.summary.background_running > 0 {
-        entry.finish_due = Some(now.checked_add(FINISH_HOLD).unwrap_or(now));
+        entry.held_finish = Some(HeldFinish {
+            due: now.checked_add(FINISH_HOLD).unwrap_or(now),
+            arrival,
+        });
     }
 }
 
@@ -528,22 +548,30 @@ pub fn next_finish_due(state: &AppState, machine: MachineId) -> Option<Instant> 
         .agents
         .iter()
         .filter(|(agent, _)| MachineId::of(**agent) == machine)
-        .filter_map(|(_, entry)| entry.finish_due)
+        .filter_map(|(_, entry)| entry.held_finish.map(|held| held.due))
         .min()
 }
 
-/// Announces the held finishes of `machine`'s agents that are due at `now`.
+/// Announces the held finishes of `machine`'s agents that are due at `now`. A finish held by a
+/// replayed event marks its agent unread, without an alert.
 pub fn release_finishes(state: &mut AppState, machine: MachineId, now: Instant) -> Vec<Alert> {
-    let due: Vec<AgentId> = state
+    let due: Vec<(AgentId, Arrival)> = state
         .agents
         .iter_mut()
         .filter(|(agent, _)| MachineId::of(**agent) == machine)
-        .filter_map(|(agent, entry)| entry.finish_due.take_if(|due| *due <= now).map(|_| *agent))
+        .filter_map(|(agent, entry)| {
+            let held = entry.held_finish.take_if(|held| held.due <= now)?;
+            Some((*agent, held.arrival))
+        })
         .collect();
     let mut alerts = Vec::new();
-    for agent in due {
-        if !state.ui.closing.contains(&agent) {
-            alerts.extend(finished(state, agent));
+    for (agent, arrival) in due {
+        if state.ui.closing.contains(&agent) {
+            continue;
+        }
+        let alert = finished(state, agent);
+        if arrival == Arrival::Live {
+            alerts.extend(alert);
         }
     }
     alerts
@@ -1059,6 +1087,168 @@ mod tests {
             own.iter().map(|alert| alert.kind).collect::<Vec<_>>(),
             [AlertKind::Finished]
         );
+    }
+
+    /// The daemon accepted the connection with a replay that ends at `through`.
+    fn replay_through(through: u64) -> SessionUpdate {
+        let mut update = connected_update(Catchup::Replay);
+        if let SessionUpdate::Connected(welcome) = &mut update {
+            welcome.replayed_through = Some(Seq::new(through));
+        }
+        update
+    }
+
+    fn connect(state: &mut AppState, update: SessionUpdate) {
+        apply_update(
+            state,
+            &mut Drafts::default(),
+            update,
+            Instant::now(),
+            MachineId::THIS,
+        );
+    }
+
+    /// Applies `summary` as the event numbered `seq`, at `now`.
+    fn updated(state: &mut AppState, seq: u64, summary: AgentSummary, now: Instant) -> Vec<Alert> {
+        let record = EventRecord {
+            seq: Seq::new(seq),
+            event: Event::AgentUpdated(summary),
+        };
+        apply_update(
+            state,
+            &mut Drafts::default(),
+            SessionUpdate::Event(record),
+            now,
+            MachineId::THIS,
+        )
+    }
+
+    fn with_background(id: u32, status: AgentStatus, background_running: u16) -> AgentSummary {
+        AgentSummary {
+            background_running,
+            ..with_status(id, status)
+        }
+    }
+
+    fn kinds(alerts: &[Alert]) -> Vec<AlertKind> {
+        alerts.iter().map(|alert| alert.kind).collect()
+    }
+
+    #[test]
+    fn the_events_of_a_replay_raise_no_alert_but_mark_unread() {
+        let now = Instant::now();
+        let mut state = state_with(vec![
+            summary(1, AgentStatus::Working),
+            summary(2, AgentStatus::Working),
+        ]);
+        state.ui.selected = Some(AgentId::new(1));
+        connect(&mut state, replay_through(10));
+
+        let needs_you = updated(&mut state, 9, with_status(1, AgentStatus::NeedsYou), now);
+        let finished = updated(&mut state, 10, with_status(2, AgentStatus::Idle), now);
+
+        assert!(needs_you.is_empty());
+        assert!(finished.is_empty());
+        assert!(state.is_unread(AgentId::new(2)));
+    }
+
+    #[test]
+    fn a_finish_the_replay_held_marks_unread_without_an_alert() {
+        let start = Instant::now();
+        let mut state = state_with(vec![summary(1, AgentStatus::Working)]);
+        connect(&mut state, replay_through(10));
+        updated(
+            &mut state,
+            9,
+            with_background(1, AgentStatus::Idle, 1),
+            start,
+        );
+        updated(
+            &mut state,
+            10,
+            with_background(1, AgentStatus::Idle, 0),
+            start,
+        );
+
+        let due = next_finish_due(&state, MachineId::THIS);
+        let released = release_finishes(&mut state, MachineId::THIS, start + FINISH_HOLD);
+
+        assert_eq!(due, Some(start + FINISH_HOLD));
+        assert!(released.is_empty());
+        assert!(state.is_unread(AgentId::new(1)));
+        assert_eq!(next_finish_due(&state, MachineId::THIS), None);
+    }
+
+    #[test]
+    fn the_events_after_a_replay_raise_alerts() {
+        let start = Instant::now();
+        let mut state = state_with(vec![
+            summary(1, AgentStatus::Working),
+            summary(2, AgentStatus::Working),
+        ]);
+        connect(&mut state, replay_through(10));
+
+        let needs_you = updated(&mut state, 11, with_status(2, AgentStatus::NeedsYou), start);
+        let turn_ended = updated(
+            &mut state,
+            12,
+            with_background(1, AgentStatus::Idle, 1),
+            start,
+        );
+        let all_ended = updated(
+            &mut state,
+            13,
+            with_background(1, AgentStatus::Idle, 0),
+            start,
+        );
+        let released = release_finishes(&mut state, MachineId::THIS, start + FINISH_HOLD);
+
+        assert_eq!(kinds(&needs_you), [AlertKind::NeedsYou]);
+        assert!(turn_ended.is_empty());
+        assert!(all_ended.is_empty());
+        assert_eq!(kinds(&released), [AlertKind::Finished]);
+    }
+
+    #[test]
+    fn a_replay_that_does_not_say_where_it_ends_raises_alerts() {
+        let mut state = state_with(vec![summary(1, AgentStatus::Working)]);
+        connect(&mut state, connected_update(Catchup::Replay));
+
+        let needs_you = updated(
+            &mut state,
+            9,
+            with_status(1, AgentStatus::NeedsYou),
+            Instant::now(),
+        );
+
+        assert_eq!(kinds(&needs_you), [AlertKind::NeedsYou]);
+    }
+
+    /// A daemon that started on another state folder numbers its events from 1 again.
+    #[test]
+    fn a_snapshot_forgets_where_an_earlier_replay_ended() {
+        let mut state = state_with(vec![summary(1, AgentStatus::Working)]);
+        connect(&mut state, replay_through(10));
+        connect(
+            &mut state,
+            connected_update(Catchup::Snapshot(Snapshot {
+                agents: vec![summary(1, AgentStatus::Working)],
+                plan_usage: PlanUsage::default(),
+                settings: Settings::default(),
+                last_seq: Some(Seq::new(2)),
+                accounts: Vec::new(),
+                other_plan_usage: Vec::new(),
+            })),
+        );
+
+        let needs_you = updated(
+            &mut state,
+            3,
+            with_status(1, AgentStatus::NeedsYou),
+            Instant::now(),
+        );
+
+        assert_eq!(kinds(&needs_you), [AlertKind::NeedsYou]);
     }
 
     #[test]

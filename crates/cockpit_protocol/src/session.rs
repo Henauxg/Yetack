@@ -101,6 +101,12 @@ pub enum ServerMessage {
         /// The commit of the program that runs the daemon. `None` when its build did not know it.
         daemon_commit: Option<BuildCommit>,
         catchup: Catchup,
+        /// With `Catchup::Replay`, the daemon's last event when the client joined: the replay
+        /// covers the events up to it, and each live event comes after it. It equals the client's
+        /// `last_seq` when nothing happened meanwhile. Absent with a snapshot, and from an older
+        /// daemon of this protocol.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        replayed_through: Option<Seq>,
     },
     /// The daemon closes the connection after it. Its shape stays the same in every protocol, so
     /// that a client of another protocol reads it.
@@ -126,8 +132,8 @@ pub enum ServerMessage {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Catchup {
-    /// The daemon sends every event after the client's `last_seq`, then live events. The client
-    /// keeps its state and applies them.
+    /// The daemon sends every event after the client's `last_seq`, through the welcome's
+    /// `replayed_through`, then live events. The client keeps its state and applies them.
     Replay,
     /// The client replaces its state with the snapshot. Live events after `snapshot.last_seq`
     /// follow.

@@ -183,9 +183,9 @@ pub struct AgentEntry {
     /// The cards whose answer the app sent, until the daemon refuses it or its update closes the
     /// card: a second Enter, key or click meanwhile sends nothing, and the card shows that it went.
     pub answers_sent: BTreeSet<PendingId>,
-    /// When the app announces the agent's finish, unless a turn starts before. Set when the last
+    /// The finish the app announces later, unless a turn starts before. Set when the last
     /// background task of an idle agent ends.
-    pub finish_due: Option<Instant>,
+    pub held_finish: Option<HeldFinish>,
     /// The images its messages show, the least recently shown first.
     pub images: VecDeque<KeptImage>,
     /// The files pane's tree of its folder.
@@ -213,6 +213,24 @@ impl TurnStart {
             Self::Seen(started) => started.elapsed(),
         }
     }
+}
+
+/// An agent's finish, held until `due` in case a turn starts before.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HeldFinish {
+    pub due: Instant,
+    /// How the app heard that the last background task ended.
+    pub arrival: Arrival,
+}
+
+/// How the app heard of a daemon's event.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Arrival {
+    /// As it happened.
+    Live,
+    /// In the replay after a reconnect: it happened while the app was away, so it raises no
+    /// notification.
+    Replayed,
 }
 
 /// What holds a message Claude has: Claude reads it at its next step, once these end.
@@ -308,7 +326,7 @@ impl AgentEntry {
             turn_started: None,
             sent_again: None,
             answers_sent: BTreeSet::new(),
-            finish_due: None,
+            held_finish: None,
             images: VecDeque::new(),
             tree: FileTree::default(),
             sending: Sending::default(),
@@ -371,6 +389,10 @@ pub struct MachineState {
     /// The commit the daemon said its program was built from, at its last connection. `None`
     /// when that build did not know it.
     pub daemon_commit: Option<BuildCommit>,
+    /// The end of the replay that caught up at the last connection: the events up to it happened
+    /// while the app was away, so they raise no notification. `None` after a snapshot, and from a
+    /// daemon that does not say.
+    pub replayed_through: Option<Seq>,
     /// The default account's plan usage.
     pub plan_usage: PlanUsage,
     pub settings: Settings,
@@ -424,6 +446,7 @@ impl MachineState {
             connection: ConnectionState::Connecting { attempt: 1 },
             daemon_version: None,
             daemon_commit: None,
+            replayed_through: None,
             plan_usage: PlanUsage::default(),
             settings: Settings::default(),
             accounts: Vec::new(),
@@ -842,6 +865,7 @@ pub(crate) mod tests {
             daemon_version: ReleaseVersion::new(DAEMON_VERSION.to_owned()),
             daemon_commit: Some(BuildCommit::new(DAEMON_COMMIT.to_owned())),
             catchup,
+            replayed_through: None,
         })
     }
 

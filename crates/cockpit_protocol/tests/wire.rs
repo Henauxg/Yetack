@@ -1034,12 +1034,21 @@ fn server_messages() -> Vec<ServerMessage> {
             daemon_version: ReleaseVersion::new("0.1.0".to_owned()),
             daemon_commit: Some(commit()),
             catchup: Catchup::Replay,
+            replayed_through: Some(Seq::new(41)),
+        },
+        ServerMessage::Welcome {
+            protocol_version: PROTOCOL_VERSION,
+            daemon_version: ReleaseVersion::new("0.1.0".to_owned()),
+            daemon_commit: Some(commit()),
+            catchup: Catchup::Replay,
+            replayed_through: None,
         },
         ServerMessage::Welcome {
             protocol_version: PROTOCOL_VERSION,
             daemon_version: ReleaseVersion::new("0.1.0".to_owned()),
             daemon_commit: None,
             catchup: Catchup::Snapshot(snapshot()),
+            replayed_through: None,
         },
         ServerMessage::Refused {
             reason: "the daemon speaks protocol 2".to_owned(),
@@ -1851,6 +1860,7 @@ fn a_welcome_with_a_snapshot_on_the_wire() {
                 usage: PlanUsage::default(),
             }],
         }),
+        replayed_through: None,
     };
 
     assert_wire(
@@ -1888,6 +1898,48 @@ fn a_welcome_with_a_snapshot_on_the_wire() {
                 "other_plan_usage": [{"account": 2, "usage": {"windows": {}}}],
             },
         }),
+    );
+}
+
+#[test]
+fn a_welcome_with_a_replay_on_the_wire() {
+    let message = ServerMessage::Welcome {
+        protocol_version: 1,
+        daemon_version: ReleaseVersion::new("0.1.0".to_owned()),
+        daemon_commit: None,
+        catchup: Catchup::Replay,
+        replayed_through: Some(Seq::new(41)),
+    };
+
+    assert_wire(
+        &message,
+        json!({
+            "type": "welcome",
+            "protocol_version": 1,
+            "daemon_version": "0.1.0",
+            "daemon_commit": null,
+            "catchup": {"type": "replay"},
+            "replayed_through": 41,
+        }),
+    );
+}
+
+/// A daemon that predates `replayed_through` does not say where its replay ends.
+#[test]
+fn a_welcome_without_the_end_of_its_replay_reads_as_none() {
+    let older = r#"{"type":"welcome","protocol_version":1,"daemon_version":"0.1.0","daemon_commit":null,"catchup":{"type":"replay"}}"#;
+
+    let read: ServerMessage = serde_json::from_str(older).unwrap();
+
+    assert_eq!(
+        read,
+        ServerMessage::Welcome {
+            protocol_version: 1,
+            daemon_version: ReleaseVersion::new("0.1.0".to_owned()),
+            daemon_commit: None,
+            catchup: Catchup::Replay,
+            replayed_through: None,
+        }
     );
 }
 
