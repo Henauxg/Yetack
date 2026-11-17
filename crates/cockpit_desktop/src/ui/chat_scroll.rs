@@ -6,6 +6,10 @@
 //! Browsers that implement CSS scroll anchoring (`overflow-anchor`) correct that; WebKitGTK does
 //! not, so the script does it. It tells the app only when the chat reaches or leaves its bottom,
 //! and when another entry comes to the top of the view.
+//!
+//! Within [`NEAR_TOP_SCREENS`] of the top, while the chat has [`LOADS_OLDER_ATTRIBUTE`], it asks
+//! for the page of older messages, once per first entry: a page that comes changes the first
+//! entry, so the next one follows if the view is still near the top.
 
 use cockpit_protocol::{AgentId, ItemId};
 use dioxus::prelude::*;
@@ -34,8 +38,16 @@ pub const FOLD_BUTTON_CLASS: &str = "fold-lines";
 /// The class that highlights an entry the chat scrolled to, for as long as its animation runs.
 pub const REVEALED_CLASS: &str = "chat-revealed";
 
+/// Marks the chat while older messages exist and none is on its way: only then does the script ask
+/// for them. The chat's view writes it out, since an attribute name in `rsx!` takes no constant.
+pub const LOADS_OLDER_ATTRIBUTE: &str = "data-loads-older";
+
 /// How close to the bottom, in pixels, the chat still follows new entries.
 const BOTTOM_THRESHOLD_PX: u16 = 40;
+
+/// How near the top, in heights of the view, the chat asks for older messages, so that they usually
+/// come before the user reaches the top.
+const NEAR_TOP_SCREENS: u8 = 2;
 
 /// The room, in pixels, above an entry the chat scrolls to.
 const REVEAL_TOP_PX: u16 = 12;
@@ -67,6 +79,8 @@ let following = true;
 let anchor = null;
 let reported = "";
 let reportedView = "";
+// The agent and first entry the chat last asked older messages for.
+let reportedNearTop = "";
 // The scroll position the script set last. Its own scroll leaves the anchor as it was: measured
 // again, the anchor would drift by the rounding of each correction.
 let corrected = null;
@@ -186,6 +200,18 @@ const report = () => {
   if (view !== reportedView) {
     reportedView = view;
     dioxus.send({ type: "in_view", agent: Number(agent), at_bottom: following, top, bottom });
+  }
+  // Without the mark, as while a page is on its way, the app refuses the ask: it waits for the mark.
+  if (!box.hasAttribute(settings.loads_older_attribute)
+    || boxTop() - column.getBoundingClientRect().top >= settings.near_top_screens * box.clientHeight) {
+    reportedNearTop = "";
+    return;
+  }
+  const first = itemOf(column.querySelector(`.${settings.entry_class}`));
+  const nearTop = `${agent} ${first}`;
+  if (nearTop !== reportedNearTop) {
+    reportedNearTop = nearTop;
+    dioxus.send({ type: "near_top", agent: Number(agent) });
   }
 };
 // After a scroll by the user: where the view now is.
@@ -339,7 +365,12 @@ const attach = () => {
       }
     }
   }, { passive: true });
-  mutations.observe(box, { childList: true, subtree: true, characterData: true });
+  mutations.observe(box, {
+    childList: true,
+    subtree: true,
+    characterData: true,
+    attributeFilter: [settings.loads_older_attribute],
+  });
   resizes.observe(column);
   resizes.observe(box);
   knowGap();
@@ -458,11 +489,13 @@ struct Settings {
     /// Marks the element that records a shortcut, whose keys the script leaves alone.
     records_keys_attribute: &'static str,
     revealed_class: &'static str,
+    loads_older_attribute: &'static str,
     /// The event by which the find scrolls the chat to a match.
     find_reveal_event: &'static str,
     bottom_threshold_px: u16,
     /// The room an entry the chat scrolls to keeps above it.
     reveal_top_px: u16,
+    near_top_screens: u8,
     wheel_up_ms: u16,
     rounding_px: f32,
 }
@@ -496,6 +529,10 @@ enum ScrollMessage {
         at_bottom: bool,
         top: Option<u32>,
         bottom: Option<u32>,
+    },
+    /// The view came near the top: older messages are wanted.
+    NearTop {
+        agent: u32,
     },
 }
 
@@ -567,9 +604,11 @@ pub fn use_chat_scroll(cockpit: Cockpit, mut in_view: Signal<Option<InView>>) {
             file_view_id: FILE_VIEW_ID,
             records_keys_attribute: RECORDS_KEYS_ATTRIBUTE,
             revealed_class: REVEALED_CLASS,
+            loads_older_attribute: LOADS_OLDER_ATTRIBUTE,
             find_reveal_event: REVEAL_EVENT,
             bottom_threshold_px: BOTTOM_THRESHOLD_PX,
             reveal_top_px: REVEAL_TOP_PX,
+            near_top_screens: NEAR_TOP_SCREENS,
             wheel_up_ms: WHEEL_UP_MS,
             rounding_px: ROUNDING_PX,
         };
@@ -595,6 +634,10 @@ pub fn use_chat_scroll(cockpit: Cockpit, mut in_view: Signal<Option<InView>>) {
                             top: ItemId::new(top),
                             bottom: ItemId::new(bottom),
                         }));
+                    }
+                    Ok(ScrollMessage::NearTop { agent }) => {
+                        let agent = AgentId::new(agent);
+                        cockpit.change(|state| actions::load_older(state, agent));
                     }
                     Err(error) => {
                         tracing::warn!("the chat's scroll script stopped: {error}");
@@ -657,9 +700,11 @@ mod tests {
             file_view_id: FILE_VIEW_ID,
             records_keys_attribute: RECORDS_KEYS_ATTRIBUTE,
             revealed_class: REVEALED_CLASS,
+            loads_older_attribute: LOADS_OLDER_ATTRIBUTE,
             find_reveal_event: REVEAL_EVENT,
             bottom_threshold_px: BOTTOM_THRESHOLD_PX,
             reveal_top_px: REVEAL_TOP_PX,
+            near_top_screens: NEAR_TOP_SCREENS,
             wheel_up_ms: WHEEL_UP_MS,
             rounding_px: ROUNDING_PX,
         };
@@ -677,9 +722,11 @@ mod tests {
                 "file_view_id": "file-view",
                 "records_keys_attribute": "data-records-keys",
                 "revealed_class": "chat-revealed",
+                "loads_older_attribute": "data-loads-older",
                 "find_reveal_event": "yetack-find-reveal",
                 "bottom_threshold_px": 40,
                 "reveal_top_px": 12,
+                "near_top_screens": 2,
                 "wheel_up_ms": 600,
                 "rounding_px": 1.5,
             })
@@ -691,6 +738,9 @@ mod tests {
                 at_bottom: false
             }
         ));
+        let near_top: ScrollMessage =
+            serde_json::from_value(json!({ "type": "near_top", "agent": 7 })).unwrap();
+        assert!(matches!(near_top, ScrollMessage::NearTop { agent: 7 }));
         assert_eq!(entry_id(AgentId::new(3), ItemId::new(12)), "entry-3-12");
         let in_view = |top: Value, bottom: Value| -> ScrollMessage {
             serde_json::from_value(json!({

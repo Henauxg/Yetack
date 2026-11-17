@@ -499,16 +499,11 @@ pub fn apply_response(
                 other => {
                     let failure = Failure::from_result(other);
                     let history = match (older, failure.transient) {
-                        (true, _) => HistoryState::Loaded { has_older: true },
+                        (true, _) => HistoryState::OlderFailed(failure.message),
                         (false, true) => HistoryState::NotLoaded,
-                        (false, false) => HistoryState::Failed(failure.message.clone()),
+                        (false, false) => HistoryState::Failed(failure.message),
                     };
                     entry.transcript.set_history(history);
-                    if older {
-                        state
-                            .ui
-                            .report(format!("Cannot load older messages: {}", failure.message));
-                    }
                 }
             }
         }
@@ -1298,6 +1293,55 @@ mod tests {
                 agent,
                 path: PathBuf::from("src/main.rs")
             })
+        );
+    }
+
+    #[test]
+    fn an_older_page_that_fails_keeps_its_error_until_a_retry_asks_again() {
+        let mut state = connected_with_selection();
+        let agent = AgentId::new(1);
+        needed_requests(&mut state);
+        let page = HistoryPage {
+            items: vec![TranscriptItem {
+                id: ItemId::new(40),
+                parent: None,
+                body: ItemBody::Notice {
+                    text: "compacted".to_owned(),
+                    detail: None,
+                    kind: NoticeKind::Plain,
+                },
+            }],
+            older_items: OlderItems::Exist,
+        };
+        let answer = |state: &mut AppState, older: bool, result| {
+            apply_response(
+                state,
+                &mut Drafts::default(),
+                Method::AgentHistory,
+                Purpose::History { agent, older },
+                result,
+                MachineId::THIS,
+            );
+        };
+        answer(&mut state, false, Ok(ResponseBody::History(page)));
+
+        let first = actions::load_older(&mut state, agent);
+        let while_loading = actions::load_older(&mut state, agent);
+        let busy = ErrorBody::new(ErrorCode::Internal, "the daemon is busy".to_owned());
+        answer(&mut state, true, Err(RequestError::Failed(busy)));
+        let failed = state.agents[&agent].transcript.history().clone();
+        let retry = actions::load_older(&mut state, agent);
+
+        assert_eq!(methods(&first), [Method::AgentHistory]);
+        assert!(while_loading.is_empty());
+        assert_eq!(
+            failed,
+            HistoryState::OlderFailed("the daemon is busy".to_owned())
+        );
+        assert_eq!(methods(&retry), [Method::AgentHistory]);
+        assert_eq!(
+            state.agents[&agent].transcript.history(),
+            &HistoryState::LoadingOlder
         );
     }
 

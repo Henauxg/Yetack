@@ -17,7 +17,7 @@ use crate::connection::{Clock, Cockpit};
 use crate::format;
 use crate::keymap::Command;
 use crate::state::agent_map::{self, MapRow, MapTab, MapView, OutlineRow, RowKind, StopKind};
-use crate::state::{self, HistoryState, actions};
+use crate::state::{self, actions};
 use crate::ui::cards::{ApprovalCard, PlanCard};
 use crate::ui::icons::{Icon, IconKind};
 use crate::ui::markdown::MarkdownView;
@@ -339,10 +339,7 @@ pub fn AgentMapDialog(view: MapView) -> Element {
                         subagent,
                         subagents,
                         items: entry.transcript.items().collect(),
-                        has_older: matches!(
-                            entry.transcript.history(),
-                            HistoryState::Loaded { has_older: true }
-                        ),
+                        has_older: entry.transcript.history().can_load_older(),
                         tab: view.tab,
                     })
                 })

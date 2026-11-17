@@ -694,7 +694,7 @@ pub fn palette_pick(
             let note = if export::is_complete(entry) {
                 "Copied the conversation to the clipboard as Markdown."
             } else {
-                "Copied the conversation to the clipboard as Markdown, without the older messages the window has not loaded. Load them with \"Load older messages\" at the top of the conversation, then export again."
+                "Copied the conversation to the clipboard as Markdown, without the older messages the window has not loaded. Scroll to the top of the conversation to load them, then export again."
             };
             state.ui.inform(note.to_owned());
             Picked {
@@ -1816,7 +1816,7 @@ pub fn load_older(state: &mut AppState, agent: AgentId) -> Vec<Outgoing> {
     let Some(entry) = state.agents.get_mut(&agent) else {
         return Vec::new();
     };
-    if entry.transcript.history() != &(HistoryState::Loaded { has_older: true }) {
+    if !entry.transcript.history().can_load_older() {
         return Vec::new();
     }
     entry.transcript.set_history(HistoryState::LoadingOlder);
@@ -3734,9 +3734,9 @@ mod tests {
             ))
         );
         assert_eq!(part.window, Some(WindowAction::Copy(copied)));
-        // Only the button loads older messages: the note names it.
+        // The note says how to load the older messages.
         assert!(part_note.is_some_and(|(_, text)| {
-            text.contains("without the older messages") && text.contains("\"Load older messages\"")
+            text.contains("without the older messages") && text.contains("Scroll to the top")
         }));
     }
 

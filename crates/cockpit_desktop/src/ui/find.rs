@@ -801,7 +801,7 @@ pub(super) fn ChatFindBar() -> Element {
                     }
                 }
                 match history {
-                    Some(HistoryState::Loaded { has_older: true }) => rsx! {
+                    Some(history) if history.can_load_older() => rsx! {
                         span { class: "find-note", "Older messages are not loaded." }
                         button {
                             class: "link-button find-load",
