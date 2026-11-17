@@ -18,6 +18,7 @@ use super::find::FindFocus;
 use super::mcp_reconnect::Reconnects;
 use super::projects::{ProjectKey, RuleKind};
 use super::terminals::Screen;
+use super::transcript::{KEPT_ITEMS_AWAY, KEPT_ITEMS_SCROLLED_UP};
 use crate::keymap::{Chord, Command, Refusal};
 use crate::machine::MachineId;
 use crate::prefs::ProjectId;
@@ -596,6 +597,8 @@ pub struct UiState {
     /// The first entry that arrived while the agent's chat was scrolled up, once the chat went
     /// back down: the "New" divider sits above it until a message is sent or another agent opens.
     pub chat_new_from: BTreeMap<AgentId, ItemId>,
+    /// The performance info's box shows (`perf.rs`).
+    pub perf_info: bool,
     /// Counts the sends that take the chat to its bottom: the chat's scroll script jumps at each.
     pub chat_jumps: u64,
     /// The next id of a message on its way, one count for every agent.
@@ -642,6 +645,7 @@ impl Default for UiState {
             next_error: 0,
             chat_scrolled_up: BTreeMap::new(),
             chat_new_from: BTreeMap::new(),
+            perf_info: false,
             chat_jumps: 0,
             next_sending: 0,
             chat_reveal: None,
@@ -656,6 +660,15 @@ impl Default for UiState {
 }
 
 impl UiState {
+    /// The most items the app keeps of `agent` while it is not looked at.
+    pub fn kept_items_away(&self, agent: AgentId) -> usize {
+        if self.chat_scrolled_up.contains_key(&agent) {
+            KEPT_ITEMS_SCROLLED_UP
+        } else {
+            KEPT_ITEMS_AWAY
+        }
+    }
+
     /// Scrolls `agent`'s chat to the entry of the top-level `item`, puts it at `place`, and
     /// highlights it.
     pub fn reveal_in_chat(&mut self, agent: AgentId, item: ItemId, place: RevealPlace) {

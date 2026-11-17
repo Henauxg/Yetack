@@ -8,8 +8,9 @@
 //! and when another entry comes to the top of the view.
 //!
 //! Within [`NEAR_TOP_SCREENS`] of the top, while the chat has [`LOADS_OLDER_ATTRIBUTE`], it asks
-//! for the page of older messages, once per first entry: a page that comes changes the first
-//! entry, so the next one follows if the view is still near the top.
+//! for older messages, once per first entry: the chat draws more of the rows it holds, or loads
+//! the page before them. Either changes the first entry, so the next ask follows if the view is
+//! still near the top.
 
 use cockpit_protocol::{AgentId, ItemId};
 use dioxus::prelude::*;
@@ -17,7 +18,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::bridge::RECORDS_KEYS_ATTRIBUTE;
 use crate::connection::Cockpit;
-use crate::state::{RevealPlace, actions};
+use crate::state::{ChatReveal, RevealPlace, actions};
 use crate::ui::find::REVEAL_EVENT;
 use crate::ui::icons::{Icon, IconKind};
 use crate::ui::splitter::FILE_VIEW_ID;
@@ -38,8 +39,9 @@ pub const FOLD_BUTTON_CLASS: &str = "fold-lines";
 /// The class that highlights an entry the chat scrolled to, for as long as its animation runs.
 pub const REVEALED_CLASS: &str = "chat-revealed";
 
-/// Marks the chat while older messages exist and none is on its way: only then does the script ask
-/// for them. The chat's view writes it out, since an attribute name in `rsx!` takes no constant.
+/// Marks the chat while it can show older messages: rows it holds but has not drawn, or older
+/// messages the daemon has, with none on its way. Only then does the script ask for them. The
+/// chat's view writes it out, since an attribute name in `rsx!` takes no constant.
 pub const LOADS_OLDER_ATTRIBUTE: &str = "data-loads-older";
 
 /// How close to the bottom, in pixels, the chat still follows new entries.
@@ -592,8 +594,14 @@ pub fn NewDivider() -> Element {
 
 /// Runs the script for the window's life, and keeps `in_view` on the entries in view. `in_view` is
 /// a signal of its own: it changes while the user scrolls, and only the views that read it render
-/// again.
-pub fn use_chat_scroll(cockpit: Cockpit, mut in_view: Signal<Option<InView>>) {
+/// again. `near_top` takes the script's asks for older messages. `reveal` is the last reveal asked,
+/// once the chat draws its entry: the script scrolls to it once.
+pub fn use_chat_scroll(
+    cockpit: Cockpit,
+    mut in_view: Signal<Option<InView>>,
+    near_top: Callback<AgentId>,
+    reveal: Memo<Option<ChatReveal>>,
+) {
     let script = use_hook(|| {
         let mut script = document::eval(SCRIPT);
         let settings = Settings {
@@ -636,8 +644,7 @@ pub fn use_chat_scroll(cockpit: Cockpit, mut in_view: Signal<Option<InView>>) {
                         }));
                     }
                     Ok(ScrollMessage::NearTop { agent }) => {
-                        let agent = AgentId::new(agent);
-                        cockpit.change(|state| actions::load_older(state, agent));
+                        near_top.call(AgentId::new(agent));
                     }
                     Err(error) => {
                         tracing::warn!("the chat's scroll script stopped: {error}");
@@ -667,11 +674,16 @@ pub fn use_chat_scroll(cockpit: Cockpit, mut in_view: Signal<Option<InView>>) {
             tracing::warn!("cannot take the chat to its bottom: {error}");
         }
     });
-    let reveal = use_memo(move || cockpit.state.read().ui.chat_reveal);
+    // A reveal goes to the script once: its entry is drawn again each time its agent opens.
+    let mut sent = use_hook(|| CopyValue::new(None::<ChatReveal>));
     use_effect(move || {
         let Some(reveal) = reveal() else {
             return;
         };
+        if *sent.peek() == Some(reveal) {
+            return;
+        }
+        sent.set(Some(reveal));
         let command = ScrollCommand::Reveal {
             entry_id: entry_id(reveal.agent, reveal.item),
             place: reveal.place,

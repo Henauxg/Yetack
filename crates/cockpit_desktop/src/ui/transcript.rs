@@ -18,11 +18,13 @@ use serde_json::Value;
 
 use crate::connection::{Clock, Cockpit, Today};
 use crate::keymap::Command;
+use crate::perf::{self, ChatStage, Timed};
 use crate::prefs::ToolCallDetail;
 use crate::render::{self, Diff, Found, Language, OutputPart, SearchTool, diff_lines};
 use crate::state::sending::{SendingPlace, SendingPrompt};
 use crate::state::{
-    self, AgentEntry, AppState, HistoryState, TurnStart, accounts, actions, chat_images, file_edits,
+    self, AgentEntry, AppState, ChatReveal, HistoryState, Revision, TurnStart, accounts, actions,
+    chat_images, file_edits,
 };
 use crate::ui::accounts::SignInCard;
 use crate::ui::cards::{ApprovalCard, PlanCard};
@@ -276,6 +278,12 @@ const TOOL_ERROR_CLOSE: &str = "</tool_use_error>";
 const FIRST_ROWS: usize = 40;
 /// The older rows each following frame adds.
 const CHUNK_ROWS: usize = 40;
+/// The rows a chat draws on its own when it opens. Older rows it holds wait until the view nears
+/// the top: each render compares every row drawn, and with the 2,000 rows a morning of work leaves
+/// drawn, each chunk takes 350 to 900 ms.
+const OPEN_ROWS: usize = 120;
+/// The older rows the chat adds each time the view nears its top.
+const MORE_ROWS: usize = 60;
 
 /// How far up the chat draws the selected agent's rows, past the frame it opens in. A row's item
 /// marks the edge, so a row the working agent adds below moves nothing.
@@ -286,28 +294,105 @@ enum Drawn {
     All(AgentId),
 }
 
+/// An agent's chat is scrolled up.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ScrolledUp {
+    /// The agent's last entry when the chat left its bottom.
+    last_seen: Option<ItemId>,
+}
+
+impl ScrolledUp {
+    fn of(state: &AppState, agent: AgentId) -> Option<Self> {
+        let last_seen = *state.ui.chat_scrolled_up.get(&agent)?;
+        Some(Self { last_seen })
+    }
+}
+
 /// The next step after the chat drew `drawn` of `rows`, the ids of its rows, oldest first: the
-/// next chunk's edge, or all of them. A chat that opens on a place scrolled up draws all at once,
-/// since its skeleton shows until then.
+/// next chunk's edge, until [`OPEN_ROWS`] rows are drawn. A chat that opens on a place scrolled
+/// up draws at once, since its skeleton shows until then: from [`OPEN_ROWS`] above the last entry
+/// seen, or from [`FIRST_ROWS`] above `place`, the first row in view when the chat was left, if
+/// that is higher. The scroll script goes back to that place only once its row is drawn.
 fn next_drawn(
     agent: AgentId,
     drawn: Option<Drawn>,
     rows: &[ItemId],
-    scrolled_up: bool,
+    scrolled_up: Option<ScrolledUp>,
+    place: Option<ItemId>,
 ) -> Option<Drawn> {
-    let first = match drawn {
+    let next = match drawn {
         Some(Drawn::All(shown)) if shown == agent => return None,
         Some(Drawn::From(shown, from)) if shown == agent => {
-            rows.iter().position(|id| *id >= from).unwrap_or(rows.len())
+            let first = rows.iter().position(|id| *id >= from).unwrap_or(rows.len());
+            if rows.len() - first >= OPEN_ROWS {
+                return None;
+            }
+            first.saturating_sub(CHUNK_ROWS)
         }
-        _ if scrolled_up => 0,
-        _ => rows.len().saturating_sub(FIRST_ROWS),
+        _ => match scrolled_up {
+            Some(ScrolledUp { last_seen }) => {
+                let after = last_seen.map_or(rows.len(), |seen| {
+                    rows.iter().position(|id| *id > seen).unwrap_or(rows.len())
+                });
+                let above_place = place
+                    .and_then(|place| rows.iter().position(|id| *id >= place))
+                    .map_or(rows.len(), |at| at.saturating_sub(FIRST_ROWS));
+                after.saturating_sub(OPEN_ROWS).min(above_place)
+            }
+            None => rows
+                .len()
+                .saturating_sub(FIRST_ROWS)
+                .saturating_sub(CHUNK_ROWS),
+        },
     };
-    let next = first.saturating_sub(CHUNK_ROWS);
-    Some(match rows.get(next) {
-        Some(id) if next > 0 => Drawn::From(agent, *id),
+    Some(drawn_from(agent, rows, next))
+}
+
+/// [`MORE_ROWS`] more rows above the drawn ones, once the view nears the top. `None` once every
+/// row the chat holds is drawn: older ones must come from the daemon.
+fn more_drawn(agent: AgentId, drawn: Option<Drawn>, rows: &[ItemId]) -> Option<Drawn> {
+    let Some(Drawn::From(shown, from)) = drawn else {
+        return None;
+    };
+    if shown != agent {
+        return None;
+    }
+    let first = rows.iter().position(|id| *id >= from)?;
+    (first > 0).then(|| drawn_from(agent, rows, first.saturating_sub(MORE_ROWS)))
+}
+
+/// The rows to draw for a reveal of the top-level `item`, whose row is above the drawn ones: from
+/// [`FIRST_ROWS`] above it. `None` when its row is drawn, or the chat draws no row of `agent` yet.
+fn revealed_drawn(
+    agent: AgentId,
+    drawn: Option<Drawn>,
+    rows: &[ItemId],
+    item: ItemId,
+) -> Option<Drawn> {
+    let Some(Drawn::From(shown, from)) = drawn else {
+        return None;
+    };
+    if shown != agent {
+        return None;
+    }
+    let row = rows.iter().rposition(|id| *id <= item)?;
+    let first = rows.iter().position(|id| *id >= from)?;
+    (row < first).then(|| drawn_from(agent, rows, row.saturating_sub(FIRST_ROWS)))
+}
+
+/// Whether `shown` of `rows` draws the row of the top-level `item`.
+fn draws_item(shown: ShownRows, rows: &[ItemId], item: ItemId) -> bool {
+    rows.iter()
+        .rposition(|id| *id <= item)
+        .is_some_and(|row| row >= shown.first(rows.len()))
+}
+
+/// The rows from index `first` on.
+fn drawn_from(agent: AgentId, rows: &[ItemId], first: usize) -> Drawn {
+    match rows.get(first) {
+        Some(id) if first > 0 => Drawn::From(agent, *id),
         _ => Drawn::All(agent),
-    })
+    }
 }
 
 /// Which rows of the main conversation the chat draws.
@@ -357,15 +442,236 @@ impl ShownRows {
             Self::Skeleton => rows,
         }
     }
+
+    /// Whether the chat drew the rows it opens with, of `rows`: all of them, or [`OPEN_ROWS`].
+    fn is_named(self, rows: usize) -> bool {
+        match self {
+            Self::All => true,
+            Self::Latest(first) => rows.saturating_sub(first) >= OPEN_ROWS,
+            Self::Skeleton => false,
+        }
+    }
+
+    /// The rows of `rows` the chat holds but has not drawn, once it drew the rows it opens with:
+    /// the rows the next frames draw do not count.
+    fn undrawn(self, rows: usize) -> usize {
+        if self.is_named(rows) {
+            self.first(rows)
+        } else {
+            0
+        }
+    }
+}
+
+/// What the chat's rows depend on, cheap to compare: the selected agent's transcript by its
+/// revision, and the few other things that change what the rows show. The chat builds its rows
+/// again only when these change, not at each event of another agent.
+#[derive(Debug, Clone, PartialEq)]
+struct ChatInputs {
+    agent: AgentId,
+    revision: Revision,
+    history: HistoryState,
+    folder: PathBuf,
+    status: AgentStatus,
+    turn_start: Option<TurnStart>,
+    quiet_since: Option<Timestamp>,
+    sign_in_wait: SignInWait,
+    scrolled_up: Option<ScrolledUp>,
+    new_from: Option<ItemId>,
+    sending: Vec<SendingPrompt>,
+}
+
+impl ChatInputs {
+    fn of(state: &AppState) -> Option<Self> {
+        let entry = state.selected()?;
+        let agent = entry.id();
+        Some(Self {
+            agent,
+            revision: entry.transcript.revision(),
+            history: entry.transcript.history().clone(),
+            folder: entry.summary.folder.clone(),
+            status: entry.summary.status,
+            turn_start: entry.turn_start(),
+            quiet_since: entry.summary.quiet_since,
+            sign_in_wait: entry.summary.sign_in_wait,
+            scrolled_up: ScrolledUp::of(state, agent),
+            new_from: state.ui.chat_new_from.get(&agent).copied(),
+            sending: entry
+                .sending
+                .in_place(SendingPlace::Chat)
+                .cloned()
+                .collect(),
+        })
+    }
+}
+
+/// What the chat shows of the selected agent, built from the state once per change of its
+/// [`ChatInputs`].
+#[derive(Debug, Clone, PartialEq)]
+struct ChatView {
+    agent: AgentId,
+    folder: PathBuf,
+    working: bool,
+    turn_start: Option<TurnStart>,
+    quiet_since: Option<Timestamp>,
+    working_linked: bool,
+    shown: ShownRows,
+    /// The ids of all the rows, drawn or not, oldest first.
+    row_ids: Vec<ItemId>,
+    top: Vec<TopRow>,
+    history: HistoryState,
+    started: Option<String>,
+    /// The chat has drawn the rows it opens with, and names its agent to the scroll script.
+    named: bool,
+    /// Scrolling near the top draws held rows not drawn yet, or loads older messages.
+    loads_older: bool,
+    sending: Vec<SendingPrompt>,
+    scrolled_up: bool,
+    /// The entries that arrived while the chat was scrolled up, as rows.
+    waiting: usize,
+}
+
+impl ChatView {
+    fn of(state: &AppState, entry: &AgentEntry, drawn: Option<Drawn>, today: NaiveDate) -> Self {
+        let agent = entry.id();
+        let status = entry.summary.status;
+        let working = status == AgentStatus::Working;
+        let items: Vec<&TranscriptItem> = entry.transcript.items().collect();
+        let loaded: BTreeSet<ItemId> = items.iter().map(|item| item.id).collect();
+        let children = children_by_parent(&items);
+        let awaiting = state::awaiting_approval(&items);
+        // The card of a turn that found no login says what its notice says.
+        let sign_in = accounts::sign_in_turn(entry);
+        let sign_in_notice = sign_in.as_ref().and_then(|turn| turn.notice);
+        let sign_in_end = sign_in.as_ref().map(|turn| turn.turn_end);
+        let waits_for_sign_in = entry.summary.sign_in_wait == SignInWait::Waiting;
+        let top_items = top_items(&items, &loaded, sign_in_notice);
+        let divider = actions::new_divider(state, agent);
+        let top_rows = tool_rows::rows(&top_items, &awaiting, divider);
+        let started: Option<String> = top_items
+            .first()
+            .and_then(|item| match &item.body {
+                ItemBody::UserMessage(message) => message.sent_at,
+                _ => None,
+            })
+            .and_then(|sent_at| format::message_time(sent_at, today));
+        let states: Vec<Option<StepState>> = top_rows
+            .iter()
+            .map(|row| {
+                let item = row.first();
+                if Some(item.id) == sign_in_end {
+                    return Some(if waits_for_sign_in {
+                        StepState::Waiting
+                    } else {
+                        StepState::Plain
+                    });
+                }
+                match row {
+                    Row::Explored { .. } => Some(StepState::of_run(&row.items())),
+                    Row::Item(_) | Row::Skill { .. } => {
+                        StepState::new(item, awaiting.contains(&item.id))
+                    }
+                }
+            })
+            .collect();
+        let is_step: Vec<bool> = states.iter().map(Option::is_some).collect();
+        let links = step_links(&is_step, working);
+        let working_linked = is_step.last().copied().unwrap_or(false);
+        let firsts: Vec<&TranscriptItem> = top_rows.iter().map(Row::first).collect();
+        let notes = older_step_notes(&firsts, &loaded);
+        let scrolled_up = state.ui.chat_scrolled_up.get(&agent).copied();
+        let row_ids: Vec<ItemId> = firsts.iter().map(|item| item.id).collect();
+        let shown = ShownRows::of(agent, drawn, &row_ids, scrolled_up.is_some());
+        let grouped = grouped_times(&firsts, today);
+        let first = shown.first(top_rows.len());
+        let top: Vec<TopRow> = top_rows
+            .iter()
+            .zip(states)
+            .zip(links)
+            .zip(notes)
+            .skip(first)
+            .map(|(((row, state), links), older_step)| TopRow {
+                id: row.first().id,
+                hides_time: grouped.contains(&row.first().id),
+                new_above: divider
+                    .is_some_and(|divider| row.items().iter().any(|item| item.id == divider)),
+                view: RowView::of(row, &children, &awaiting, sign_in_end),
+                step: state.map(|state| Step {
+                    state,
+                    links,
+                    call: is_call(row),
+                }),
+                older_step,
+            })
+            .collect();
+        let history = entry.transcript.history().clone();
+        let named = shown.is_named(row_ids.len());
+        let loads_older = match shown {
+            ShownRows::All => history == HistoryState::Loaded { has_older: true },
+            ShownRows::Latest(_) => named,
+            ShownRows::Skeleton => false,
+        };
+        // A run of new reads counts once, as it shows.
+        let waiting = scrolled_up.map_or(0, |last_seen| {
+            tool_rows::new_rows(&top_rows, actions::new_entries(entry, last_seen).first)
+        });
+        Self {
+            agent,
+            folder: entry.summary.folder.clone(),
+            working,
+            turn_start: entry.turn_start(),
+            quiet_since: entry.summary.quiet_since,
+            working_linked,
+            shown,
+            row_ids,
+            top,
+            history,
+            started,
+            named,
+            loads_older,
+            sending: entry
+                .sending
+                .in_place(SendingPlace::Chat)
+                .cloned()
+                .collect(),
+            scrolled_up: scrolled_up.is_some(),
+            waiting,
+        }
+    }
+}
+
+/// What the chat's find learns of the rows the chat holds but has not drawn, which the page, and
+/// so the find, cannot search. Its "Search them" asks the chat to draw them all.
+#[derive(Clone, Copy)]
+pub struct UndrawnRows {
+    /// For the selected agent.
+    pub count: Signal<Option<UndrawnCount>>,
+    /// The agent whose rows the chat must all draw.
+    pub draw_all: Signal<Option<AgentId>>,
+}
+
+/// The rows of an agent's chat not drawn yet.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct UndrawnCount {
+    pub agent: AgentId,
+    pub rows: usize,
+}
+
+/// Provides [`UndrawnRows`] to the chat and its find.
+pub fn use_undrawn_rows() {
+    use_context_provider(|| UndrawnRows {
+        count: Signal::new(None),
+        draw_all: Signal::new(None),
+    });
 }
 
 #[component]
 pub fn TranscriptView(in_view: Signal<Option<InView>>) -> Element {
+    let _timer = perf::Timer::start(Timed::ChatRender);
     use_hook(start_fold_script);
     let cockpit: Cockpit = use_context();
     find_folds::use_chat_folds(cockpit);
     let Today(today) = use_context::<Today>();
-    chat_scroll::use_chat_scroll(cockpit, in_view);
     // The agent whose conversation the chat opened, once its first page came or failed. A
     // failure shows above all the rows.
     let opened = use_memo(move || {
@@ -376,135 +682,185 @@ pub fn TranscriptView(in_view: Signal<Option<InView>>) -> Element {
             .map(AgentEntry::id)
     });
     // Effects run once the frame's changes are on the page: the chat draws its latest rows in
-    // one frame, then a chunk of older ones in each following frame. The rows' ids come from the
-    // last render, which the effect follows.
+    // one frame, then a chunk of older ones in each following frame, up to `OPEN_ROWS`. The rows'
+    // ids come from the last render, which the effect follows.
     let mut drawn = use_signal(|| None::<Drawn>);
     let mut rows = use_hook(|| CopyValue::new((None::<AgentId>, Vec::<ItemId>::new())));
+    // Near the top, the chat draws more of the rows it holds, then asks for older messages.
+    let near_top = use_callback(move |agent: AgentId| {
+        let more = {
+            let (rows_agent, ids) = &*rows.peek();
+            if *rows_agent == Some(agent) {
+                more_drawn(agent, *drawn.peek(), ids)
+            } else {
+                None
+            }
+        };
+        match more {
+            Some(more) => drawn.set(Some(more)),
+            None => cockpit.change(|state| actions::load_older(state, agent)),
+        }
+    });
+    // The first row in view of each agent whose chat is scrolled up.
+    let mut places = use_hook(|| CopyValue::new(BTreeMap::<AgentId, ItemId>::new()));
+    use_effect(move || {
+        let Some(view) = in_view() else {
+            return;
+        };
+        let mut places = places.write();
+        if view.at_bottom {
+            places.remove(&view.agent);
+        } else {
+            places.insert(view.agent, view.top);
+        }
+    });
     use_effect(move || {
         let Some(agent) = opened() else {
             return;
         };
         let current = drawn();
-        let scrolled_up = cockpit
-            .state
-            .peek()
-            .ui
-            .chat_scrolled_up
-            .contains_key(&agent);
+        let scrolled_up = ScrolledUp::of(&cockpit.state.peek(), agent);
+        let place = places.peek().get(&agent).copied();
         let next = {
             let (rows_agent, ids) = &*rows.read();
             if *rows_agent != Some(agent) {
                 return;
             }
-            next_drawn(agent, current, ids, scrolled_up)
+            next_drawn(agent, current, ids, scrolled_up, place)
         };
         if let Some(next) = next {
             drawn.set(Some(next));
         }
     });
-    let state = cockpit.state.read();
-    let Some(entry) = state.selected() else {
+    let inputs = use_memo(move || ChatInputs::of(&cockpit.state.read()));
+    let view = use_memo(move || {
+        let inputs = inputs()?;
+        let _timer = perf::Timer::start(Timed::ChatBuild);
+        let state = cockpit.state.peek();
+        let entry = state.agents.get(&inputs.agent)?;
+        Some(ChatView::of(&state, entry, drawn(), today()))
+    });
+    // The scroll script reveals only an entry the chat draws: a reveal of a row above the drawn
+    // ones draws from above it first, once per reveal, and goes to the script once it is drawn.
+    let reveal = use_memo(move || cockpit.state.read().ui.chat_reveal);
+    let mut widened = use_hook(|| CopyValue::new(None::<ChatReveal>));
+    use_effect(move || {
+        let Some(reveal) = reveal() else {
+            return;
+        };
+        let current = drawn();
+        if *widened.peek() == Some(reveal) {
+            return;
+        }
+        let wider = {
+            let (rows_agent, ids) = &*rows.peek();
+            let drawing = matches!(
+                current,
+                Some(Drawn::From(agent, _) | Drawn::All(agent)) if agent == reveal.agent
+            );
+            if *rows_agent != Some(reveal.agent) || !drawing {
+                return;
+            }
+            revealed_drawn(reveal.agent, current, ids, reveal.item)
+        };
+        widened.set(Some(reveal));
+        if let Some(wider) = wider {
+            drawn.set(Some(wider));
+        }
+    });
+    let drawn_reveal = use_memo(move || {
+        let reveal = reveal()?;
+        let view = view.read();
+        view.as_ref()
+            .filter(|view| {
+                view.agent == reveal.agent && draws_item(view.shown, &view.row_ids, reveal.item)
+            })
+            .map(|_| reveal)
+    });
+    chat_scroll::use_chat_scroll(cockpit, in_view, near_top, drawn_reveal);
+    let UndrawnRows {
+        count: mut undrawn,
+        mut draw_all,
+    } = use_context();
+    use_effect(move || {
+        let Some(agent) = draw_all() else {
+            return;
+        };
+        draw_all.set(None);
+        if rows.peek().0 == Some(agent) {
+            drawn.set(Some(Drawn::All(agent)));
+        }
+    });
+    use_effect(move || {
+        let now = view.read().as_ref().map(|view| UndrawnCount {
+            agent: view.agent,
+            rows: view.shown.undrawn(view.row_ids.len()),
+        });
+        if *undrawn.peek() != now {
+            undrawn.set(now);
+        }
+    });
+    // The performance info notes the chat's first rows of an agent, then the rows it opens with.
+    let mut timed = use_hook(|| CopyValue::new((None::<AgentId>, false)));
+    use_effect(move || {
+        let view = view.read();
+        let Some(view) = view.as_ref() else {
+            return;
+        };
+        let (agent, opened) = *timed.peek();
+        let rows = view.row_ids.len();
+        if agent != Some(view.agent) {
+            timed.set((Some(view.agent), view.named));
+            perf::chat_drawn(view.top.len(), rows, ChatStage::First);
+        } else if view.named && !opened {
+            timed.set((Some(view.agent), true));
+            perf::chat_drawn(view.top.len(), rows, ChatStage::Opened);
+        }
+    });
+    let new_agent_keys = use_memo(move || {
+        cockpit
+            .state
+            .read()
+            .prefs
+            .keys
+            .shown(Command::NewAgent)
+            .to_string()
+    });
+    let Some(view) = view() else {
         return rsx! {
             div { class: "chat-scroll scroll",
                 div { class: "chat-column",
-                    p { class: "chat-empty", "Pick an agent on the left, or start one with {state.prefs.keys.shown(Command::NewAgent)}." }
+                    p { class: "chat-empty", "Pick an agent on the left, or start one with {new_agent_keys}." }
                 }
             }
         };
     };
-    let agent = entry.id();
-    let folder = entry.summary.folder.clone();
-    let status = entry.summary.status;
-    let working = status == AgentStatus::Working;
-    let turn_start = entry.turn_start();
-    let quiet_since = entry.summary.quiet_since;
-    let items: Vec<&TranscriptItem> = entry.transcript.items().collect();
-    let loaded: BTreeSet<ItemId> = items.iter().map(|item| item.id).collect();
-    let children = children_by_parent(&items);
-    let awaiting = state::awaiting_approval(&items);
-    // The card of a turn that found no login says what its notice says.
-    let sign_in = accounts::sign_in_turn(entry);
-    let sign_in_notice = sign_in.as_ref().and_then(|turn| turn.notice);
-    let sign_in_end = sign_in.as_ref().map(|turn| turn.turn_end);
-    let waits_for_sign_in = entry.summary.sign_in_wait == SignInWait::Waiting;
-    let top_items = top_items(&items, &loaded, sign_in_notice);
-    let divider = actions::new_divider(&state, agent);
-    let top_rows = tool_rows::rows(&top_items, &awaiting, divider);
-    let started: Option<String> = top_items
-        .first()
-        .and_then(|item| match &item.body {
-            ItemBody::UserMessage(message) => message.sent_at,
-            _ => None,
-        })
-        .and_then(|sent_at| format::message_time(sent_at, today()));
-    let states: Vec<Option<StepState>> = top_rows
-        .iter()
-        .map(|row| {
-            let item = row.first();
-            if Some(item.id) == sign_in_end {
-                return Some(if waits_for_sign_in {
-                    StepState::Waiting
-                } else {
-                    StepState::Plain
-                });
-            }
-            match row {
-                Row::Explored { .. } => Some(StepState::of_run(&row.items())),
-                Row::Item(_) | Row::Skill { .. } => {
-                    StepState::new(item, awaiting.contains(&item.id))
-                }
-            }
-        })
-        .collect();
-    let is_step: Vec<bool> = states.iter().map(Option::is_some).collect();
-    let links = step_links(&is_step, working);
-    let working_linked = is_step.last().copied().unwrap_or(false);
-    let firsts: Vec<&TranscriptItem> = top_rows.iter().map(Row::first).collect();
-    let notes = older_step_notes(&firsts, &loaded);
-    let scrolled_up = state.ui.chat_scrolled_up.get(&agent).copied();
-    let row_ids: Vec<ItemId> = firsts.iter().map(|item| item.id).collect();
-    let shown = ShownRows::of(agent, drawn(), &row_ids, scrolled_up.is_some());
-    rows.set((Some(agent), row_ids));
-    let grouped = grouped_times(&firsts, today());
-    let first = shown.first(top_rows.len());
-    let top: Vec<TopRow> = top_rows
-        .iter()
-        .zip(states)
-        .zip(links)
-        .zip(notes)
-        .skip(first)
-        .map(|(((row, state), links), older_step)| TopRow {
-            id: row.first().id,
-            hides_time: grouped.contains(&row.first().id),
-            new_above: divider
-                .is_some_and(|divider| row.items().iter().any(|item| item.id == divider)),
-            view: RowView::of(row, &children, &awaiting, sign_in_end),
-            step: state.map(|state| Step {
-                state,
-                links,
-                call: is_call(row),
-            }),
-            older_step,
-        })
-        .collect();
-    let history = entry.transcript.history().clone();
-    let loads_older = history == HistoryState::Loaded { has_older: true };
-    let sending: Vec<SendingPrompt> = entry
-        .sending
-        .in_place(SendingPlace::Chat)
-        .cloned()
-        .collect();
-    // A run of new reads counts once, as it shows.
-    let waiting = scrolled_up.map_or(0, |last_seen| {
-        tool_rows::new_rows(&top_rows, actions::new_entries(entry, last_seen).first)
-    });
+    rows.set((Some(view.agent), view.row_ids.clone()));
+    let ChatView {
+        agent,
+        folder,
+        working,
+        turn_start,
+        quiet_since,
+        working_linked,
+        shown,
+        top,
+        history,
+        started,
+        named,
+        loads_older,
+        sending,
+        scrolled_up,
+        waiting,
+        ..
+    } = view;
     rsx! {
         div {
             id: CHAT_SCROLL_ID,
             class: "chat-scroll scroll",
             // The chat's scroll script keeps each agent's place. It goes back to that place once
-            // the chat draws all the agent's rows.
-            "data-agent": (shown == ShownRows::All).then(|| agent.get().to_string()),
+            // the chat draws the rows it opens with.
+            "data-agent": named.then(|| agent.get().to_string()),
             // `chat_scroll::LOADS_OLDER_ATTRIBUTE`, written out: an attribute name takes no constant.
             "data-loads-older": loads_older.then_some("true"),
             div { class: "chat-column",
@@ -512,6 +868,8 @@ pub fn TranscriptView(in_view: Signal<Option<InView>>) -> Element {
                     TranscriptSkeleton {}
                 } else if shown == ShownRows::All {
                     {history_note(history, started, cockpit, agent)}
+                } else if named {
+                    OlderSkeleton { loading: false }
                 }
                 // Item ids repeat across agents: with the agent in the key, another agent's item
                 // never takes over the state of this one's (a fold, a typed answer).
@@ -543,7 +901,7 @@ pub fn TranscriptView(in_view: Signal<Option<InView>>) -> Element {
             }
         }
         LastInstruction { in_view }
-        JumpToLatest { shown: scrolled_up.is_some(), count: waiting }
+        JumpToLatest { shown: scrolled_up, count: waiting }
     }
 }
 
@@ -599,6 +957,7 @@ fn history_note(
 }
 
 /// What a row of the main conversation needs, as `TranscriptRow` takes it.
+#[derive(Debug, Clone, PartialEq)]
 struct TopRow {
     /// The row's first item, which names its entry.
     id: ItemId,
@@ -2246,35 +2605,135 @@ mod tests {
     }
 
     #[test]
-    fn a_long_chat_draws_older_rows_in_chunks_up_to_all() {
+    fn a_short_chat_draws_older_rows_in_chunks_up_to_all() {
         let agent = AgentId::new(7);
         let other = AgentId::new(8);
         // 100 rows, whose ids skip some numbers, as nested items leave gaps.
         let rows: Vec<ItemId> = (0..100).map(|row| ItemId::new(row * 2 + 1)).collect();
         let row = |index: usize| rows[index];
 
-        let first = next_drawn(agent, None, &rows, false);
-        let second = next_drawn(agent, first, &rows, false);
-        let third = next_drawn(agent, second, &rows, false);
+        let first = next_drawn(agent, None, &rows, None, None);
+        let second = next_drawn(agent, first, &rows, None, None);
+        let third = next_drawn(agent, second, &rows, None, None);
 
         // The opening frame drew the latest 40, rows 60 on, and the next one adds 40.
         assert_eq!(first, Some(Drawn::From(agent, row(20))));
         assert_eq!(second, Some(Drawn::All(agent)));
         assert_eq!(third, None, "all drawn: nothing more to do");
         assert_eq!(
-            next_drawn(agent, Some(Drawn::All(other)), &rows, false),
+            next_drawn(agent, Some(Drawn::All(other)), &rows, None, None),
             first,
             "another agent's progress starts again"
         );
         assert_eq!(
-            next_drawn(agent, None, &rows, true),
-            Some(Drawn::All(agent)),
-            "a chat scrolled up draws all at once"
-        );
-        assert_eq!(
-            next_drawn(agent, None, &rows[..20], false),
+            next_drawn(agent, None, &rows[..20], None, None),
             Some(Drawn::All(agent))
         );
+    }
+
+    #[test]
+    fn a_long_chat_draws_its_latest_rows_and_the_older_ones_near_the_top() {
+        let agent = AgentId::new(7);
+        let rows: Vec<ItemId> = (0..300).map(ItemId::new).collect();
+        let from = |index: u32| Some(Drawn::From(agent, ItemId::new(index)));
+
+        let first = next_drawn(agent, None, &rows, None, None);
+        let second = next_drawn(agent, first, &rows, None, None);
+        let third = next_drawn(agent, second, &rows, None, None);
+
+        // 80 rows, then 120: the chat stops there.
+        assert_eq!((first, second), (from(220), from(180)));
+        assert_eq!(third, None);
+        assert!(ShownRows::Latest(180).is_named(rows.len()));
+        assert!(!ShownRows::Latest(220).is_named(rows.len()));
+        assert_eq!(more_drawn(agent, from(180), &rows), from(120));
+        assert_eq!(more_drawn(agent, from(30), &rows), Some(Drawn::All(agent)));
+        assert_eq!(
+            more_drawn(agent, Some(Drawn::All(agent)), &rows),
+            None,
+            "every row drawn: older ones come from the daemon"
+        );
+        assert_eq!(more_drawn(AgentId::new(8), from(180), &rows), None);
+        assert_eq!(
+            next_drawn(
+                agent,
+                None,
+                &rows,
+                Some(ScrolledUp {
+                    last_seen: Some(ItemId::new(250))
+                }),
+                None
+            ),
+            from(131),
+            "a chat scrolled up draws from 120 rows above the last entry seen"
+        );
+        assert_eq!(
+            next_drawn(
+                agent,
+                None,
+                &rows[..100],
+                Some(ScrolledUp {
+                    last_seen: Some(ItemId::new(90))
+                }),
+                None
+            ),
+            Some(Drawn::All(agent))
+        );
+    }
+
+    /// The scroll script goes back to the first row in view only once that row is drawn: the
+    /// user read further up than the last entry seen when the chat left its bottom.
+    #[test]
+    fn a_chat_scrolled_up_far_draws_from_above_the_place_it_goes_back_to() {
+        let agent = AgentId::new(7);
+        let rows: Vec<ItemId> = (0..300).map(ItemId::new).collect();
+        let scrolled_up = Some(ScrolledUp {
+            last_seen: Some(ItemId::new(250)),
+        });
+
+        let far = next_drawn(agent, None, &rows, scrolled_up, Some(ItemId::new(60)));
+        let near = next_drawn(agent, None, &rows, scrolled_up, Some(ItemId::new(200)));
+
+        assert_eq!(far, Some(Drawn::From(agent, ItemId::new(20))));
+        assert_eq!(
+            near,
+            Some(Drawn::From(agent, ItemId::new(131))),
+            "a place below 120 rows above the last entry seen changes nothing"
+        );
+        assert_eq!(
+            next_drawn(agent, far, &rows, scrolled_up, Some(ItemId::new(60))),
+            None
+        );
+    }
+
+    /// The scroll script reveals only an entry the chat draws, such as the message the last
+    /// instruction bar shows, which a long turn leaves far above the rows a chat opens with.
+    #[test]
+    fn a_reveal_above_the_drawn_rows_draws_from_above_its_row() {
+        let agent = AgentId::new(7);
+        // 300 rows, two items each: the row of item 41 starts at item 40.
+        let rows: Vec<ItemId> = (0..300).map(|row| ItemId::new(row * 2)).collect();
+        let drawn = Some(Drawn::From(agent, ItemId::new(360)));
+        let shown = ShownRows::of(agent, drawn, &rows, false);
+
+        let wider = revealed_drawn(agent, drawn, &rows, ItemId::new(41));
+
+        assert!(!draws_item(shown, &rows, ItemId::new(41)));
+        assert!(draws_item(shown, &rows, ItemId::new(361)));
+        assert_eq!(wider, Some(Drawn::All(agent)), "row 20, 40 rows above: all");
+        assert_eq!(
+            revealed_drawn(agent, drawn, &rows, ItemId::new(201)),
+            Some(Drawn::From(agent, ItemId::new(120)))
+        );
+        let wider_shown = ShownRows::of(agent, wider, &rows, false);
+        assert!(draws_item(wider_shown, &rows, ItemId::new(41)));
+        assert_eq!(revealed_drawn(agent, drawn, &rows, ItemId::new(400)), None);
+        assert_eq!(
+            revealed_drawn(AgentId::new(8), drawn, &rows, ItemId::new(41)),
+            None,
+            "the chat draws another agent"
+        );
+        assert!(!draws_item(ShownRows::Skeleton, &rows, ItemId::new(599)));
     }
 
     #[test]
@@ -2862,6 +3321,18 @@ mod tests {
         assert_eq!(ShownRows::All.first(140), 0);
         assert_eq!(long.first(140), 140 - FIRST_ROWS);
         assert_eq!(scrolled_up.first(140), 140);
+    }
+
+    /// The find bar shows the count: it would count down, or show then leave, as the chunks come.
+    #[test]
+    fn the_undrawn_rows_count_once_the_chat_drew_the_rows_it_opens_with() {
+        let rows = 300;
+
+        assert_eq!(ShownRows::opening(rows, false).undrawn(rows), 0);
+        assert_eq!(ShownRows::opening(rows, true).undrawn(rows), 0);
+        assert_eq!(ShownRows::Latest(220).undrawn(rows), 0);
+        assert_eq!(ShownRows::Latest(180).undrawn(rows), 180);
+        assert_eq!(ShownRows::All.undrawn(rows), 0);
     }
 
     /// The fold script reads these fields by name: a rename in Rust would make it read

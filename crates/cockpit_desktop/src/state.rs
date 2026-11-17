@@ -63,10 +63,10 @@ pub use requests::{Outgoing, Purpose, apply_response, keep_first_answers, needed
 pub use shortcuts::{ANSWER_KEYS, KeyPress, PAGE_RELOAD_KEY, handle_key};
 pub use transcript::{HistoryState, Revision, WaitingKind, awaiting_approval};
 pub use ui_state::{
-    Block, Dialog, FileSearch, FolderAction, FolderList, FormMenu, ImageView, MachineEdit,
-    MachineMenu, MachinesView, McpView, NewAgentForm, NewAgentTab, NoteKind, OpenFileView,
-    PaletteOrigin, Popover, RefusedChord, RevealPlace, SettingsTab, SettingsView, TabMenuOrigin,
-    TitleEdit, TitlePlace, ToolFilter, ViewMode, WorkingFolderForm, is_markdown,
+    Block, ChatReveal, Dialog, FileSearch, FolderAction, FolderList, FormMenu, ImageView,
+    MachineEdit, MachineMenu, MachinesView, McpView, NewAgentForm, NewAgentTab, NoteKind,
+    OpenFileView, PaletteOrigin, Popover, RefusedChord, RevealPlace, SettingsTab, SettingsView,
+    TabMenuOrigin, TitleEdit, TitlePlace, ToolFilter, ViewMode, WorkingFolderForm, is_markdown,
 };
 pub use utf16_offset::Utf16Offset;
 

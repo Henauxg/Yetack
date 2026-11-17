@@ -9,8 +9,13 @@ use cockpit_protocol::{
     TranscriptItem, UserMessage,
 };
 
-/// The most items the app keeps of an agent you are not looking at.
-pub const KEPT_ITEMS_AWAY: usize = 2_000;
+/// The most items the app keeps of an agent you are not looking at: three history pages. Scrolling
+/// up loads the older ones again. Each item the app holds costs the chat a little at each render,
+/// and a morning of work gives an agent thousands.
+pub const KEPT_ITEMS_AWAY: usize = 300;
+/// The most items the app keeps of an agent left with its chat scrolled up: the chat goes back to
+/// the reader's place, which can be far above the latest items.
+pub const KEPT_ITEMS_SCROLLED_UP: usize = 2_000;
 
 /// How much of the history the app holds.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -442,13 +447,13 @@ mod tests {
     fn trimming_keeps_the_newest_items_and_marks_that_older_ones_exist() {
         let mut transcript = Transcript::default();
         transcript.merge_page(HistoryPage {
-            items: (1..=2_005).map(|id| text(id, "item")).collect(),
+            items: (1..=305).map(|id| text(id, "item")).collect(),
             older_items: OlderItems::None,
         });
 
         transcript.trim(KEPT_ITEMS_AWAY);
 
-        assert_eq!(transcript.items().count(), 2_000);
+        assert_eq!(transcript.items().count(), 300);
         assert_eq!(transcript.first_id(), Some(ItemId::new(6)));
         assert_eq!(
             transcript.history(),

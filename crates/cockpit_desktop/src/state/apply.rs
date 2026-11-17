@@ -15,7 +15,6 @@ use super::accounts::{self, SignIns};
 use super::app_state::{AgentEntry, AppState, ConnectionState};
 use super::drafts::Drafts;
 use super::sending::Sending;
-use super::transcript::KEPT_ITEMS_AWAY;
 use super::{
     actions, daemon_start, daemon_update, details_updates, file_reread, file_tree, grouping,
     notification_levels, project_menu, projects, resume, sending, terminals,
@@ -339,7 +338,7 @@ pub fn apply(
                 }
                 entry.transcript.append(item);
                 if !looked_at {
-                    entry.transcript.trim(KEPT_ITEMS_AWAY);
+                    entry.transcript.trim(state.ui.kept_items_away(agent));
                 }
             }
             None
@@ -613,6 +612,7 @@ mod tests {
     };
     use crate::state::find::{self, FindPane};
     use crate::state::projects::ProjectKey;
+    use crate::state::transcript::KEPT_ITEMS_AWAY;
     use crate::state::ui_state::{Block, Dialog, PaletteOrigin, Popover, TitleEdit, TitlePlace};
     use crate::state::{Loadable, MachineState, agent_map, chat_images, mcp_reconnect, page_copy};
 
@@ -1111,11 +1111,14 @@ mod tests {
         let mut state = state_with(vec![
             summary(1, AgentStatus::Working),
             summary(2, AgentStatus::Working),
+            summary(3, AgentStatus::Working),
         ]);
         state.ui.selected = Some(AgentId::new(2));
+        // The chat goes back to the place of an agent left scrolled up, among its older items.
+        state.ui.chat_scrolled_up.insert(AgentId::new(3), None);
         let last = u32::try_from(KEPT_ITEMS_AWAY).unwrap() + 3;
         for id in 1..=last {
-            for agent in [AgentId::new(1), AgentId::new(2)] {
+            for agent in [AgentId::new(1), AgentId::new(2), AgentId::new(3)] {
                 apply(
                     &mut state,
                     &mut Drafts::default(),
@@ -1133,6 +1136,8 @@ mod tests {
         assert_eq!(away.items().count(), KEPT_ITEMS_AWAY);
         assert_eq!(away.first_id(), Some(ItemId::new(4)));
         assert_eq!(looked_at.items().count(), KEPT_ITEMS_AWAY + 3);
+        let scrolled_up = &state.agents[&AgentId::new(3)].transcript;
+        assert_eq!(scrolled_up.items().count(), KEPT_ITEMS_AWAY + 3);
     }
 
     /// A process started again by a resume can ask under an id an earlier one used.
