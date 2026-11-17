@@ -3,8 +3,9 @@
 //! `terminal_feed`.
 
 use cockpit_protocol::{
-    AgentId, AgentParams, Request, TerminalChange, TerminalId, TerminalInfo, TerminalInputParams,
-    TerminalOpenParams, TerminalParams, TerminalResizeParams, TerminalSize, TerminalUpdate,
+    AgentId, AgentParams, Request, TerminalChange, TerminalExit, TerminalId, TerminalInfo,
+    TerminalInputParams, TerminalOpenParams, TerminalParams, TerminalResizeParams, TerminalSize,
+    TerminalUpdate,
 };
 
 use super::app_state::AppState;
@@ -34,8 +35,8 @@ pub struct TerminalTab {
     pub terminal: TerminalId,
     /// The shell's name, then the title the shell sets.
     pub title: String,
-    /// The exit code once the shell ended, `Some(None)` without one.
-    pub exited: Option<Option<i32>>,
+    /// `Some` once the shell ended.
+    pub exited: Option<TerminalExit>,
 }
 
 /// Whether the app knows an agent's terminals.
@@ -94,16 +95,15 @@ pub fn selected(state: &AppState) -> Option<(AgentId, &AgentTerminals)> {
 }
 
 /// Every agent's terminals: the page keeps a screen for these and drops the others.
-pub fn live(state: &AppState) -> Vec<(AgentId, TerminalId)> {
+pub fn live(state: &AppState) -> Vec<TerminalParams> {
     state
         .agents
         .iter()
         .flat_map(|(agent, entry)| {
-            entry
-                .terminals
-                .tabs
-                .iter()
-                .map(|tab| (*agent, tab.terminal))
+            entry.terminals.tabs.iter().map(|tab| TerminalParams {
+                agent: *agent,
+                terminal: tab.terminal,
+            })
         })
         .collect()
 }
@@ -180,19 +180,19 @@ pub fn open(state: &mut AppState, agent: AgentId) -> Vec<Outgoing> {
 }
 
 /// `agent.terminals` answered. A failure leaves the pane empty, with no retry.
-pub fn listed(state: &mut AppState, agent: AgentId, listed: Result<Vec<TerminalInfo>, ()>) {
+pub fn listed(state: &mut AppState, agent: AgentId, listed: Option<Vec<TerminalInfo>>) {
     let Some(terminals) = terminals_mut(state, agent) else {
         return;
     };
     terminals.listing = Listing::Listed;
-    let Ok(listed) = listed else {
+    let Some(listed) = listed else {
         terminals.opening = true;
         return;
     };
     for info in listed {
         terminals.add(info.terminal, info.title);
         if let Some(tab) = terminals.tab_mut(info.terminal) {
-            tab.exited = info.exited.map(|exit| exit.code);
+            tab.exited = info.exited;
         }
     }
     if terminals.shown.is_none() {
@@ -229,7 +229,7 @@ pub fn apply_update(state: &mut AppState, update: TerminalUpdate) {
         }
         TerminalChange::Exited { code } => {
             if let Some(tab) = terminals.tab_mut(update.terminal) {
-                tab.exited = Some(code);
+                tab.exited = Some(TerminalExit { code });
             }
         }
         TerminalChange::Closed => terminals.remove(update.terminal),
@@ -355,7 +355,7 @@ mod tests {
         toggle_pane(&mut state);
         let list = needed_requests(&mut state);
         assert!(needed_requests(&mut state).is_empty(), "asked once");
-        listed(&mut state, agent(), Ok(Vec::new()));
+        listed(&mut state, agent(), Some(Vec::new()));
         let open = needed_requests(&mut state);
         assert!(needed_requests(&mut state).is_empty(), "opened once");
         opened(&mut state, agent(), Some(TerminalId::new(7)));
@@ -388,7 +388,7 @@ mod tests {
         toggle_pane(&mut state);
         needed_requests(&mut state);
 
-        listed(&mut state, agent(), Ok(vec![tab(2), tab(3), tab(4)]));
+        listed(&mut state, agent(), Some(vec![tab(2), tab(3), tab(4)]));
         show(&mut state, agent(), TerminalId::new(3));
         close(&mut state, agent(), TerminalId::new(3));
 
@@ -406,7 +406,7 @@ mod tests {
         state.ui.selected = Some(agent());
         toggle_pane(&mut state);
         needed_requests(&mut state);
-        listed(&mut state, agent(), Ok(vec![tab(2)]));
+        listed(&mut state, agent(), Some(vec![tab(2)]));
 
         close(&mut state, agent(), TerminalId::new(2));
 
@@ -450,7 +450,10 @@ mod tests {
         let terminals = &state.agents[&agent()].terminals;
         assert_eq!(tabs(&state), [5]);
         assert_eq!(terminals.tabs[0].title, "bash");
-        assert_eq!(terminals.tabs[0].exited, Some(Some(2)));
+        assert_eq!(
+            terminals.tabs[0].exited,
+            Some(TerminalExit { code: Some(2) })
+        );
     }
 
     #[test]
@@ -459,7 +462,7 @@ mod tests {
         state.ui.selected = Some(agent());
         toggle_pane(&mut state);
         needed_requests(&mut state);
-        listed(&mut state, agent(), Ok(Vec::new()));
+        listed(&mut state, agent(), Some(Vec::new()));
         needed_requests(&mut state);
 
         opened(&mut state, agent(), None);
@@ -476,7 +479,7 @@ mod tests {
         state.ui.selected = Some(agent());
         toggle_pane(&mut state);
         needed_requests(&mut state);
-        listed(&mut state, agent(), Ok(vec![tab(2), tab(3)]));
+        listed(&mut state, agent(), Some(vec![tab(2), tab(3)]));
 
         apply_session_update(
             &mut state,
@@ -503,16 +506,22 @@ mod tests {
             summary(1, AgentStatus::Idle),
             summary(2, AgentStatus::Idle),
         ]);
-        listed(&mut state, agent(), Ok(vec![tab(2), tab(3)]));
-        listed(&mut state, AgentId::new(2), Ok(vec![tab(4)]));
+        listed(&mut state, agent(), Some(vec![tab(2), tab(3)]));
+        listed(&mut state, AgentId::new(2), Some(vec![tab(4)]));
 
         close(&mut state, agent(), TerminalId::new(2));
 
         assert_eq!(
             live(&state),
             [
-                (agent(), TerminalId::new(3)),
-                (AgentId::new(2), TerminalId::new(4))
+                TerminalParams {
+                    agent: agent(),
+                    terminal: TerminalId::new(3),
+                },
+                TerminalParams {
+                    agent: AgentId::new(2),
+                    terminal: TerminalId::new(4),
+                },
             ]
         );
     }

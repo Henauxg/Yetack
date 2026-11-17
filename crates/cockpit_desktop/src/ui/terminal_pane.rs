@@ -6,7 +6,7 @@
 //! pane keeps the screen and its scrollback. Output comes from the connections apart from the
 //! state ([`crate::terminal_feed`]), and the keys typed go out as `terminal.input`.
 
-use cockpit_protocol::{AgentId, TerminalId, TerminalSize};
+use cockpit_protocol::{AgentId, TerminalId, TerminalParams, TerminalSize};
 use dioxus::prelude::*;
 use serde::{Deserialize, Serialize};
 
@@ -214,7 +214,7 @@ for (;;) {
   } else if (message.type === "focus" && entry !== undefined) {
     entry.term.focus();
   } else if (message.type === "live") {
-    const live = new Set(message.terminals.map(([agent, terminal]) => key(agent, terminal)));
+    const live = new Set(message.terminals.map(({ agent, terminal }) => key(agent, terminal)));
     for (const gone of [...terminals.values()].filter((entry) => !live.has(entry.name))) {
       forget(gone);
     }
@@ -279,9 +279,7 @@ enum ToPage {
         data: String,
     },
     /// The terminals the page keeps a screen for.
-    Live {
-        terminals: Vec<(AgentId, TerminalId)>,
-    },
+    Live { terminals: Vec<TerminalParams> },
 }
 
 /// Starts the page's terminal script for the window's life, and carries output to it.
@@ -465,9 +463,9 @@ pub fn TerminalPane(place: TerminalPlace, leaving: bool) -> Element {
                                         onclick: move |_| cockpit.update(|state| terminals::show(state, agent, terminal)),
                                         Icon { kind: IconKind::Terminal, size: 12 }
                                         span { class: "terminal-title", "{title}" }
-                                        if let Some(code) = tab.exited {
+                                        if let Some(exit) = tab.exited {
                                             span { class: "terminal-exited",
-                                                match code {
+                                                match exit.code {
                                                     Some(code) => format!("exited {code}"),
                                                     None => "ended".to_owned(),
                                                 }
@@ -547,5 +545,86 @@ pub fn TerminalPane(place: TerminalPlace, leaving: bool) -> Element {
                 "data-terminal": "{shown}",
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::*;
+
+    /// The page's script spells these words.
+    #[test]
+    fn the_messages_to_and_from_the_page_are_pinned() {
+        let settings = Settings {
+            screen_id: SCREEN_ID,
+            settle_ms: 180,
+            min: 120,
+            max: 2000,
+        };
+        let agent = AgentId::new(3);
+        let terminal = TerminalId::new(2);
+        let to_page = [
+            ToPage::Output {
+                agent,
+                terminal,
+                offset: 4,
+                data: "bHMK".to_owned(),
+            },
+            ToPage::Screen {
+                agent,
+                terminal,
+                offset: 0,
+                data: "bHMK".to_owned(),
+            },
+            ToPage::Live {
+                terminals: vec![TerminalParams { agent, terminal }],
+            },
+        ];
+        let from_page = [
+            r#"{"type":"input","agent":3,"terminal":2,"data":"ls\r"}"#,
+            r#"{"type":"resize","agent":3,"terminal":2,"cols":100,"rows":30}"#,
+            r#"{"type":"title","agent":3,"terminal":2,"title":"vim"}"#,
+            r#"{"type":"attach","agent":3,"terminal":2}"#,
+            r#"{"type":"toggle"}"#,
+            r#"{"type":"size","size":300}"#,
+        ];
+
+        let parsed: Vec<FromPage> = from_page
+            .iter()
+            .map(|message| serde_json::from_str(message).unwrap())
+            .collect();
+
+        assert_eq!(
+            serde_json::to_value(settings).unwrap(),
+            json!({ "screen_id": "terminal-screen", "settle_ms": 180, "min": 120, "max": 2000 })
+        );
+        assert_eq!(
+            serde_json::to_value(to_page).unwrap(),
+            json!([
+                { "type": "output", "agent": 3, "terminal": 2, "offset": 4, "data": "bHMK" },
+                { "type": "screen", "agent": 3, "terminal": 2, "offset": 0, "data": "bHMK" },
+                { "type": "live", "terminals": [{ "agent": 3, "terminal": 2 }] },
+            ])
+        );
+        assert!(
+            matches!(
+                parsed.as_slice(),
+                [
+                    FromPage::Input { .. },
+                    FromPage::Resize {
+                        cols: 100,
+                        rows: 30,
+                        ..
+                    },
+                    FromPage::Title { .. },
+                    FromPage::Attach { .. },
+                    FromPage::Toggle,
+                    FromPage::Size { size: 300 },
+                ]
+            ),
+            "{parsed:?}"
+        );
     }
 }

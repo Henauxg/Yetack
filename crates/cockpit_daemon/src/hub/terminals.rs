@@ -46,8 +46,8 @@ struct Terminal {
     recent: VecDeque<u8>,
     /// How many bytes the shell wrote in all.
     written: u64,
-    /// `Some` once the shell ended, with its exit code when it has one.
-    exited: Option<Option<i32>>,
+    /// `Some` once the shell ended.
+    exited: Option<TerminalExit>,
 }
 
 impl Terminals {
@@ -128,7 +128,7 @@ impl Terminals {
             .map(|(terminal, open)| TerminalInfo {
                 terminal: *terminal,
                 title: open.title.clone(),
-                exited: open.exited.map(|code| TerminalExit { code }),
+                exited: open.exited,
             })
             .collect()
     }
@@ -230,7 +230,7 @@ impl Terminals {
         code: Option<i32>,
     ) -> Option<TerminalUpdate> {
         let open = self.open.get_mut(&terminal)?;
-        open.exited = Some(code);
+        open.exited = Some(TerminalExit { code });
         Some(TerminalUpdate {
             agent: open.agent,
             terminal,
@@ -489,7 +489,7 @@ mod tests {
             killer,
             recent: VecDeque::new(),
             written: 0,
-            exited: Some(Some(0)),
+            exited: Some(TerminalExit { code: Some(0) }),
         }
     }
 

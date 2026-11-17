@@ -93,6 +93,11 @@ impl Connection {
         self.requester.request(request).await
     }
 
+    /// The terminal updates, once.
+    pub(crate) fn take_terminals(&mut self) -> Option<LossyReceiver<TerminalUpdate>> {
+        self.terminals.take()
+    }
+
     /// The next event.
     ///
     /// `CloseError::EventsLost` means the events that waited were dropped, and the connection goes
@@ -101,11 +106,6 @@ impl Connection {
     /// `RequestError::Disconnected`.
     ///
     /// It is cancel safe, so it can wait in a `tokio::select!`.
-    /// The terminal updates, once.
-    pub(crate) fn take_terminals(&mut self) -> Option<LossyReceiver<TerminalUpdate>> {
-        self.terminals.take()
-    }
-
     pub async fn next_event(&mut self) -> Result<EventRecord, CloseError> {
         match self.events.recv().await {
             Some(Received::Item(record)) => return Ok(record),

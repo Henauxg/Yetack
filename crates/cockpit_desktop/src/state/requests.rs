@@ -579,10 +579,10 @@ pub fn apply_response(
         },
         Purpose::Terminals { agent } => match result {
             Ok(ResponseBody::Terminals { terminals: listed }) => {
-                terminals::listed(state, agent, Ok(listed));
+                terminals::listed(state, agent, Some(listed));
             }
             other => {
-                terminals::listed(state, agent, Err(()));
+                terminals::listed(state, agent, None);
                 report(state, method, other);
             }
         },
