@@ -894,24 +894,22 @@ fn StartForm(form: NewAgentForm) -> Element {
             }
         }
         div { class: "dialog-footer",
-            div { class: "field-group",
-                label { class: "field-label", r#for: NAME_FIELD_ID,
-                    "Name"
-                    span { class: "field-note", "optional" }
+            // The label sits inside the field: the footer stays short, and the folders above it
+            // keep their room on a small window.
+            label { class: "folder-field name-field", r#for: NAME_FIELD_ID,
+                span { class: "name-field-label", "Name" }
+                input {
+                    id: NAME_FIELD_ID,
+                    class: "folder-input",
+                    r#type: "text",
+                    aria_label: "Name, optional",
+                    maxlength: "{MAX_TITLE_CHARS}",
+                    placeholder: "{default_name}",
+                    initial_value: "{name_seed}",
+                    oninput: move |event: FormEvent| cockpit.with_drafts(|_, drafts| drafts.new_agent.name = event.value()),
+                    onkeydown: start_on_enter,
                 }
-                div { class: "folder-field name-field",
-                    Icon { kind: IconKind::Pencil, size: 15 }
-                    input {
-                        id: NAME_FIELD_ID,
-                        class: "folder-input",
-                        r#type: "text",
-                        maxlength: "{MAX_TITLE_CHARS}",
-                        placeholder: "{default_name}",
-                        initial_value: "{name_seed}",
-                        oninput: move |event: FormEvent| cockpit.with_drafts(|_, drafts| drafts.new_agent.name = event.value()),
-                        onkeydown: start_on_enter,
-                    }
-                }
+                span { class: "field-note", "optional" }
             }
             div { class: "prompt-box",
                 textarea {

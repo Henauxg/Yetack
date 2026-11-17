@@ -9128,10 +9128,27 @@ button.map-toggle:hover {
   color: var(--muted);
 }
 
-/* After a label: what the field asks, said once, such as "optional". */
+/* The new agent dialog's name field: its label inside it, and "optional" at its end. */
+.name-field {
+  min-height: 36px;
+  cursor: text;
+}
+
+.name-field .folder-input {
+  min-height: 34px;
+  font-size: 13.5px;
+}
+
+.name-field-label {
+  flex: none;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--muted);
+}
+
 .field-note {
-  margin-left: 6px;
-  font-weight: 400;
+  flex: none;
+  font-size: 12px;
   color: var(--dim);
 }
 
