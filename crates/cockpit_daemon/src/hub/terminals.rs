@@ -21,7 +21,7 @@ use tokio::sync::mpsc;
 use tokio::sync::mpsc::error::TrySendError;
 
 use crate::hub::input::HubInput;
-use crate::hub::state::Hub;
+use crate::hub::state::{CLIENT_QUEUE, Hub};
 
 /// The output a terminal keeps for a client that shows it again: a few screens of a busy build.
 const RECENT_BYTES: usize = 512 * 1024;
@@ -429,8 +429,15 @@ impl Hub {
 
     /// Sends a terminal update to every client. Unlike an event, it has no number and no log, and
     /// a client whose queue is full misses it rather than being dropped: it asks
-    /// `terminal.attach` for the output it missed.
+    /// `terminal.attach` for the output it missed. Output also skips a client whose queue is half
+    /// full, since an event that finds the queue full drops the client.
     fn send_terminal(&mut self, update: TerminalUpdate) {
+        let spare = match update.change {
+            TerminalChange::Output { .. } => CLIENT_QUEUE / 2,
+            TerminalChange::Opened { .. }
+            | TerminalChange::Exited { .. }
+            | TerminalChange::Closed => 0,
+        };
         let frame = match Frame::encode(&ServerMessage::Terminal(update)) {
             Ok(frame) => frame,
             Err(error) => {
@@ -438,11 +445,15 @@ impl Hub {
                 return;
             }
         };
-        self.clients
-            .retain(|client| match client.try_send(frame.clone()) {
+        self.clients.retain(|client| {
+            if client.capacity() <= spare {
+                return !client.is_closed();
+            }
+            match client.try_send(frame.clone()) {
                 Ok(()) | Err(TrySendError::Full(_)) => true,
                 Err(TrySendError::Closed(_)) => false,
-            });
+            }
+        });
     }
 }
 
@@ -454,9 +465,8 @@ fn not_found(message: String) -> ErrorBody {
 mod tests {
     use super::*;
 
-    #[test]
-    fn the_output_kept_stops_at_its_limit_and_knows_where_it_starts() {
-        let mut terminals = Terminals::default();
+    /// A terminal of agent 3 whose shell already ended.
+    fn ended_terminal() -> Terminal {
         let (input, _typed) = std_mpsc::channel();
         let pair = native_pty_system()
             .openpty(pty_size(TerminalSize { cols: 80, rows: 24 }))
@@ -471,19 +481,22 @@ mod tests {
             .unwrap();
         let killer = child.clone_killer();
         let _ = child.wait();
-        terminals.open.insert(
-            TerminalId::new(1),
-            Terminal {
-                agent: AgentId::new(3),
-                title: "sh".to_owned(),
-                master: pair.master,
-                input,
-                killer,
-                recent: VecDeque::new(),
-                written: 0,
-                exited: Some(Some(0)),
-            },
-        );
+        Terminal {
+            agent: AgentId::new(3),
+            title: "sh".to_owned(),
+            master: pair.master,
+            input,
+            killer,
+            recent: VecDeque::new(),
+            written: 0,
+            exited: Some(Some(0)),
+        }
+    }
+
+    #[test]
+    fn the_output_kept_stops_at_its_limit_and_knows_where_it_starts() {
+        let mut terminals = Terminals::default();
+        terminals.open.insert(TerminalId::new(1), ended_terminal());
         let chunk = vec![b'a'; RECENT_BYTES / 2 + 1];
 
         let first = terminals.output(TerminalId::new(1), &chunk);
@@ -503,5 +516,28 @@ mod tests {
                 .screen(AgentId::new(4), TerminalId::new(1))
                 .is_err()
         );
+    }
+
+    #[test]
+    fn output_leaves_half_of_a_slow_clients_queue_to_events() {
+        let folder = tempfile::tempdir().unwrap();
+        let mut hub = Hub::for_tests(folder.path());
+        let (client, mut frames) = mpsc::channel(CLIENT_QUEUE);
+        hub.clients.push(client);
+        hub.terminals
+            .open
+            .insert(TerminalId::new(1), ended_terminal());
+
+        for _ in 0..CLIENT_QUEUE {
+            hub.terminal_output(TerminalId::new(1), b"a");
+        }
+        hub.terminal_exited(TerminalId::new(1), Some(0));
+        let mut received = 0;
+        while frames.try_recv().is_ok() {
+            received += 1;
+        }
+
+        assert_eq!(received, CLIENT_QUEUE / 2 + 1);
+        assert_eq!(hub.clients.len(), 1);
     }
 }

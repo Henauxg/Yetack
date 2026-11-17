@@ -12,6 +12,9 @@ use crate::requester::{Command, Requester};
 use crate::transport::Transport;
 use crate::{connection, lossy_channel};
 
+/// The places of the update queue that terminal updates leave to events.
+const TERMINAL_SPARE: usize = EVENT_QUEUE / 2;
+
 /// The wait between connection attempts: `initial` after a drop, doubling after each failed
 /// attempt up to `max`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -250,8 +253,9 @@ async fn serve(
                 }
                 Err(error) => return Some(error),
             },
+            // A terminal update that would fill the queue is skipped: a full queue loses events.
             update = connection::next_terminal(&mut terminals) => if let Some(update) = update
-                && updates.send_or_drop(SessionUpdate::Terminal(update)) == Sent::Closed
+                && !updates.send_if_room(SessionUpdate::Terminal(update), TERMINAL_SPARE)
             {
                 return None;
             },
@@ -264,7 +268,9 @@ async fn serve(
 #[cfg(test)]
 #[cfg(unix)]
 mod tests {
-    use cockpit_protocol::{AgentId, AgentParams, Event};
+    use cockpit_protocol::{
+        AgentId, AgentParams, Event, ServerMessage, TerminalChange, TerminalId,
+    };
 
     use super::*;
     use crate::test_daemon;
@@ -481,5 +487,54 @@ mod tests {
             panic!("expected a snapshot, got {connected:?}");
         };
         assert_eq!(snapshot, test_daemon::snapshot(Some(flood)));
+    }
+
+    #[tokio::test]
+    async fn a_flood_of_terminal_output_loses_no_event() {
+        let daemon = TestDaemon::new();
+        let mut session = Session::start(daemon.transport(), FAST);
+        let (mut peer, _) = daemon.accept_and_welcome(Catchup::Replay).await;
+        assert!(matches!(
+            next(&mut session).await,
+            SessionUpdate::Connecting { .. }
+        ));
+        assert!(matches!(
+            next(&mut session).await,
+            SessionUpdate::Connected(_)
+        ));
+        let output = |offset| {
+            ServerMessage::Terminal(TerminalUpdate {
+                agent: AgentId::new(1),
+                terminal: TerminalId::new(1),
+                change: TerminalChange::Output {
+                    offset,
+                    data: "YQ==".to_owned(),
+                },
+            })
+        };
+
+        // Nobody reads the updates while the shell writes more than they hold.
+        let answer = async {
+            peer.event(1, removed(1)).await;
+            for offset in 0..test_daemon::more_events_than_a_queue_holds() {
+                peer.send(&output(offset)).await;
+            }
+            peer.event(2, removed(2)).await;
+            let (id, _) = peer.request().await;
+            peer.respond(id, ResponseBody::Done).await;
+        };
+        let (answered, ()) = tokio::join!(session.request(interrupt()), in_time(answer));
+        answered.unwrap();
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        let mut events = Vec::new();
+        while events.len() < 2 {
+            match next(&mut session).await {
+                SessionUpdate::Event(record) => events.push(record.seq.get()),
+                SessionUpdate::Terminal(_) => {}
+                other => panic!("expected the events, got {other:?}"),
+            }
+        }
+
+        assert_eq!(events, [1, 2]);
     }
 }

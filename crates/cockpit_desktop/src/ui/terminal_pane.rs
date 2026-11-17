@@ -19,6 +19,7 @@ use crate::prefs::{
 use crate::state::terminals;
 use crate::terminal_feed::FeedReceiver;
 use crate::ui::icons::{Icon, IconKind};
+use crate::ui::presence::Presence;
 
 /// ghostty-web 0.4.0, an ES module that holds its WebAssembly inline. See
 /// `assets/ghostty-web/README.md`.
@@ -45,10 +46,18 @@ const key = (agent, terminal) => `${agent}:${terminal}`;
 const bytes = (base64) => Uint8Array.from(atob(base64), (character) => character.charCodeAt(0));
 
 // Writes output that starts at byte `offset`, past what the terminal shows already. Before the
-// kept output came, it waits.
+// kept output came, it waits. After a gap, the terminal starts again from the kept output.
 function write(entry, offset, data) {
+  if (terminals.get(entry.name) !== entry) {
+    return;
+  }
   if (entry.end === null) {
     entry.pending.push([offset, data]);
+    return;
+  }
+  if (offset > entry.end) {
+    forget(entry);
+    place();
     return;
   }
   const end = offset + data.length;
@@ -105,11 +114,25 @@ function terminalFor(agent, terminal) {
     }
     return false;
   });
-  const entry = { term, fit, box, end: null, pending: [], settle: null };
-  new ResizeObserver(() => fitWhenSettled(entry)).observe(box);
-  terminals.set(key(agent, terminal), entry);
+  const name = key(agent, terminal);
+  const entry = { name, term, fit, box, end: null, pending: [], settle: null, observer: null };
+  entry.observer = new ResizeObserver(() => fitWhenSettled(entry));
+  entry.observer.observe(box);
+  terminals.set(name, entry);
   send({ type: "attach", agent, terminal });
   return entry;
+}
+
+// Drops a terminal's screen. ghostty-web draws each terminal on every frame until it is disposed.
+function forget(entry) {
+  clearTimeout(entry.settle);
+  entry.observer.disconnect();
+  entry.term.dispose();
+  entry.box.remove();
+  terminals.delete(entry.name);
+  if (shown === entry.name) {
+    shown = null;
+  }
 }
 
 // Puts the shown terminal's box in the screen, wherever the pane is.
@@ -190,6 +213,11 @@ for (;;) {
     }
   } else if (message.type === "focus" && entry !== undefined) {
     entry.term.focus();
+  } else if (message.type === "live") {
+    const live = new Set(message.terminals.map(([agent, terminal]) => key(agent, terminal)));
+    for (const gone of [...terminals.values()].filter((entry) => !live.has(entry.name))) {
+      forget(gone);
+    }
   }
 }
 "##;
@@ -250,6 +278,10 @@ enum ToPage {
         offset: u64,
         data: String,
     },
+    /// The terminals the page keeps a screen for.
+    Live {
+        terminals: Vec<(AgentId, TerminalId)>,
+    },
 }
 
 /// Starts the page's terminal script for the window's life, and carries output to it.
@@ -296,6 +328,15 @@ pub fn use_terminal_script(cockpit: Cockpit) {
             });
         }
         script
+    });
+    // A closed terminal's screen goes, and so do those of a daemon that restarted, whose new
+    // terminals take the same ids.
+    let live = use_memo(move || terminals::live(&cockpit.state.read()));
+    use_effect(move || {
+        let terminals = live();
+        if let Err(error) = script.send(ToPage::Live { terminals }) {
+            tracing::warn!("cannot drop the closed terminals: {error}");
+        }
     });
     // The output a terminal kept goes to the page once, as it comes.
     use_effect(move || {
@@ -466,8 +507,8 @@ pub fn TerminalPane(place: TerminalPlace, leaving: bool) -> Element {
                             onclick: move |_| moving.toggle(),
                             Icon { kind: IconKind::PanelBottom, size: 13 }
                         }
-                        if moving() {
-                            div { class: "terminal-move-menu", role: "menu",
+                        Presence { open: moving(),
+                            div { class: "terminal-move-menu popover", role: "menu",
                                 div { class: "terminal-move-head", "Move the terminal to" }
                                 for (target, label) in places {
                                     button {
@@ -497,7 +538,8 @@ pub fn TerminalPane(place: TerminalPlace, leaving: bool) -> Element {
                 }
             }
             div {
-                id: SCREEN_ID,
+                // A pane that leaves as the other place's opens gives the terminal to that one.
+                id: (!leaving).then_some(SCREEN_ID),
                 class: "terminal-screen",
                 // The page's script leaves the keys typed here to the terminal.
                 "data-records-keys": "",

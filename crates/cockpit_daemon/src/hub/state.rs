@@ -27,7 +27,7 @@ use crate::transcript::AgentView;
 
 /// Live events a client's queue holds. A client this far behind is dropped, and catches up when
 /// it reconnects.
-const CLIENT_QUEUE: usize = 4096;
+pub(super) const CLIENT_QUEUE: usize = 4096;
 
 /// How often the hub checks whether each account signed in or out: a file's metadata per
 /// account.

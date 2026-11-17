@@ -69,6 +69,23 @@ impl<T> LossySender<T> {
         }
     }
 
+    /// Queues `item` when more than `spare` places stay free, and skips it otherwise. Unlike
+    /// `send_or_drop`, a skip drops no item already waiting. Never waits. Returns `false` when the
+    /// receiver is gone.
+    pub(crate) fn send_if_room(&self, item: T, spare: usize) -> bool {
+        if self.items.is_closed() {
+            return false;
+        }
+        if self.items.capacity() <= spare {
+            return true;
+        }
+        let losses = *self.losses.borrow();
+        !matches!(
+            self.items.try_send((losses, item)),
+            Err(TrySendError::Closed(_))
+        )
+    }
+
     /// Queues `item`, waiting for room. Fails when the receiver is gone.
     pub(crate) async fn send(&self, item: T) -> Result<(), SendError<T>> {
         let losses = *self.losses.borrow();
@@ -162,6 +179,19 @@ mod tests {
         sent.unwrap();
         assert_eq!(lost, Some(Received::Lost));
         assert_eq!(receiver.recv().await, Some(Received::Item(3)));
+    }
+
+    #[tokio::test]
+    async fn an_item_without_room_is_skipped_and_the_waiting_ones_stay() {
+        let (sender, mut receiver) = channel(3);
+
+        let sent = [1, 2, 3].map(|item| sender.send_if_room(item, 1));
+        drop(sender);
+
+        assert_eq!(sent, [true; 3]);
+        assert_eq!(receiver.recv().await, Some(Received::Item(1)));
+        assert_eq!(receiver.recv().await, Some(Received::Item(2)));
+        assert_eq!(receiver.recv().await, None);
     }
 
     #[tokio::test]

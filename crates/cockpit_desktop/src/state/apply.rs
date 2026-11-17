@@ -83,6 +83,7 @@ fn apply_session_update(
             daemon_start::connected(known);
             daemon_update::connected(state, machine);
             apply_catchup(state, drafts, catchup, machine);
+            terminals::connected(state, machine);
             Vec::new()
         }
         SessionUpdate::Disconnected { error, retry_in } => {

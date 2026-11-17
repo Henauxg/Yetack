@@ -317,7 +317,7 @@ It checks that the process is the agent's, then acts through the same pidfd on U
 Three threads serve each shell, since a PTY's reads, writes and wait block: one reads the output, one writes what the user types (`terminal.input`), and one waits for the shell to end.
 The hub keeps each terminal's last 512 KB of output, and sends what comes to every client as `ServerMessage::Terminal`.
 That message has no `Seq` and no log: a shell can write megabytes a second, and an old screen is worth nothing in a replay.
-A client whose queue is full misses it rather than being dropped.
+A client whose queue is full misses it rather than being dropped. Output also skips a client whose queue is half full, since an event that finds the queue full drops the client.
 Each output carries its byte `offset` in all the shell wrote. `terminal.attach` answers the kept output and its offset, so a client that shows a terminal again writes the kept output, then only the output past it.
 A terminal stays, with its output, after its shell ends, until `terminal.close`. Removing the agent closes its terminals, and stopping the daemon kills their shells.
 
@@ -436,6 +436,7 @@ The daemon in the app has no socket to check (see [The daemon in the app](#the-d
   - `file_tree::reveal` keeps the row to show in `FileTree.reveal` until it shows, since a folder may wait for its listing.
 - **Terminal pane** (`state/terminals.rs`, `ui/terminal_pane.rs`, `terminal_feed.rs`): the selected agent's terminals as tabs, in the bottom panel or at the right edge (`TerminalPrefs`). The header's terminal button and Ctrl+\` show and hide it; while it shows, the app lists the agent's terminals and opens one for an agent with none.
   - The page owns the terminals: its script keeps one [ghostty-web](https://github.com/coder/ghostty-web) terminal per shell, in a box of its own, and puts the shown one's box in the pane wherever the pane is. Moving the pane keeps the screen; a terminal the page has not shown yet asks `terminal.attach` first. `assets/ghostty-web/` holds the library, which carries its WebAssembly inline.
+  - The page drops the terminal of a closed tab, since ghostty-web draws each terminal on every frame. A gap in a terminal's output makes the page start that terminal again from `terminal.attach`. Each new connection to a daemon lists its agents' terminals again: a restarted daemon numbers its terminals from 1 again, and the terminal updates sent while the app was away are lost.
   - Output goes from the connection to the page apart from the state (`terminal_feed`), since each change of the state renders the window again.
   - The screen carries `data-records-keys`, so the page script leaves every key typed there to the terminal, Esc included. Ctrl+\` in the terminal still hides the pane. ghostty-web skips a key its custom key handler returns `true` for, unlike xterm.js.
   - The terminal fits its box once the box's size stays the same for 180 ms: the pane grows as it opens, and a fit at each step would give the shell several sizes.

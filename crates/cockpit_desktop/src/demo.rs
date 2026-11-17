@@ -2267,6 +2267,12 @@ pub fn answer(state: &AppState, request: &Request) -> Result<ResponseBody, Reque
         }
         Request::AgentListDir(params) => list_dir(&params.path),
         Request::AgentFindFiles(params) => Ok(find_files(&params.name)),
+        Request::AgentTerminals(_) => Ok(ResponseBody::Terminals {
+            terminals: Vec::new(),
+        }),
+        Request::AgentTerminalOpen(_) => {
+            Err(refused(ErrorCode::Unsupported, "The demo runs no shell."))
+        }
         Request::FoldersList(params) => list_folders(state, MachineId::THIS, &params.path),
         Request::AgentResume(params)
             if state
@@ -4880,8 +4886,9 @@ fn sessions(now: SystemTime) -> Vec<PastSession> {
 #[cfg(test)]
 mod tests {
     use cockpit_protocol::{
-        AnswerParams, FoldersListParams, HistoryParams, MarkParams, PlanAnswer, PlanDecision,
-        PromptDelivery, PromptParams, ReadFileParams, RenameParams,
+        AgentParams, AnswerParams, FoldersListParams, HistoryParams, MarkParams, PlanAnswer,
+        PlanDecision, PromptDelivery, PromptParams, ReadFileParams, RenameParams,
+        TerminalOpenParams, TerminalSize,
     };
 
     use super::*;
@@ -5100,6 +5107,25 @@ mod tests {
         apply(&mut state, &rename);
 
         assert_eq!(state.agents[&agent].summary.title, "🚀 Stream the input");
+    }
+
+    #[test]
+    fn the_demo_lists_no_terminal_and_refuses_to_open_one() {
+        let state = state(label());
+        let agent = AgentId::new(LIVE_AGENT);
+        let list = Request::AgentTerminals(AgentParams { agent });
+        let open = Request::AgentTerminalOpen(TerminalOpenParams {
+            agent,
+            size: TerminalSize { cols: 80, rows: 24 },
+        });
+
+        assert_eq!(
+            answer(&state, &list).unwrap(),
+            ResponseBody::Terminals {
+                terminals: Vec::new()
+            }
+        );
+        assert!(answer(&state, &open).is_err());
     }
 
     /// The card would keep its buttons disabled, its answer on its way, until the app restarts.

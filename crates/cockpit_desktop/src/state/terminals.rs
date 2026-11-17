@@ -25,6 +25,8 @@ pub struct AgentTerminals {
     pub listing: Listing,
     /// An `agent.terminal_open` is on its way.
     pub opening: bool,
+    /// The last opening failed: the pane waits for the "+" rather than trying again.
+    pub open_failed: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -91,6 +93,21 @@ pub fn selected(state: &AppState) -> Option<(AgentId, &AgentTerminals)> {
     Some((agent, &entry.terminals))
 }
 
+/// Every agent's terminals: the page keeps a screen for these and drops the others.
+pub fn live(state: &AppState) -> Vec<(AgentId, TerminalId)> {
+    state
+        .agents
+        .iter()
+        .flat_map(|(agent, entry)| {
+            entry
+                .terminals
+                .tabs
+                .iter()
+                .map(|tab| (*agent, tab.terminal))
+        })
+        .collect()
+}
+
 fn terminals_mut(state: &mut AppState, agent: AgentId) -> Option<&mut AgentTerminals> {
     state
         .agents
@@ -137,7 +154,11 @@ pub fn needed_requests(state: &mut AppState) -> Vec<Outgoing> {
                 Purpose::Terminals { agent },
             )]
         }
-        Listing::Listed if terminals.tabs.is_empty() && !terminals.opening => open(state, agent),
+        Listing::Listed
+            if terminals.tabs.is_empty() && !terminals.opening && !terminals.open_failed =>
+        {
+            open(state, agent)
+        }
         Listing::Asking | Listing::Listed => Vec::new(),
     }
 }
@@ -148,6 +169,7 @@ pub fn open(state: &mut AppState, agent: AgentId) -> Vec<Outgoing> {
         return Vec::new();
     };
     terminals.opening = true;
+    terminals.open_failed = false;
     vec![outgoing(
         Request::AgentTerminalOpen(TerminalOpenParams {
             agent,
@@ -184,6 +206,7 @@ pub fn opened(state: &mut AppState, agent: AgentId, opened: Option<TerminalId>) 
         return;
     };
     terminals.opening = false;
+    terminals.open_failed = opened.is_none();
     if let Some(terminal) = opened {
         terminals.add(terminal, String::new());
         terminals.shown = Some(terminal);
@@ -212,6 +235,17 @@ pub fn apply_update(state: &mut AppState, update: TerminalUpdate) {
         TerminalChange::Closed => terminals.remove(update.terminal),
         // Output goes to the page, not to the state.
         TerminalChange::Output { .. } => {}
+    }
+}
+
+/// A connection to `machine`'s daemon came. It may be a new daemon, whose terminals reuse the old
+/// ids, and the terminal updates sent while the app was away are lost: the agents' terminals are
+/// listed again.
+pub fn connected(state: &mut AppState, machine: MachineId) {
+    for (agent, entry) in &mut state.agents {
+        if MachineId::of(*agent) == machine {
+            entry.terminals = AgentTerminals::default();
+        }
     }
 }
 
@@ -282,10 +316,14 @@ pub fn screen(state: &mut AppState, screen: Screen) {
 
 #[cfg(test)]
 mod tests {
-    use cockpit_protocol::AgentStatus;
+    use std::time::Instant;
+
+    use cockpit_protocol::{AgentStatus, Catchup};
 
     use super::*;
-    use crate::state::{state_with, summary};
+    use crate::state::{
+        Drafts, apply_update as apply_session_update, connected_update, state_with, summary,
+    };
 
     fn agent() -> AgentId {
         AgentId::new(1)
@@ -413,5 +451,69 @@ mod tests {
         assert_eq!(tabs(&state), [5]);
         assert_eq!(terminals.tabs[0].title, "bash");
         assert_eq!(terminals.tabs[0].exited, Some(Some(2)));
+    }
+
+    #[test]
+    fn a_failed_opening_waits_for_the_user_to_ask_again() {
+        let mut state = state_with(vec![summary(1, AgentStatus::Idle)]);
+        state.ui.selected = Some(agent());
+        toggle_pane(&mut state);
+        needed_requests(&mut state);
+        listed(&mut state, agent(), Ok(Vec::new()));
+        needed_requests(&mut state);
+
+        opened(&mut state, agent(), None);
+        let after_failure = needed_requests(&mut state);
+        let asked = open(&mut state, agent());
+
+        assert!(after_failure.is_empty(), "{after_failure:?}");
+        assert_eq!(asked.len(), 1);
+    }
+
+    #[test]
+    fn a_new_connection_lists_the_terminals_again() {
+        let mut state = state_with(vec![summary(1, AgentStatus::Idle)]);
+        state.ui.selected = Some(agent());
+        toggle_pane(&mut state);
+        needed_requests(&mut state);
+        listed(&mut state, agent(), Ok(vec![tab(2), tab(3)]));
+
+        apply_session_update(
+            &mut state,
+            &mut Drafts::default(),
+            connected_update(Catchup::Replay),
+            Instant::now(),
+            MachineId::THIS,
+        );
+        let relist = needed_requests(&mut state);
+
+        assert!(tabs(&state).is_empty());
+        assert!(matches!(
+            relist.as_slice(),
+            [Outgoing {
+                request: Request::AgentTerminals(_),
+                ..
+            }]
+        ));
+    }
+
+    #[test]
+    fn the_page_keeps_the_terminals_of_every_agent_and_no_other() {
+        let mut state = state_with(vec![
+            summary(1, AgentStatus::Idle),
+            summary(2, AgentStatus::Idle),
+        ]);
+        listed(&mut state, agent(), Ok(vec![tab(2), tab(3)]));
+        listed(&mut state, AgentId::new(2), Ok(vec![tab(4)]));
+
+        close(&mut state, agent(), TerminalId::new(2));
+
+        assert_eq!(
+            live(&state),
+            [
+                (agent(), TerminalId::new(3)),
+                (AgentId::new(2), TerminalId::new(4))
+            ]
+        );
     }
 }
