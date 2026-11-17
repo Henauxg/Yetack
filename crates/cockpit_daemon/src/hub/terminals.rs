@@ -23,6 +23,9 @@ use tokio::sync::mpsc::error::TrySendError;
 use crate::hub::input::HubInput;
 use crate::hub::state::{CLIENT_QUEUE, Hub};
 
+/// Names the shell terminals run, over the account's login shell.
+const SHELL_ENV: &str = "YETACK_SHELL";
+
 /// The output a terminal keeps for a client that shows it again: a few screens of a busy build.
 const RECENT_BYTES: usize = 512 * 1024;
 
@@ -264,17 +267,23 @@ fn pty_size(size: TerminalSize) -> PtySize {
     }
 }
 
-/// The user's shell and its name.
+/// The user's shell and its name: `YETACK_SHELL`, else the account's login shell, else `$SHELL`.
+/// `$SHELL` comes last: a `nix develop` shell sets it to a bash built without readline, which
+/// shows a prompt's `\[` and `\]` and cannot edit a line.
 fn shell() -> (String, String) {
+    let set = |name| {
+        std::env::var(name)
+            .ok()
+            .filter(|shell: &String| !shell.is_empty())
+    };
     #[cfg(unix)]
-    let program = std::env::var("SHELL")
-        .ok()
-        .filter(|shell| !shell.is_empty())
+    let program = set(SHELL_ENV)
+        .or_else(login_shell)
+        .or_else(|| set("SHELL"))
         .unwrap_or_else(|| "/bin/sh".to_owned());
     #[cfg(windows)]
-    let program = std::env::var("COMSPEC")
-        .ok()
-        .filter(|shell| !shell.is_empty())
+    let program = set(SHELL_ENV)
+        .or_else(|| set("COMSPEC"))
         .unwrap_or_else(|| "cmd.exe".to_owned());
     let title = Path::new(&program)
         .file_stem()
@@ -282,6 +291,28 @@ fn shell() -> (String, String) {
         .unwrap_or("shell")
         .to_owned();
     (program, title)
+}
+
+/// The login shell `/etc/passwd` gives the daemon's user, when it names a file that exists. A
+/// user known only to a directory service has none there.
+#[cfg(unix)]
+fn login_shell() -> Option<String> {
+    let passwd = std::fs::read_to_string("/etc/passwd").ok()?;
+    let uid = rustix::process::getuid().as_raw();
+    passwd_shell(&passwd, uid).filter(|shell| Path::new(shell).is_file())
+}
+
+/// The shell of the `/etc/passwd` line of user `uid`: its seventh field.
+#[cfg(unix)]
+fn passwd_shell(passwd: &str, uid: u32) -> Option<String> {
+    passwd.lines().find_map(|line| {
+        let fields: Vec<&str> = line.split(':').collect();
+        let (Some(line_uid), Some(shell)) = (fields.get(2), fields.get(6)) else {
+            return None;
+        };
+        (line_uid.parse::<u32>().ok() == Some(uid) && !shell.is_empty())
+            .then(|| (*shell).to_owned())
+    })
 }
 
 fn spawn_thread(name: &str, run: impl FnOnce() + Send + 'static) -> Result<(), String> {
@@ -464,6 +495,19 @@ fn not_found(message: String) -> ErrorBody {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn the_login_shell_is_the_seventh_field_of_the_users_line() {
+        let passwd = "root:x:0:0::/root:/bin/sh\nana:x:1000:100:Ana:/home/ana:/run/current-system/sw/bin/bash\nbo:x:1001:100::/home/bo:\n";
+
+        assert_eq!(
+            passwd_shell(passwd, 1000).as_deref(),
+            Some("/run/current-system/sw/bin/bash")
+        );
+        assert_eq!(passwd_shell(passwd, 1001), None, "an empty shell field");
+        assert_eq!(passwd_shell(passwd, 1002), None, "no line");
+    }
 
     /// A terminal of agent 3 whose shell already ended.
     fn ended_terminal() -> Terminal {

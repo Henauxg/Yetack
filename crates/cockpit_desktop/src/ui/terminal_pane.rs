@@ -219,12 +219,16 @@ document.addEventListener("pointerdown", (event) => {
 
 for (;;) {
   const message = await dioxus.recv();
+  try {
   const entry = terminals.get(key(message.agent, message.terminal));
   if (message.type === "output" && entry !== undefined) {
     write(entry, message.offset, bytes(message.data));
   } else if (message.type === "screen" && entry !== undefined && entry.end === null) {
     const data = bytes(message.data);
-    entry.term.write(data);
+    // ghostty-web throws on an empty write, as when the shell has written nothing yet.
+    if (data.length > 0) {
+      entry.term.write(data);
+    }
     entry.end = message.offset + data.length;
     for (const [offset, pending] of entry.pending.splice(0)) {
       write(entry, offset, pending);
@@ -236,6 +240,10 @@ for (;;) {
     for (const gone of [...terminals.values()].filter((entry) => !live.has(entry.name))) {
       forget(gone);
     }
+  }
+  } catch (error) {
+    // One message that fails leaves the loop to the next ones.
+    send({ type: "problem", text: `${message.type}: ${error}` });
   }
 }
 "##;
@@ -254,6 +262,10 @@ struct Settings {
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 enum FromPage {
+    /// A message from the app failed in the page.
+    Problem {
+        text: String,
+    },
     Input {
         agent: AgentId,
         terminal: TerminalId,
@@ -400,6 +412,7 @@ fn receive(cockpit: Cockpit, message: FromPage) {
         FromPage::Attach { agent, terminal } => {
             cockpit.change(|_| vec![terminals::attach(agent, terminal)]);
         }
+        FromPage::Problem { text } => tracing::warn!("the terminal script failed on {text}"),
         FromPage::Toggle => cockpit.change(terminals::toggle_pane),
         FromPage::Size { size } => cockpit.update(|state| {
             let size = size.clamp(MIN_TERMINAL_SIZE, MAX_TERMINAL_SIZE);

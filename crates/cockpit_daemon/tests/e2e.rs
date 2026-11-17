@@ -2517,7 +2517,11 @@ async fn a_terminal_runs_a_shell_in_the_agents_folder() {
     use base64::Engine;
     use base64::engine::general_purpose::STANDARD;
 
-    let setup = Setup::new_with(None, DefaultFolder::Variable, vec![("SHELL", "/bin/sh")]);
+    let setup = Setup::new_with(
+        None,
+        DefaultFolder::Variable,
+        vec![("YETACK_SHELL", "/bin/sh")],
+    );
     let mut client = setup.connect().await;
     let agent = client.start(&setup.work(), "hello").await;
     let opened = client
