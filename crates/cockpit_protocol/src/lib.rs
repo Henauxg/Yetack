@@ -85,10 +85,10 @@ pub use terminal::{
 };
 pub use time::Timestamp;
 pub use transcript::{
-    AnswerState, Approval, ApprovalAnswer, ApprovalDecision, AskedQuestion, FileEdit, Image,
-    ImageMediaType, ItemBody, NoticeKind, Plan, PlanAnswer, PlanDecision, Question, QuestionAnswer,
-    QuestionOption, Selection, ToolCall, ToolCallStatus, TranscriptItem, TurnEnd, TurnOutcome,
-    UserMessage, skill_instructions_title,
+    AnswerState, Approval, ApprovalAnswer, ApprovalDecision, AskedQuestion, EditTexts, FileEdit,
+    Image, ImageMediaType, ItemBody, NoticeKind, Plan, PlanAnswer, PlanDecision, Question,
+    QuestionAnswer, QuestionOption, Selection, ToolCall, ToolCallStatus, TranscriptItem, TurnEnd,
+    TurnOutcome, UserMessage, skill_instructions_title,
 };
 pub use usage::{
     AccountPlanUsage, CostUsd, PlanUsage, RateLimitStatus, TokenUsage, UsageWindow, WindowUsage,

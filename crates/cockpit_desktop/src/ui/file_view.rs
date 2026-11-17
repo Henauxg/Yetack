@@ -44,6 +44,10 @@ pub const CLOSE_TAB_KEY: &str = "w";
 /// Unchanged lines kept around each change of the file view's diff.
 const FILE_DIFF_CONTEXT: usize = 3;
 
+/// Above a diff of the edits after one too large to show.
+const AFTER_TOO_LARGE_NOTE: &str =
+    "An earlier edit of the file is too large to show, so this diff starts after it.";
+
 /// How long "Updated just now" and the changed lines' highlight last after a read again.
 const UPDATE_SHOWN_FOR: Duration = Duration::from_secs(10);
 
@@ -672,10 +676,14 @@ fn FileContent(
 ) -> Element {
     let language = Language::from_path(&path);
     let marks = line_marks(line, update.as_ref());
-    if mode == ViewMode::WholeFile || edits.is_empty() {
+    let shown = file_edits::after_too_large(&edits);
+    let too_large = shown.len() < edits.len();
+    if mode == ViewMode::WholeFile || shown.is_empty() {
         let lines = render::plain_lines(&text, language, 1, MAX_RENDERED_LINES);
         return rsx! {
-            if mode == ViewMode::Diff && changed {
+            if mode == ViewMode::Diff && too_large {
+                p { class: "file-note", "This agent's last edit of the file is too large to show. Here is its text." }
+            } else if mode == ViewMode::Diff && changed {
                 p { class: "file-note", "This agent changed the file, but its edits are not available. Here is its text." }
             } else if mode == ViewMode::Diff {
                 p { class: "file-note", "This agent did not change the file. Here is its text." }
@@ -688,7 +696,7 @@ fn FileContent(
             {lines_not_shown(lines.more)}
         };
     }
-    let edit_refs: Vec<&FileEdit> = edits.iter().collect();
+    let edit_refs: Vec<&FileEdit> = shown.iter().collect();
     if let Some(original) = file_edits::original_text(&text, &edit_refs) {
         let diff = diff_lines(
             &original,
@@ -700,10 +708,16 @@ fn FileContent(
         );
         if diff.rows.is_empty() {
             return rsx! {
+                if too_large {
+                    p { class: "file-note", "{AFTER_TOO_LARGE_NOTE}" }
+                }
                 p { class: "file-note", "The file is back to its text before the edits." }
             };
         }
         return rsx! {
+            if too_large {
+                p { class: "file-note", "{AFTER_TOO_LARGE_NOTE}" }
+            }
             div { class: "diff-rows",
                 for row in diff.rows.iter() {
                     {diff_row(row, LineNumbers::Shown, marks)}
@@ -714,10 +728,10 @@ fn FileContent(
     }
     // Another change hides where the edits were: each edit shows on its own, without line
     // numbers. The edits share the cap.
-    let count = edits.len();
+    let count = shown.len();
     let mut left = MAX_RENDERED_LINES;
     let mut diffs: Vec<Diff> = Vec::with_capacity(count);
-    for edit in &edits {
+    for edit in shown {
         let diff = diff_lines(
             &edit.old_text,
             &edit.new_text,
@@ -730,6 +744,9 @@ fn FileContent(
         diffs.push(diff);
     }
     rsx! {
+        if too_large {
+            p { class: "file-note", "{AFTER_TOO_LARGE_NOTE}" }
+        }
         p { class: "file-note",
             "The file changed since these edits, so each shows on its own, without line numbers."
         }

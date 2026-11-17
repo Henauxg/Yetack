@@ -159,9 +159,32 @@ pub enum ToolCallStatus {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FileEdit {
     pub path: PathBuf,
-    /// Empty for a file that `Write` creates.
+    /// Empty for a file that `Write` creates, and for texts too large to keep.
     pub old_text: String,
     pub new_text: String,
+    /// Whether the daemon kept the texts. `Kept` when missing, so an edit from an older daemon,
+    /// or in an event log it wrote, reads as it was.
+    #[serde(default, skip_serializing_if = "EditTexts::is_kept")]
+    pub texts: EditTexts,
+}
+
+/// Whether a [`FileEdit`] holds its old and new text.
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize, VariantArray,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum EditTexts {
+    #[default]
+    Kept,
+    /// The old or the new text was too large for a message, so the edit holds neither.
+    TooLarge,
+}
+
+impl EditTexts {
+    #[must_use]
+    pub fn is_kept(&self) -> bool {
+        *self == Self::Kept
+    }
 }
 
 /// Claude Code asks whether a tool call may run.

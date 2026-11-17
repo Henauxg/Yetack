@@ -122,7 +122,7 @@ pub fn arrived(
 mod tests {
     use std::path::{Path, PathBuf};
 
-    use cockpit_protocol::{AgentStatus, FileEdit, ItemId, ToolCall};
+    use cockpit_protocol::{AgentStatus, EditTexts, FileEdit, ItemId, ToolCall};
     use serde_json::Value;
 
     use super::*;
@@ -175,6 +175,7 @@ mod tests {
                     path: PathBuf::from(path),
                     old_text: "old".to_owned(),
                     new_text: "new".to_owned(),
+                    texts: EditTexts::Kept,
                 }),
             }),
         }
@@ -298,6 +299,7 @@ mod tests {
                 path: PathBuf::from("notes.md"),
                 old_text: "zero".to_owned(),
                 new_text: "one".to_owned(),
+                texts: EditTexts::Kept,
             }],
         };
         actions::show_read_file(&mut state, agent(), path, path, edited, at(2_000));

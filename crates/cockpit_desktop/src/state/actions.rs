@@ -2595,7 +2595,7 @@ mod tests {
     use cockpit_client::RequestError;
     use cockpit_protocol::{
         Account, AgentDetails, AskedQuestion, ChangedFile, CommandKind, CredentialSource,
-        ErrorBody, ErrorCode, FileEdit, HistoryPage, ImageMediaType, Method, NoticeKind,
+        EditTexts, ErrorBody, ErrorCode, FileEdit, HistoryPage, ImageMediaType, Method, NoticeKind,
         OlderItems, Position, QuestionOption, Repository, ResponseBody, Timestamp, ToolCall,
         ToolCallStatus, TranscriptItem, UserMessage,
     };
@@ -4634,6 +4634,7 @@ mod tests {
             path: full.clone(),
             old_text: "let total = 1;".to_owned(),
             new_text: "let total = 2;".to_owned(),
+            texts: EditTexts::Kept,
         };
 
         open_file(&mut state, agent(), full.clone(), None);
@@ -4676,6 +4677,7 @@ mod tests {
                     path: full,
                     old_text: "let total = 1;".to_owned(),
                     new_text: "let total = 2;".to_owned(),
+                    texts: EditTexts::Kept,
                 }]),
             }),
         );
@@ -4710,6 +4712,7 @@ mod tests {
             path: full.clone(),
             old_text: "let total = 1;".to_owned(),
             new_text: "let total = 2;".to_owned(),
+            texts: EditTexts::Kept,
         };
         let entry = state.agents.get_mut(&agent()).unwrap();
         entry.transcript.append(TranscriptItem {

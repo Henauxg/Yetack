@@ -21,9 +21,9 @@ use cockpit_protocol::{
     BuildCommit, Catchup, ChangedFile, ClaudeCodeVersion, ClaudeRoute, ClaudeSessionId,
     ClientMessage, CommandKind, CommandLoad, Completeness, ContextCategory, ContextUsage, Cores,
     CostUsd, CredentialSource, DEFAULT_TITLE_MAX_CHARS, DetailsChange, DirEntry, DirListing,
-    Effort, EffortSource, EntryKind, EntryLink, EnvironmentCredentials, ErrorBody, ErrorCode,
-    Event, EventRecord, FileEdit, FindFilesParams, FolderParams, FoldersListParams, GitIgnore,
-    HistoryPage, HistoryParams, Image, ImageMediaType, ItemBody, ItemId, ListDirParams,
+    EditTexts, Effort, EffortSource, EntryKind, EntryLink, EnvironmentCredentials, ErrorBody,
+    ErrorCode, Event, EventRecord, FileEdit, FindFilesParams, FolderParams, FoldersListParams,
+    GitIgnore, HistoryPage, HistoryParams, Image, ImageMediaType, ItemBody, ItemId, ListDirParams,
     LoadAverage, LoadHistory, MachineLoad, Mark, MarkParams, McpRemoveParams, McpScope, McpServer,
     McpServerParams, McpServerStatus, McpToggleAction, McpToggleParams, McpTool, McpTransport,
     Method, MoveParams, NoticeKind, OlderItems, PROTOCOL_VERSION, PastSession, PendingId,
@@ -172,6 +172,7 @@ fn edit() -> FileEdit {
         path: PathBuf::from("src/login.rs"),
         old_text: "let valid = false;".to_owned(),
         new_text: "let valid = check(email);".to_owned(),
+        texts: EditTexts::Kept,
     }
 }
 
@@ -1359,6 +1360,7 @@ fn words_are_pinned() {
         ["image/png", "image/jpeg", "image/gif", "image/webp"]
     );
     assert_eq!(words::<ToolCallStatus>(), ["running", "done", "failed"]);
+    assert_eq!(words::<EditTexts>(), ["kept", "too_large"]);
     assert_eq!(words::<ApprovalDecision>(), ["allow", "deny"]);
     assert_eq!(
         words::<PlanDecision>(),
@@ -2547,6 +2549,29 @@ fn an_approval_saved_without_its_tool_call_still_loads() {
 
     assert_eq!(approval.tool_call, None);
     assert_eq!(approval.answer, AnswerState::Waiting);
+}
+
+#[test]
+fn an_edit_too_large_to_keep_says_so_and_a_kept_edit_reads_and_writes_as_before() {
+    let too_large = FileEdit {
+        path: PathBuf::from("data/prices.csv"),
+        old_text: String::new(),
+        new_text: String::new(),
+        texts: EditTexts::TooLarge,
+    };
+    let saved = r#"{"path":"src/login.rs","old_text":"let valid = false;","new_text":"let valid = check(email);"}"#;
+
+    assert_wire(
+        &too_large,
+        json!({
+            "path": "data/prices.csv",
+            "old_text": "",
+            "new_text": "",
+            "texts": "too_large",
+        }),
+    );
+    assert_eq!(serde_json::from_str::<FileEdit>(saved).unwrap(), edit());
+    assert_eq!(serde_json::to_string(&edit()).unwrap(), saved);
 }
 
 #[test]

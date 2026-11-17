@@ -21,16 +21,16 @@ use cockpit_protocol::{
     Account, AccountAddParams, AccountId, AccountParams, AccountPlanUsage, AccountState, AgentId,
     AgentParams, AgentStatus, AgentSummary, Answer, AnswerParams, AnswerState, Approval,
     ApprovalAnswer, ApprovalDecision, BackgroundTaskId, Catchup, ClaudeSessionId, CommandKind,
-    CostUsd, CredentialSource, DetailsChange, Effort, EffortSource, EnvironmentCredentials,
-    ErrorCode, Event, EventRecord, FileEdit, HistoryParams, Image, ImageMediaType, ItemBody,
-    McpRemoveParams, McpScope, McpServerParams, McpServerStatus, McpToggleAction, McpToggleParams,
-    MoveParams, PROTOCOL_VERSION, PendingId, PermissionMode, Plan, PlanAnswer, PlanDecision,
-    PlanUsage, ProcessId, Prompt, PromptDelivery, PromptParams, Question, QuestionAnswer,
-    QueuedPromptParams, ReadFileParams, RenameParams, Request, ResponseBody, Seq,
-    SessionResumeParams, SetEffortParams, SetModeParams, SetModelParams, Settings, SignIn,
-    SignInWait, StartParams, StopProcessParams, StopTaskParams, TerminalInputParams,
-    TerminalOpenParams, TerminalParams, TerminalSize, TranscriptItem, TurnOutcome, UsageWindow,
-    WaitingPrompt, WaitingState,
+    CostUsd, CredentialSource, DetailsChange, EditTexts, Effort, EffortSource,
+    EnvironmentCredentials, ErrorCode, Event, EventRecord, FileEdit, HistoryParams, Image,
+    ImageMediaType, ItemBody, McpRemoveParams, McpScope, McpServerParams, McpServerStatus,
+    McpToggleAction, McpToggleParams, MoveParams, PROTOCOL_VERSION, PendingId, PermissionMode,
+    Plan, PlanAnswer, PlanDecision, PlanUsage, ProcessId, Prompt, PromptDelivery, PromptParams,
+    Question, QuestionAnswer, QueuedPromptParams, ReadFileParams, RenameParams, Request,
+    ResponseBody, Seq, SessionResumeParams, SetEffortParams, SetModeParams, SetModelParams,
+    Settings, SignIn, SignInWait, StartParams, StopProcessParams, StopTaskParams,
+    TerminalInputParams, TerminalOpenParams, TerminalParams, TerminalSize, TranscriptItem,
+    TurnOutcome, UsageWindow, WaitingPrompt, WaitingState,
 };
 use rustix::process::{Pid, Signal};
 use serde_json::{Value, json};
@@ -1882,6 +1882,7 @@ async fn a_file_comes_with_its_edits() {
         path: work.join(path),
         old_text: old_text.to_owned(),
         new_text: new_text.to_owned(),
+        texts: EditTexts::Kept,
     };
 
     // The other file of the same name keeps its own edit.

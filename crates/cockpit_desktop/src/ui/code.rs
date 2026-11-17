@@ -140,6 +140,16 @@ pub fn lines_not_shown(more: usize) -> Element {
     }
 }
 
+/// What a diff shows in place of its rows when the daemon left the edit's texts out.
+pub const TOO_LARGE_TO_SHOW: &str = "Too large to show";
+
+/// The one row of a diff whose edit is too large to show.
+pub fn too_large_to_show() -> Element {
+    rsx! {
+        div { class: "lines-not-shown", "{TOO_LARGE_TO_SHOW}" }
+    }
+}
+
 /// One row of a diff. `marked` highlights the row of that new-side line and scrolls it into view.
 pub fn diff_row(row: &DiffRow, numbers: LineNumbers, marks: LineMarks<'_>) -> Element {
     let line = match row {

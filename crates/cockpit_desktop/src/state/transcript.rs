@@ -338,8 +338,8 @@ mod tests {
     use std::path::PathBuf;
 
     use cockpit_protocol::{
-        Approval, ApprovalAnswer, ApprovalDecision, FileEdit, Plan, PlanAnswer, PlanDecision,
-        ToolCall,
+        Approval, ApprovalAnswer, ApprovalDecision, EditTexts, FileEdit, Plan, PlanAnswer,
+        PlanDecision, ToolCall,
     };
     use serde_json::Value;
 
@@ -363,6 +363,7 @@ mod tests {
                 path: PathBuf::from("/work/notes.txt"),
                 old_text: String::new(),
                 new_text: "one line\n".to_owned(),
+                texts: EditTexts::Kept,
             }),
             ..call("Write", "notes.txt", status)
         }

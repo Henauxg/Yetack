@@ -2181,9 +2181,9 @@ mod tests {
 
     use claude_protocol::PermissionDecision;
     use cockpit_protocol::{
-        AgentId, ApprovalAnswer, ApprovalDecision, BackgroundTaskKind, CommandKind, FileEdit,
-        McpServerStatus, PlanAnswer, PlanDecision, QuestionAnswer, Subagent, TaskProgress,
-        TaskStatus,
+        AgentId, ApprovalAnswer, ApprovalDecision, BackgroundTaskKind, CommandKind, EditTexts,
+        FileEdit, McpServerStatus, PlanAnswer, PlanDecision, QuestionAnswer, Subagent,
+        TaskProgress, TaskStatus,
     };
     use serde_json::json;
 
@@ -2498,13 +2498,15 @@ mod tests {
             panic!("expected a tool call");
         };
         assert_eq!(call.summary, "notes.txt");
-        assert_eq!(call.edit.as_ref().unwrap().old_text, "one\n");
+        let edit = call.edit.as_ref().unwrap();
+        assert_eq!(edit.old_text, "one\n");
+        assert_eq!(edit.texts, EditTexts::Kept);
         let file = &view.details().changed_files[0];
         assert_eq!((file.lines_added, file.lines_removed), (1, 0));
     }
 
     #[test]
-    fn a_write_over_a_large_file_keeps_its_path_and_line_counts_but_not_its_texts() {
+    fn a_write_over_a_large_file_keeps_its_path_and_line_counts_and_marks_its_texts_too_large() {
         let mut view = view();
         let path = format!("{FOLDER}/prices.csv");
         apply(
@@ -2528,12 +2530,13 @@ mod tests {
         let edit = call.edit.as_ref().unwrap();
         assert_eq!(edit.path, PathBuf::from(&path));
         assert_eq!((edit.old_text.as_str(), edit.new_text.as_str()), ("", ""));
+        assert_eq!(edit.texts, EditTexts::TooLarge);
         let file = &view.details().changed_files[0];
         assert_eq!((file.lines_added, file.lines_removed), (1, 170_000));
     }
 
     #[test]
-    fn a_large_new_text_is_left_out_of_the_call_and_its_approval() {
+    fn a_large_new_text_is_left_out_of_the_call_and_its_approval_which_say_so() {
         let mut view = view();
         let path = format!("{FOLDER}/prices.csv");
         // 1.4 MB, over the limit of an edit's text.
@@ -2552,12 +2555,13 @@ mod tests {
                 _ => None,
             })
             .collect();
-        let empty = FileEdit {
+        let too_large = FileEdit {
             path: PathBuf::from(&path),
             old_text: String::new(),
             new_text: String::new(),
+            texts: EditTexts::TooLarge,
         };
-        assert_eq!(edits, [&empty, &empty]);
+        assert_eq!(edits, [&too_large, &too_large]);
         let file = &view.details().changed_files[0];
         assert_eq!((file.lines_added, file.lines_removed), (200_000, 0));
     }

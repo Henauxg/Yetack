@@ -85,7 +85,9 @@ Positions leave room between neighbours, so a move changes one agent.
 An agent's conversation is a list of `TranscriptItem`s, each with an `ItemId` and an optional `parent` (the subagent it nests under).
 The daemon numbers items in transcript order, so the app can merge a history page with live appends by id.
 
-- An `Edit` or `Write` call drops its old and new text when either is over 1 MiB.
+- An `Edit` or `Write` call drops its old and new text when either is over 1 MiB, and marks its `FileEdit` `EditTexts::TooLarge`.
+  The app then shows "Too large to show" in place of the diff, and the file view's diff starts after that edit.
+  A `FileEdit` without the mark, from an older daemon or event log, reads as `Kept`.
 - An `Approval` finds its tool call through `tool_use_id`, which Claude Code sends after the call's `tool_use`.
 - Claude Code withdraws a pending request when the turn is interrupted, and the item becomes `Cancelled`.
 - After a `conversation_reset`, Claude Code's total cost counts from 0.

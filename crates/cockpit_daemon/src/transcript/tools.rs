@@ -4,7 +4,9 @@ use std::collections::BTreeSet;
 use std::path::{Component, Path, PathBuf};
 
 use claude_protocol::{ContentBlock, ToolInput};
-use cockpit_protocol::{ChangedFile, FileEdit, ItemBody, ToolCall, ToolCallStatus, TranscriptItem};
+use cockpit_protocol::{
+    ChangedFile, EditTexts, FileEdit, ItemBody, ToolCall, ToolCallStatus, TranscriptItem,
+};
 use serde_json::{Map, Value};
 use strum::{EnumString, IntoStaticStr, VariantArray};
 
@@ -153,11 +155,13 @@ pub(crate) fn file_edit(input: &ToolInput) -> Option<FileEdit> {
             path: edit.file_path.clone(),
             old_text: edit.old_string.clone(),
             new_text: edit.new_string.clone(),
+            texts: EditTexts::Kept,
         }),
         ToolInput::Write(write) => Some(FileEdit {
             path: write.file_path.clone(),
             old_text: String::new(),
             new_text: write.content.clone(),
+            texts: EditTexts::Kept,
         }),
         ToolInput::TodoWrite(_)
         | ToolInput::AskUserQuestion(_)
@@ -184,12 +188,13 @@ pub(crate) fn loaded_skill(tool: &str, input: &Value) -> Option<String> {
     Some(skill.skill)
 }
 
-/// The edit as a transcript item keeps it: its path only, when a text is over
-/// [`MAX_EDIT_TEXT_BYTES`].
+/// The edit as a transcript item keeps it: its path only, marked [`EditTexts::TooLarge`], when a
+/// text is over [`MAX_EDIT_TEXT_BYTES`].
 pub(crate) fn without_large_texts(mut edit: FileEdit) -> FileEdit {
     if edit.old_text.len() > MAX_EDIT_TEXT_BYTES || edit.new_text.len() > MAX_EDIT_TEXT_BYTES {
         edit.old_text = String::new();
         edit.new_text = String::new();
+        edit.texts = EditTexts::TooLarge;
     }
     edit
 }
@@ -492,6 +497,27 @@ mod tests {
     }
 
     #[test]
+    fn an_edit_over_the_limit_loses_its_texts_and_says_so() {
+        let edit = |old_text: String, new_text: String| FileEdit {
+            path: PathBuf::from("/work/app/prices.csv"),
+            old_text,
+            new_text,
+            texts: EditTexts::Kept,
+        };
+        let at_limit = edit("a".repeat(MAX_EDIT_TEXT_BYTES), "b".to_owned());
+        let large_old = edit("a".repeat(MAX_EDIT_TEXT_BYTES + 1), "b".to_owned());
+        let large_new = edit("a".to_owned(), "b".repeat(MAX_EDIT_TEXT_BYTES + 1));
+        let too_large = FileEdit {
+            texts: EditTexts::TooLarge,
+            ..edit(String::new(), String::new())
+        };
+
+        assert_eq!(without_large_texts(at_limit.clone()), at_limit);
+        assert_eq!(without_large_texts(large_old), too_large);
+        assert_eq!(without_large_texts(large_new), too_large);
+    }
+
+    #[test]
     fn the_original_file_comes_from_the_record() {
         let record = json!({"type": "update", "originalFile": "old text"});
 
@@ -515,6 +541,7 @@ mod tests {
                     path: PathBuf::from("/work/app/notes.txt"),
                     old_text: "old".to_owned(),
                     new_text: id.to_string(),
+                    texts: EditTexts::Kept,
                 }),
             }),
         };

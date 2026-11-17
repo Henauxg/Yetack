@@ -12,17 +12,17 @@ use cockpit_protocol::{
     AgentSummary, Answer, AnswerState, Approval, AskedQuestion, BackgroundTask, BackgroundTaskId,
     BackgroundTaskKind, BackgroundTaskStatus, BuildCommit, ChangedFile, ClaudeCodeVersion,
     ClaudeRoute, ClaudeSessionId, CommandKind, CommandLoad, Completeness, ContextCategory,
-    ContextUsage, Cores, CostUsd, CredentialSource, DirEntry, DirListing, Effort, EffortSource,
-    EntryKind, EntryLink, EnvironmentCredentials, ErrorBody, ErrorCode, FileEdit, GitIgnore,
-    HistoryPage, Image, ImageMediaType, ItemBody, ItemId, LoadAverage, LoadHistory, MachineLoad,
-    Mark, McpScope, McpServer, McpServerStatus, McpTool, McpTransport, NoticeKind, OlderItems,
-    PROTOCOL_VERSION, PastSession, PendingId, PermissionMode, Plan, PlanUsage, Position, ProcessId,
-    Prompt, PromptId, Question, QuestionAnswer, QuestionOption, RateLimitStatus, ReleaseVersion,
-    Repository, Request, ResourceUse, ResponseBody, Selection, ServerLoad, ServerPoint, SignIn,
-    SignInWait, SlashCommand, Subagent, SubagentRun, SubagentStatus, SubagentToolCall,
-    TaskListItem, TaskProgress, TaskStatus, Timestamp, TokenUsage, ToolCall, ToolCallStatus,
-    TranscriptItem, TurnEnd, TurnOutcome, UsageWindow, UserMessage, WaitingPrompt, WaitingState,
-    WindowUsage,
+    ContextUsage, Cores, CostUsd, CredentialSource, DirEntry, DirListing, EditTexts, Effort,
+    EffortSource, EntryKind, EntryLink, EnvironmentCredentials, ErrorBody, ErrorCode, FileEdit,
+    GitIgnore, HistoryPage, Image, ImageMediaType, ItemBody, ItemId, LoadAverage, LoadHistory,
+    MachineLoad, Mark, McpScope, McpServer, McpServerStatus, McpTool, McpTransport, NoticeKind,
+    OlderItems, PROTOCOL_VERSION, PastSession, PendingId, PermissionMode, Plan, PlanUsage,
+    Position, ProcessId, Prompt, PromptId, Question, QuestionAnswer, QuestionOption,
+    RateLimitStatus, ReleaseVersion, Repository, Request, ResourceUse, ResponseBody, Selection,
+    ServerLoad, ServerPoint, SignIn, SignInWait, SlashCommand, Subagent, SubagentRun,
+    SubagentStatus, SubagentToolCall, TaskListItem, TaskProgress, TaskStatus, Timestamp,
+    TokenUsage, ToolCall, ToolCallStatus, TranscriptItem, TurnEnd, TurnOutcome, UsageWindow,
+    UserMessage, WaitingPrompt, WaitingState, WindowUsage,
 };
 use dioxus::prelude::{Signal, WritableExt};
 use serde_json::Value;
@@ -3049,6 +3049,7 @@ fn edit_call(tool: &str, path: &str, old_text: &str, new_text: &str) -> ItemBody
             path: in_folder(PARSER_FOLDER, path),
             old_text: old_text.to_owned(),
             new_text: new_text.to_owned(),
+            texts: EditTexts::Kept,
         }),
         ..call(tool, path, ToolCallStatus::Done, None)
     })
@@ -4008,6 +4009,7 @@ fn live_entry_of(kind: u32, id: u32) -> ItemBody {
                 new_text: format!(
                     "    let input = \"case {id}\";\n    let chunks = 4;\n    let keep_partial = true;\n"
                 ),
+                texts: EditTexts::Kept,
             }),
             ..call(
                 "Edit",

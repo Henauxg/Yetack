@@ -610,6 +610,8 @@ mod tests {
     #[cfg(unix)]
     use rustix::fs::Mode;
 
+    use cockpit_protocol::EditTexts;
+
     use super::*;
 
     fn only_folder(folder: &Path) -> Access {
@@ -1195,6 +1197,7 @@ mod tests {
             path: PathBuf::from(path),
             old_text: old_text.to_owned(),
             new_text: new_text.to_owned(),
+            texts: EditTexts::Kept,
         }
     }
 
@@ -1304,5 +1307,26 @@ mod tests {
 
         let new_texts: Vec<&str> = kept.iter().map(|edit| edit.new_text.as_str()).collect();
         assert_eq!(new_texts, ["b", "e"]);
+    }
+
+    #[test]
+    fn an_edit_too_large_to_keep_reaches_the_answer_marked() {
+        let folder = Path::new(if cfg!(windows) {
+            r"C:\work\app"
+        } else {
+            "/work/app"
+        });
+        let file = folder.join("prices.csv");
+        let path = file.to_str().unwrap();
+        let too_large = FileEdit {
+            texts: EditTexts::TooLarge,
+            ..edit(path, "", "")
+        };
+        let edits = [edit(path, "a", "b"), too_large, edit(path, "b", "c")];
+
+        let named = edits_named(edits.iter(), folder, OsStr::new("prices.csv"), usize::MAX);
+        let kept = edits_of(named, folder, &file, usize::MAX);
+
+        assert_eq!(kept, edits);
     }
 }

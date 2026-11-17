@@ -2,7 +2,7 @@
 
 use std::path::{Path, PathBuf};
 
-use cockpit_protocol::{FileEdit, ItemBody, ToolCallStatus};
+use cockpit_protocol::{EditTexts, FileEdit, ItemBody, ToolCallStatus};
 
 use super::transcript::Transcript;
 use crate::path_style::PathStyle;
@@ -62,12 +62,25 @@ pub fn edits_for<'transcript>(
     edits
 }
 
+/// The edits after the last one too large to keep its texts. The file's text before that edit is
+/// unknown, so a diff can only start after it. All of `edits` when none is too large.
+pub fn after_too_large(edits: &[FileEdit]) -> &[FileEdit] {
+    let start = edits
+        .iter()
+        .rposition(|edit| edit.texts == EditTexts::TooLarge)
+        .map_or(0, |last| last + 1);
+    edits.get(start..).unwrap_or_default()
+}
+
 /// The file's text before `edits`, undoing them from the last to the first on `current`. `None`
 /// when an edit's new text is no longer in the file, as after a change the transcript does not
-/// show.
+/// show, and when an edit is too large to keep its texts.
 pub fn original_text(current: &str, edits: &[&FileEdit]) -> Option<String> {
     let mut text = current.to_owned();
     for edit in edits.iter().rev() {
+        if edit.texts == EditTexts::TooLarge {
+            return None;
+        }
         if edit.old_text.is_empty() {
             // A `Write` created the file.
             return Some(String::new());
@@ -94,6 +107,16 @@ mod tests {
             path: PathBuf::from(path),
             old_text: old_text.to_owned(),
             new_text: new_text.to_owned(),
+            texts: EditTexts::Kept,
+        }
+    }
+
+    fn too_large(path: &str) -> FileEdit {
+        FileEdit {
+            path: PathBuf::from(path),
+            old_text: String::new(),
+            new_text: String::new(),
+            texts: EditTexts::TooLarge,
         }
     }
 
@@ -203,5 +226,31 @@ mod tests {
             Some("")
         );
         assert_eq!(original_text("fn main() {}\n", &[&lost]), None);
+    }
+
+    #[test]
+    fn an_edit_too_large_to_keep_is_neither_a_creation_nor_undone() {
+        let large = too_large("a.rs");
+        let later = edit("a.rs", "let total = 1;", "let total = 2;");
+
+        assert_eq!(original_text("let total = 1;\n", &[&large]), None);
+        assert_eq!(original_text("let total = 2;\n", &[&large, &later]), None);
+    }
+
+    #[test]
+    fn a_diff_starts_after_the_last_edit_too_large_to_keep() {
+        let first = edit("a.rs", "1", "2");
+        let large = too_large("a.rs");
+        let last = edit("a.rs", "2", "3");
+
+        assert_eq!(
+            after_too_large(&[first.clone(), last.clone()]),
+            [first.clone(), last.clone()]
+        );
+        assert_eq!(
+            after_too_large(&[first.clone(), large.clone(), last.clone()]),
+            [last]
+        );
+        assert!(after_too_large(&[first, large]).is_empty());
     }
 }

@@ -9,8 +9,8 @@ use std::time::{Duration, SystemTime};
 
 use chrono::NaiveDate;
 use cockpit_protocol::{
-    AgentId, AgentStatus, AnswerState, ItemBody, ItemId, NoticeKind, SignInWait, Timestamp,
-    ToolCall, ToolCallStatus, TranscriptItem, TurnEnd, TurnOutcome, UserMessage,
+    AgentId, AgentStatus, AnswerState, EditTexts, ItemBody, ItemId, NoticeKind, SignInWait,
+    Timestamp, ToolCall, ToolCallStatus, TranscriptItem, TurnEnd, TurnOutcome, UserMessage,
 };
 use dioxus::prelude::*;
 use serde::Serialize;
@@ -31,7 +31,7 @@ use crate::ui::cards::{ApprovalCard, PlanCard};
 use crate::ui::chat_scroll::{
     self, CHAT_SCROLL_ID, ENTRY_CLASS, FOLD_BUTTON_CLASS, InView, JumpToLatest, NewDivider,
 };
-use crate::ui::code::{LineMarks, LineNumbers, diff_row};
+use crate::ui::code::{LineMarks, LineNumbers, diff_row, too_large_to_show};
 use crate::ui::find::SKIP_CLASS;
 use crate::ui::find_folds::{self, FoldChip, FoldKey};
 use crate::ui::icons::{Icon, IconKind};
@@ -47,6 +47,9 @@ use crate::{bridge, format};
 
 /// What a call's line says while it runs, before its time or its count of calls.
 const RUNNING_WORD: &str = "running";
+
+/// What an edit's line says once it ran, when the daemon left its texts out.
+const TOO_LARGE_META: &str = "too large to show";
 
 /// Screen lines a folded IN or OUT row keeps, wrapped lines counted.
 const IN_FOLD_LINES: u8 = 3;
@@ -2387,10 +2390,15 @@ enum EditMeta {
     Stage(String),
     Created { lines: usize },
     Changed { added: usize, removed: usize },
+    TooLarge,
 }
 
 impl EditMeta {
     fn new(call: &ToolCall, stage: CallStage, added: usize, removed: usize) -> Self {
+        let too_large = call
+            .edit
+            .as_ref()
+            .is_some_and(|edit| edit.texts == EditTexts::TooLarge);
         // A `Write` has no old text until it ran, even over a file: the daemon reads that text
         // from the result.
         let created = call
@@ -2398,6 +2406,7 @@ impl EditMeta {
             .as_ref()
             .is_some_and(|edit| edit.old_text.is_empty());
         match stage {
+            CallStage::Done if too_large => Self::TooLarge,
             CallStage::Done if created => Self::Created { lines: added },
             CallStage::Done => Self::Changed { added, removed },
             CallStage::AwaitsApproval | CallStage::Running | CallStage::Failed => {
@@ -2578,7 +2587,8 @@ fn EditView(
         .output
         .clone()
         .filter(|_| call.status == ToolCallStatus::Failed);
-    let foldable = !preview.is_empty() || failure.is_some();
+    let too_large = edit.texts == EditTexts::TooLarge;
+    let foldable = !preview.is_empty() || too_large || failure.is_some();
     let unfolded = if decided.clicked() {
         UNFOLDED_CLASS
     } else {
@@ -2612,6 +2622,9 @@ fn EditView(
                             span { class: "removed", "-{removed}" }
                         }
                     },
+                    EditMeta::TooLarge => rsx! {
+                        span { class: "tool-meta", "{TOO_LARGE_META}" }
+                    },
                 }
                 if foldable && !open {
                     FoldChip { fold: FoldKey::Item(id) }
@@ -2631,6 +2644,9 @@ fn EditView(
                         button { class: "more-lines", onclick: open_more, "{more_text}" }
                     }
                 }
+            }
+            if open && too_large {
+                div { class: "diff-box inline-diff {unfolded}", {too_large_to_show()} }
             }
             if open {
                 if let Some(output) = failure {
@@ -2834,7 +2850,8 @@ mod tests {
     use std::time::UNIX_EPOCH;
 
     use cockpit_protocol::{
-        Approval, ApprovalAnswer, ApprovalDecision, FileEdit, NoticeKind, PendingId, Timestamp,
+        Approval, ApprovalAnswer, ApprovalDecision, EditTexts, FileEdit, NoticeKind, PendingId,
+        Timestamp,
     };
 
     use super::*;
@@ -3209,6 +3226,7 @@ mod tests {
                 path: PathBuf::from("/work/notes.txt"),
                 old_text: String::new(),
                 new_text: "one line\n".to_owned(),
+                texts: EditTexts::Kept,
             }),
             ..call("Write", "notes.txt", status)
         }
@@ -3444,6 +3462,34 @@ mod tests {
                 added: 1,
                 removed: 1
             }
+        );
+    }
+
+    #[test]
+    fn an_edit_too_large_to_keep_says_so_once_it_ran_and_not_that_it_created_a_file() {
+        let too_large = |status| {
+            let mut call = write_call(status);
+            call.edit = Some(FileEdit {
+                path: PathBuf::from("/work/prices.csv"),
+                old_text: String::new(),
+                new_text: String::new(),
+                texts: EditTexts::TooLarge,
+            });
+            call
+        };
+
+        assert_eq!(
+            EditMeta::new(&too_large(ToolCallStatus::Done), CallStage::Done, 0, 0),
+            EditMeta::TooLarge
+        );
+        assert_eq!(
+            EditMeta::new(
+                &too_large(ToolCallStatus::Running),
+                CallStage::Running,
+                0,
+                0
+            ),
+            EditMeta::Stage("running".to_owned())
         );
     }
 

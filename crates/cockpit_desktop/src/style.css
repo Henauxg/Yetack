@@ -4054,7 +4054,8 @@ html.reordering * {
   color: var(--muted);
 }
 
-/* The last row of a code block, a diff or a file cut at the line cap. */
+/* The last row of a code block, a diff or a file cut at the line cap, and the one row of a diff
+   too large to show. */
 .lines-not-shown {
   padding: 4px 12px;
   font-family: var(--sans);

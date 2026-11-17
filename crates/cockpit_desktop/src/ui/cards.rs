@@ -4,14 +4,15 @@
 use std::path::PathBuf;
 
 use cockpit_protocol::{
-    AgentId, AnswerState, Approval, ApprovalDecision, ItemId, PendingId, Plan, PlanDecision,
+    AgentId, AnswerState, Approval, ApprovalDecision, EditTexts, ItemId, PendingId, Plan,
+    PlanDecision,
 };
 use dioxus::prelude::*;
 
 use crate::connection::Cockpit;
 use crate::render::{Diff, Language, MAX_RENDERED_LINES, diff_lines};
 use crate::state::{actions, file_edits};
-use crate::ui::code::{LineMarks, LineNumbers, diff_row, lines_not_shown};
+use crate::ui::code::{LineMarks, LineNumbers, diff_row, lines_not_shown, too_large_to_show};
 use crate::ui::icons::{Icon, IconKind};
 use crate::ui::markdown::MarkdownView;
 use crate::ui::presence::Presence;
@@ -97,6 +98,10 @@ pub fn ApprovalCard(agent: AgentId, folder: PathBuf, approval: Approval) -> Elem
     } else {
         LineNumbers::Hidden
     };
+    let too_large = approval
+        .edit
+        .as_ref()
+        .is_some_and(|edit| edit.texts == EditTexts::TooLarge);
     let outcome = match &approval.answer {
         AnswerState::Waiting => None,
         AnswerState::Answered(answer) => Some(match (answer.decision, &answer.message) {
@@ -136,6 +141,9 @@ pub fn ApprovalCard(agent: AgentId, folder: PathBuf, approval: Approval) -> Elem
                     }
                     {lines_not_shown(diff.more)}
                 }
+            }
+            if too_large {
+                div { class: "diff-box approval-diff", {too_large_to_show()} }
             }
             if let Some(reason) = &approval.reason {
                 span { class: "card-note", "{reason}" }
@@ -249,7 +257,7 @@ pub fn PlanCard(agent: AgentId, folder: PathBuf, plan: Plan, item: Option<ItemId
 
 #[cfg(test)]
 mod tests {
-    use cockpit_protocol::{FileEdit, PendingId};
+    use cockpit_protocol::{EditTexts, FileEdit, PendingId};
     use serde_json::json;
 
     use super::*;
@@ -310,6 +318,7 @@ mod tests {
             path: PathBuf::from("src/lib.rs"),
             old_text: "old".to_owned(),
             new_text: "new".to_owned(),
+            texts: EditTexts::Kept,
         });
 
         assert_eq!(approval_input(&command), None);

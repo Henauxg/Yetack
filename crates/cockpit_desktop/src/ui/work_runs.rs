@@ -283,7 +283,7 @@ fn capitalized(text: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use cockpit_protocol::{FileEdit, ToolCallStatus};
+    use cockpit_protocol::{EditTexts, FileEdit, ToolCallStatus};
     use serde_json::json;
 
     use crate::ui::tool_rows;
@@ -420,6 +420,7 @@ mod tests {
                 path: PathBuf::from("/home/dev/calc/src/lexer.rs"),
                 old_text: "0".to_owned(),
                 new_text: "1".to_owned(),
+                texts: EditTexts::Kept,
             });
         }
         let items = [
@@ -471,6 +472,7 @@ mod tests {
                 path: PathBuf::from("/home/dev/calc/src/lexer.rs"),
                 old_text: "0".to_owned(),
                 new_text: "1".to_owned(),
+                texts: EditTexts::Kept,
             });
         }
         let items = [

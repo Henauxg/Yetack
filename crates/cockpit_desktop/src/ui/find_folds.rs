@@ -13,13 +13,16 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::path::Path;
 
-use cockpit_protocol::{AgentId, ItemBody, ItemId, ToolCall, ToolCallStatus, TranscriptItem};
+use cockpit_protocol::{
+    AgentId, EditTexts, ItemBody, ItemId, ToolCall, ToolCallStatus, TranscriptItem,
+};
 use dioxus::prelude::*;
 
 use crate::connection::Cockpit;
 use crate::render::{self, DiffRow, SearchTool};
 use crate::state::find::{FindPane, Needle};
 use crate::state::{AgentEntry, Revision, accounts, actions, awaiting_approval};
+use crate::ui::code::TOO_LARGE_TO_SHOW;
 use crate::ui::icons::{Icon, IconKind};
 use crate::ui::tool_rows::{self, Row};
 use crate::ui::transcript::{
@@ -346,7 +349,10 @@ impl Gatherer<'_, '_> {
             }
             return;
         };
-        self.preview(id, &edit.old_text, &edit.new_text);
+        match edit.texts {
+            EditTexts::Kept => self.preview(id, &edit.old_text, &edit.new_text),
+            EditTexts::TooLarge => self.add(TOO_LARGE_TO_SHOW),
+        }
         if call.status == ToolCallStatus::Failed {
             self.add(call.output.as_deref().unwrap_or_default());
         }
@@ -478,7 +484,7 @@ pub(crate) fn FoldChip(fold: FoldKey) -> Element {
 
 #[cfg(test)]
 mod tests {
-    use cockpit_protocol::{FileEdit, NoticeKind, UserMessage};
+    use cockpit_protocol::{EditTexts, FileEdit, NoticeKind, UserMessage};
     use serde_json::{Value, json};
 
     use super::*;
@@ -572,6 +578,7 @@ mod tests {
             path: "src/lexer.rs".into(),
             old_text: String::new(),
             new_text,
+            texts: EditTexts::Kept,
         });
 
         let found = matches(&[item(1, None, ItemBody::ToolCall(write))], "column");
@@ -579,6 +586,25 @@ mod tests {
         assert_eq!(
             found,
             FoldMatches::from([(FoldKey::Item(ItemId::new(1)), EDIT_PREVIEW_ROWS as u32)])
+        );
+    }
+
+    #[test]
+    fn an_edit_too_large_to_keep_counts_the_note_in_place_of_its_lines() {
+        let mut write = call("Write", "data/prices.csv", json!({}), "");
+        write.output = None;
+        write.edit = Some(FileEdit {
+            path: "data/prices.csv".into(),
+            old_text: String::new(),
+            new_text: String::new(),
+            texts: EditTexts::TooLarge,
+        });
+
+        let found = matches(&[item(1, None, ItemBody::ToolCall(write))], "too large");
+
+        assert_eq!(
+            found,
+            FoldMatches::from([(FoldKey::Item(ItemId::new(1)), 1)])
         );
     }
 
@@ -662,6 +688,7 @@ mod tests {
             path: "src/grid.rs".into(),
             old_text: "column".to_owned(),
             new_text: "row".to_owned(),
+            texts: EditTexts::Kept,
         });
         let items = [
             item(
@@ -743,6 +770,7 @@ mod tests {
                 path: "src/grid.rs".into(),
                 old_text: String::new(),
                 new_text: new_text.to_owned(),
+                texts: EditTexts::Kept,
             });
             [item(1, None, ItemBody::ToolCall(write))]
         };
@@ -811,6 +839,7 @@ mod tests {
             path: "/work/app/src/lexer.rs".into(),
             old_text: "a".to_owned(),
             new_text: "b".to_owned(),
+            texts: EditTexts::Kept,
         });
         let items = [
             item(
