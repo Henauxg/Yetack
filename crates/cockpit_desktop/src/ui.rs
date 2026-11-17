@@ -23,6 +23,7 @@ mod find_folds;
 mod grouping;
 mod header;
 mod icons;
+mod kept_folds;
 mod last_instruction;
 mod load_card;
 mod loading;
@@ -50,6 +51,7 @@ mod terminal_pane;
 mod tool_rows;
 mod transcript;
 mod waiting_prompts;
+mod work_runs;
 mod zoom;
 
 pub use app::App;

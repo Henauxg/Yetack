@@ -23,16 +23,18 @@ use crate::state::{AgentEntry, Revision, accounts, actions, awaiting_approval};
 use crate::ui::icons::{Icon, IconKind};
 use crate::ui::tool_rows::{self, Row};
 use crate::ui::transcript::{
-    CallStage, Children, EDIT_CONTEXT_LINES, EDIT_PREVIEW_ROWS, SUBAGENT_NAME, ToolShape,
-    children_by_parent, compact_line, hides_output, top_items, waits_for_answer,
+    CallStage, Children, EDIT_CONTEXT_LINES, EDIT_PREVIEW_ROWS, SUBAGENT_NAME, THINKING_LABEL,
+    ToolShape, children_by_parent, compact_line, hides_output, top_items, waits_for_answer,
 };
+use crate::ui::work_runs::{self, Unit};
 
-/// What closes over hidden matches: an item's own fold, or a run of reads and searches, which its
-/// first item names.
+/// What closes over hidden matches: an item's own fold, a run of reads and searches, or a run of
+/// the agent's work, which its first item names.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) enum FoldKey {
     Item(ItemId),
     Explored(ItemId),
+    Run(ItemId),
 }
 
 /// The matches in each fold that holds some.
@@ -156,7 +158,14 @@ fn chat_fold_texts(
     let awaiting = awaiting_approval(&items);
     let rows = tool_rows::rows(&top, &awaiting, gathered.divider);
     let children = children_by_parent(&items);
-    FoldTexts::gather(&rows, &children, &awaiting, &entry.summary.folder, previews)
+    FoldTexts::gather(
+        &rows,
+        &children,
+        &awaiting,
+        gathered.divider,
+        &entry.summary.folder,
+        previews,
+    )
 }
 
 /// A text a fold shows once open, with every fold it sits in: a fold inside a subagent counts for
@@ -177,11 +186,13 @@ pub(crate) struct FoldTexts {
 
 impl FoldTexts {
     /// `folder` is the agent's, from which an edit's line shows its path. `previews` holds the
-    /// edits' lines of the last gathering, and gets this one's.
+    /// edits' lines of the last gathering, and gets this one's. The rows fold into runs of work as
+    /// the chat folds them, which `divider` ends.
     pub(crate) fn gather(
         rows: &[Row<'_>],
         children: &Children<'_>,
         awaiting: &BTreeSet<ItemId>,
+        divider: Option<ItemId>,
         folder: &Path,
         previews: &mut Previews,
     ) -> Self {
@@ -195,8 +206,26 @@ impl FoldTexts {
             pieces: Vec::new(),
             subagents: BTreeSet::new(),
         };
-        for row in rows {
-            gatherer.row(row);
+        for unit in work_runs::units(rows, awaiting, divider) {
+            match unit {
+                Unit::Row(index) => {
+                    if let Some(row) = rows.get(index) {
+                        gatherer.row(row);
+                    }
+                }
+                Unit::Run(range) => {
+                    let run = rows.get(range).unwrap_or_default();
+                    let Some(first) = run.first() else {
+                        continue;
+                    };
+                    gatherer.within(FoldKey::Run(first.first().id), |gatherer| {
+                        for row in run {
+                            gatherer.run_line(row);
+                            gatherer.row(row);
+                        }
+                    });
+                }
+            }
         }
         Self {
             pieces: gatherer.pieces,
@@ -395,6 +424,31 @@ impl Gatherer<'_, '_> {
             _ => {}
         }
     }
+
+    /// The line a row of a run of work shows once the run opens.
+    fn run_line(&mut self, row: &Row<'_>) {
+        let words = match row {
+            Row::Explored { .. } => tool_rows::explored_line(row.items()),
+            Row::Skill { call, .. } => match &call.body {
+                ItemBody::ToolCall(skill) => {
+                    let stage = CallStage::new(skill, self.awaiting.contains(&call.id));
+                    tool_rows::skill_line(skill, stage)
+                }
+                _ => Vec::new(),
+            },
+            Row::Item(item) => match &item.body {
+                ItemBody::Thinking { .. } => vec![THINKING_LABEL.to_owned()],
+                ItemBody::ToolCall(_) => {
+                    self.shown(item);
+                    Vec::new()
+                }
+                _ => Vec::new(),
+            },
+        };
+        for word in &words {
+            self.add(word);
+        }
+    }
 }
 
 /// The matches of the chat's find in what a fold hides, on the fold's line while it is closed.
@@ -465,6 +519,7 @@ mod tests {
             &rows,
             &children,
             &awaiting,
+            divider.map(ItemId::new),
             Path::new("/work/app"),
             &mut Previews::default(),
         )
@@ -498,9 +553,13 @@ mod tests {
 
         let found = matches(&items, "COLUMN");
 
+        // The two calls fold into a run, which also hides the read's line.
         assert_eq!(
             found,
-            FoldMatches::from([(FoldKey::Item(ItemId::new(1)), 4)])
+            FoldMatches::from([
+                (FoldKey::Item(ItemId::new(1)), 4),
+                (FoldKey::Run(ItemId::new(1)), 5),
+            ])
         );
     }
 
@@ -634,7 +693,8 @@ mod tests {
             ),
         ];
 
-        // The edit's removed line and its error each hold one.
+        // The edit's removed line and its error each hold one. The thinking, the skill and the
+        // edit fold into a run, and the message stays out of it.
         assert_eq!(
             matches(&items, "column"),
             FoldMatches::from([
@@ -642,6 +702,35 @@ mod tests {
                 (FoldKey::Item(ItemId::new(2)), 1),
                 (FoldKey::Item(ItemId::new(4)), 2),
                 (FoldKey::Item(ItemId::new(5)), 1),
+                (FoldKey::Run(ItemId::new(1)), 4),
+            ])
+        );
+    }
+
+    #[test]
+    fn a_run_of_work_counts_the_lines_of_its_reads_and_its_skill_as_they_show() {
+        let read = |id: u32| {
+            item(
+                id,
+                None,
+                ItemBody::ToolCall(call("Read", "src/column.rs", json!({}), "1\tfn f() {}")),
+            )
+        };
+        let skill = call(
+            "Skill",
+            "column-fix",
+            json!({"skill": "column-fix", "args": "the column"}),
+            "Launching skill",
+        );
+        let items = [read(1), read(2), item(3, None, ItemBody::ToolCall(skill))];
+
+        // Once open, the run shows the reads' line, "Explored 1 file read", whose fold holds the
+        // two reads, and the skill's line, "/column-fix the column".
+        assert_eq!(
+            matches(&items, "column"),
+            FoldMatches::from([
+                (FoldKey::Explored(ItemId::new(1)), 2),
+                (FoldKey::Run(ItemId::new(1)), 4),
             ])
         );
     }
@@ -666,6 +755,7 @@ mod tests {
                 &rows,
                 &children_by_parent(&refs),
                 &awaiting,
+                None,
                 Path::new("/work/app"),
                 &mut previews,
             )

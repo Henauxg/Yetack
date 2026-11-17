@@ -35,11 +35,14 @@ use crate::ui::code::{LineMarks, LineNumbers, diff_row};
 use crate::ui::find::SKIP_CLASS;
 use crate::ui::find_folds::{self, FoldChip, FoldKey};
 use crate::ui::icons::{Icon, IconKind};
+use crate::ui::kept_folds::{KeptFold, use_kept_fold};
 use crate::ui::last_instruction::LastInstruction;
 use crate::ui::loading::{OlderSkeleton, TranscriptSkeleton};
 use crate::ui::markdown::{MARKDOWN_CLASS, MarkdownView};
+use crate::ui::presence::{Shown, use_presence};
 use crate::ui::question_card::{CardPlace, QuestionCard};
 use crate::ui::tool_rows::{self, ExploredView, Row, SkillView};
+use crate::ui::work_runs::{self, Unit, WorkSummary};
 use crate::{bridge, format};
 
 /// What a call's line says while it runs, before its time or its count of calls.
@@ -516,9 +519,9 @@ struct ChatView {
     quiet_since: Option<Timestamp>,
     working_linked: bool,
     shown: ShownRows,
-    /// The ids of all the rows, drawn or not, oldest first.
+    /// The ids of all the rows, drawn or not, oldest first: a run of work is one row.
     row_ids: Vec<ItemId>,
-    top: Vec<TopRow>,
+    top: Vec<TopUnit>,
     history: HistoryState,
     started: Option<String>,
     /// The chat has drawn the rows it opens with, and names its agent to the scroll script.
@@ -532,7 +535,14 @@ struct ChatView {
 }
 
 impl ChatView {
-    fn of(state: &AppState, entry: &AgentEntry, drawn: Option<Drawn>, today: NaiveDate) -> Self {
+    /// `quoted` holds the items a quote being written points to: a run that holds one stays open.
+    fn of(
+        state: &AppState,
+        entry: &AgentEntry,
+        drawn: Option<Drawn>,
+        today: NaiveDate,
+        quoted: &BTreeSet<(AgentId, ItemId)>,
+    ) -> Self {
         let agent = entry.id();
         let status = entry.summary.status;
         let working = status == AgentStatus::Working;
@@ -580,30 +590,79 @@ impl ChatView {
         let firsts: Vec<&TranscriptItem> = top_rows.iter().map(Row::first).collect();
         let notes = older_step_notes(&firsts, &loaded);
         let scrolled_up = state.ui.chat_scrolled_up.get(&agent).copied();
-        let row_ids: Vec<ItemId> = firsts.iter().map(|item| item.id).collect();
+        let units = work_runs::units(&top_rows, &awaiting, divider);
+        // A run of work is one row of the chat: the chunks count it once.
+        let row_ids: Vec<ItemId> = units
+            .iter()
+            .filter_map(|unit| firsts.get(unit.first()).map(|item| item.id))
+            .collect();
         let shown = ShownRows::of(agent, drawn, &row_ids, scrolled_up.is_some());
         let grouped = grouped_times(&firsts, today);
-        let first = shown.first(top_rows.len());
-        let top: Vec<TopRow> = top_rows
-            .iter()
-            .zip(states)
-            .zip(links)
-            .zip(notes)
-            .skip(first)
-            .map(|(((row, state), links), older_step)| TopRow {
+        let first = shown.first(units.len());
+        let top_row = |index: usize| -> Option<TopRow> {
+            let row = top_rows.get(index)?;
+            let links = links.get(index).copied().unwrap_or_default();
+            Some(TopRow {
                 id: row.first().id,
                 hides_time: grouped.contains(&row.first().id),
                 new_above: divider
                     .is_some_and(|divider| row.items().iter().any(|item| item.id == divider)),
                 view: RowView::of(row, &children, &awaiting, sign_in_end),
-                step: state.map(|state| Step {
-                    state,
-                    links,
-                    call: is_call(row),
-                }),
-                older_step,
+                step: states
+                    .get(index)
+                    .copied()
+                    .flatten()
+                    .map(|state| Step::new(row, state, links)),
+                older_step: notes.get(index).copied().unwrap_or(false),
             })
-            .collect();
+        };
+        let last_unit = units.len().saturating_sub(1);
+        let mut top: Vec<TopUnit> = Vec::new();
+        for (at, unit) in units.iter().enumerate().skip(first) {
+            let range = match unit {
+                Unit::Row(index) => {
+                    top.extend(top_row(*index).map(|row| TopUnit::Row(Box::new(row))));
+                    continue;
+                }
+                Unit::Run(range) => range.clone(),
+            };
+            let Some(run_rows) = top_rows.get(range.clone()) else {
+                continue;
+            };
+            let last = range.end.saturating_sub(1);
+            let summary = WorkSummary::of(run_rows);
+            let items: Vec<&TranscriptItem> = run_rows.iter().flat_map(Row::items).collect();
+            let mut inner: Vec<TopRow> = range.clone().filter_map(top_row).collect();
+            let Some(head) = inner.first_mut() else {
+                continue;
+            };
+            let (id, new_above, older_step) = (head.id, head.new_above, head.older_step);
+            // The run's line takes them, and its first row hangs under the line.
+            head.new_above = false;
+            head.older_step = false;
+            if let Some(step) = &mut head.step {
+                step.links.above = true;
+            }
+            top.push(TopUnit::Run(TopRun {
+                id,
+                new_above,
+                older_step,
+                words: summary.words(),
+                failed: summary.failed,
+                state: StepState::of_run(&items),
+                links: StepLinks {
+                    above: links.get(range.start).is_some_and(|links| links.above),
+                    below: links.get(last).is_some_and(|links| links.below),
+                },
+                open_by_default: opens_by_default(
+                    &summary,
+                    &items,
+                    working && at == last_unit,
+                    |item| quoted.contains(&(agent, item)),
+                ),
+                rows: inner,
+            }));
+        }
         let history = entry.transcript.history().clone();
         let named = shown.is_named(row_ids.len());
         let loads_older = match shown {
@@ -611,9 +670,13 @@ impl ChatView {
             ShownRows::Latest(_) => named,
             ShownRows::Skeleton => false,
         };
-        // A run of new reads counts once, as it shows.
+        // A run of new reads or of work counts once, as it shows.
         let waiting = scrolled_up.map_or(0, |last_seen| {
-            tool_rows::new_rows(&top_rows, actions::new_entries(entry, last_seen).first)
+            work_runs::new_units(
+                &top_rows,
+                &units,
+                actions::new_entries(entry, last_seen).first,
+            )
         });
         Self {
             agent,
@@ -672,6 +735,7 @@ pub fn TranscriptView(in_view: Signal<Option<InView>>) -> Element {
     let cockpit: Cockpit = use_context();
     find_folds::use_chat_folds(cockpit);
     let Today(today) = use_context::<Today>();
+    let CallDetail { quoted, .. } = use_context();
     // The agent whose conversation the chat opened, once its first page came or failed. A
     // failure shows above all the rows.
     let opened = use_memo(move || {
@@ -738,7 +802,13 @@ pub fn TranscriptView(in_view: Signal<Option<InView>>) -> Element {
         let _timer = perf::Timer::start(Timed::ChatBuild);
         let state = cockpit.state.peek();
         let entry = state.agents.get(&inputs.agent)?;
-        Some(ChatView::of(&state, entry, drawn(), today()))
+        Some(ChatView::of(
+            &state,
+            entry,
+            drawn(),
+            today(),
+            &quoted.read(),
+        ))
     });
     // The scroll script reveals only an entry the chat draws: a reveal of a row above the drawn
     // ones draws from above it first, once per reveal, and goes to the script once it is drawn.
@@ -873,8 +943,18 @@ pub fn TranscriptView(in_view: Signal<Option<InView>>) -> Element {
                 }
                 // Item ids repeat across agents: with the agent in the key, another agent's item
                 // never takes over the state of this one's (a fold, a typed answer).
-                for TopRow { id, hides_time, new_above, view, step, older_step } in top {
-                    TranscriptRow { key: "{agent.get()}-{id.get()}", agent, folder: folder.clone(), new_above, id, hides_time, view, step, older_step }
+                for unit in top {
+                    match unit {
+                        TopUnit::Row(row) => {
+                            let TopRow { id, hides_time, new_above, view, step, older_step } = *row;
+                            rsx! {
+                                TranscriptRow { key: "{agent.get()}-{id.get()}", agent, folder: folder.clone(), new_above, id, hides_time, view, step, older_step }
+                            }
+                        }
+                        TopUnit::Run(run) => rsx! {
+                            WorkRunView { key: "{agent.get()}-run-{run.id.get()}", agent, folder: folder.clone(), run }
+                        },
+                    }
                 }
                 if shown != ShownRows::Skeleton {
                     for prompt in sending {
@@ -954,6 +1034,42 @@ fn history_note(
             }
         },
     }
+}
+
+/// A row of the main conversation, or a run of the agent's work that folds into one line.
+#[derive(Debug, Clone, PartialEq)]
+enum TopUnit {
+    Row(Box<TopRow>),
+    Run(TopRun),
+}
+
+/// A run of the agent's work, as `WorkRunView` takes it.
+#[derive(Debug, Clone, PartialEq)]
+struct TopRun {
+    /// The run's first item, which names its line.
+    id: ItemId,
+    new_above: bool,
+    older_step: bool,
+    /// What the run did, as its line says it.
+    words: String,
+    failed: usize,
+    state: StepState,
+    links: StepLinks,
+    /// The run shows its rows until a click decides ([`opens_by_default`]).
+    open_by_default: bool,
+    rows: Vec<TopRow>,
+}
+
+/// Whether a run of `items` shows its rows until a click decides: while a call of it runs, while
+/// it `ends_working_turn`, and while a quote being written holds a passage of it, which the quote
+/// finds on the page only.
+fn opens_by_default(
+    summary: &WorkSummary,
+    items: &[&TranscriptItem],
+    ends_working_turn: bool,
+    quoted: impl Fn(ItemId) -> bool,
+) -> bool {
+    summary.running || ends_working_turn || items.iter().any(|item| quoted(item.id))
 }
 
 /// What a row of the main conversation needs, as `TranscriptRow` takes it.
@@ -1049,9 +1165,10 @@ impl StepState {
         Some(state)
     }
 
-    /// A run of reads and searches: running while one runs, failed when one failed.
-    fn of_run(calls: &[&TranscriptItem]) -> Self {
-        let stages: Vec<Self> = calls
+    /// A run of reads and searches, or of the agent's work: running while a call runs, failed when
+    /// one failed. Thinking alone neither succeeds nor fails.
+    fn of_run(items: &[&TranscriptItem]) -> Self {
+        let stages: Vec<Self> = items
             .iter()
             .filter_map(|item| Self::new(item, false))
             .collect();
@@ -1059,6 +1176,8 @@ impl StepState {
             Self::Running
         } else if stages.contains(&Self::Failed) {
             Self::Failed
+        } else if stages.iter().all(|stage| *stage == Self::Plain) {
+            Self::Plain
         } else {
             Self::Done
         }
@@ -1096,15 +1215,52 @@ struct StepLinks {
 struct Step {
     state: StepState,
     links: StepLinks,
-    /// The row shows a tool call ([`is_call`]): smaller and dimmer than the agent's text.
-    call: bool,
+    look: StepLook,
+    /// A class for the row's kind: a thinking, whose dot is hollow, a subagent, or a run's line.
+    kind: Option<&'static str>,
+}
+
+/// What a step's row shows, which sets its size and its marker.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StepLook {
+    /// The agent's text to you, with room around it.
+    Says,
+    /// A row as small and dim as a tool call ([`is_call`]).
+    Call,
+    /// A card, which keeps its own size.
+    Card,
+}
+
+impl StepLook {
+    fn of(row: &Row<'_>) -> Self {
+        match &row.first().body {
+            ItemBody::AssistantText { .. } => Self::Says,
+            _ if is_call(row) => Self::Call,
+            _ => Self::Card,
+        }
+    }
 }
 
 impl Step {
+    fn new(row: &Row<'_>, state: StepState, links: StepLinks) -> Self {
+        Self {
+            state,
+            links,
+            look: StepLook::of(row),
+            kind: row_kind(row),
+        }
+    }
+
     fn class(self) -> String {
         let mut class = format!("step {}", self.state.class());
-        if self.call {
-            class.push_str(" step-call");
+        match self.look {
+            StepLook::Call => class.push_str(" step-call"),
+            StepLook::Says => class.push_str(" agent-says"),
+            StepLook::Card => {}
+        }
+        if let Some(kind) = self.kind {
+            class.push(' ');
+            class.push_str(kind);
         }
         if self.links.above {
             class.push_str(" linked-above");
@@ -1116,9 +1272,22 @@ impl Step {
     }
 }
 
-/// Whether a row shows a tool call: one call, an edit, a run of reads or a skill.
+/// Whether a row is as small as a tool call: one call, an edit, a run of reads, a skill, a
+/// thinking, or a subagent's line.
 fn is_call(row: &Row<'_>) -> bool {
-    matches!(row.first().body, ItemBody::ToolCall(_))
+    matches!(
+        row.first().body,
+        ItemBody::ToolCall(_) | ItemBody::Thinking { .. } | ItemBody::Subagent(_)
+    )
+}
+
+/// The class a call-sized row's kind adds to its step.
+fn row_kind(row: &Row<'_>) -> Option<&'static str> {
+    match row.first().body {
+        ItemBody::Thinking { .. } => Some("thinking-step"),
+        ItemBody::Subagent(_) => Some("subagent-step"),
+        _ => None,
+    }
 }
 
 /// The links of each item, given which items are steps: a user message, a notice or a turn's end
@@ -1186,11 +1355,23 @@ pub(super) fn top_items<'item>(
         .collect()
 }
 
-/// The item whose entry shows `item` in the chat: a read or a search in a run of them shows in
-/// the run's row, which the run's first item names.
-pub(crate) fn entry_item(state: &AppState, agent: AgentId, item: ItemId) -> ItemId {
+/// Where an item shows in the chat.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ChatPlace {
+    /// The item that names the entry of the item's row: a read or a search in a run of them shows
+    /// in the run's row, which the run's first item names.
+    pub entry: ItemId,
+    /// The first item of the run of work that holds the row, which must be open to show it.
+    pub run: Option<ItemId>,
+}
+
+pub(crate) fn chat_place(state: &AppState, agent: AgentId, item: ItemId) -> ChatPlace {
+    let alone = ChatPlace {
+        entry: item,
+        run: None,
+    };
     let Some(entry) = state.agents.get(&agent) else {
-        return item;
+        return alone;
     };
     let items: Vec<&TranscriptItem> = entry.transcript.items().collect();
     let loaded: BTreeSet<ItemId> = items.iter().map(|item| item.id).collect();
@@ -1198,10 +1379,26 @@ pub(crate) fn entry_item(state: &AppState, agent: AgentId, item: ItemId) -> Item
     let sign_in_notice = accounts::sign_in_turn(entry).and_then(|turn| turn.notice);
     let top = top_items(&items, &loaded, sign_in_notice);
     let divider = actions::new_divider(state, agent);
-    tool_rows::rows(&top, &awaiting, divider)
+    let rows = tool_rows::rows(&top, &awaiting, divider);
+    let Some((index, row)) = rows
         .iter()
-        .find(|row| row.items().iter().any(|shown| shown.id == item))
-        .map_or(item, |row| row.first().id)
+        .enumerate()
+        .find(|(_, row)| row.items().iter().any(|shown| shown.id == item))
+    else {
+        return alone;
+    };
+    let run = work_runs::units(&rows, &awaiting, divider)
+        .into_iter()
+        .find_map(|unit| match unit {
+            Unit::Run(range) if range.contains(&index) => {
+                rows.get(range.start).map(|first| first.first().id)
+            }
+            Unit::Row(_) | Unit::Run(_) => None,
+        });
+    ChatPlace {
+        entry: row.first().id,
+        run,
+    }
 }
 
 /// Top-level items, the cards still waiting for an answer, even a subagent's, which a folded
@@ -1265,6 +1462,9 @@ pub(crate) fn subtree(children: &Children<'_>, root: ItemId) -> Vec<TranscriptIt
     found
 }
 
+/// The note above an item whose step sits in older messages the window has not loaded.
+const OLDER_STEP_NOTE: &str = "Part of a step in older messages: load them to see it.";
+
 /// A row of the main conversation, on the steps' line when it is a step of a turn.
 #[component]
 fn TranscriptRow(
@@ -1312,7 +1512,7 @@ fn TranscriptRow(
             ItemView { agent, folder, item, nested: Vec::new(), awaits_approval: false }
         },
         RowView::Explored(calls) => rsx! {
-            ExploredView { agent, folder, calls }
+            ExploredView { agent, folder, first: item_id, calls }
         },
     };
     let row = match step {
@@ -1330,9 +1530,78 @@ fn TranscriptRow(
                 NewDivider {}
             }
             if older_step {
-                p { class: "history-note", "Part of a step in older messages: load them to see it." }
+                p { class: "history-note", "{OLDER_STEP_NOTE}" }
             }
             {row}
+        }
+    }
+}
+
+/// A run of the agent's work on one line that says what it did, such as "Ran 4 commands, thought 2
+/// times". A click shows its rows under the line, and folds them again.
+#[component]
+fn WorkRunView(agent: AgentId, folder: PathBuf, run: TopRun) -> Element {
+    let decided = use_kept_fold(agent, FoldKey::Run(run.id));
+    let open = decided.decided().unwrap_or(run.open_by_default);
+    // A run drawn open shows its rows at once: only a click makes them unfold.
+    let drawn_open = use_hook(|| open);
+    let rows = use_presence(open.then(|| run.rows.clone()));
+    let line = Step {
+        state: run.state,
+        links: StepLinks {
+            above: run.links.above,
+            below: run.links.below || open,
+        },
+        look: StepLook::Call,
+        kind: Some("work-run"),
+    };
+    let label = if open {
+        "Hide the steps"
+    } else {
+        "Show the steps"
+    };
+    let rows_class = match &rows {
+        Some(Shown { leaving: true, .. }) => "work-rows leaving",
+        Some(Shown { opening, .. }) if !drawn_open || *opening > 1 => "work-rows arriving",
+        Some(_) | None => "work-rows",
+    };
+    let rows_id = format!("run-rows-{}-{}", agent.get(), run.id.get());
+    rsx! {
+        div { id: chat_scroll::run_entry_id(agent, run.id), class: ENTRY_CLASS,
+            if run.new_above {
+                NewDivider {}
+            }
+            if run.older_step {
+                p { class: "history-note", "{OLDER_STEP_NOTE}" }
+            }
+            div { class: line.class(),
+                span { class: "step-dot", aria_hidden: true }
+                button {
+                    class: "fold-button tool-head",
+                    aria_expanded: open,
+                    // The find goes back into the rows from their end.
+                    aria_controls: "{rows_id}",
+                    title: label,
+                    onclick: move |_| decided.set(!open),
+                    span { class: "work-words", "{run.words}" }
+                    if run.failed > 0 {
+                        span { class: "tool-meta work-failed", "{run.failed} failed" }
+                    }
+                    if !open {
+                        FoldChip { fold: FoldKey::Run(run.id) }
+                    }
+                    span { class: if open { "chevron open" } else { "chevron" }, Icon { kind: IconKind::ChevronRight, size: 12 } }
+                }
+            }
+        }
+        if let Some(Shown { value: rows, leaving, .. }) = rows {
+            div { id: "{rows_id}", class: rows_class, inert: leaving.then_some(true),
+                div { class: "work-rows-clip",
+                    for TopRow { id, hides_time, new_above, view, step, older_step } in rows {
+                        TranscriptRow { key: "{agent.get()}-{id.get()}", agent, folder: folder.clone(), new_above, id, hides_time, view, step, older_step }
+                    }
+                }
+            }
         }
     }
 }
@@ -1360,7 +1629,7 @@ pub fn ItemView(
             MarkdownView { agent, folder, markdown, item: Some(id) }
         },
         ItemBody::Thinking { text } => rsx! {
-            ThinkingView { id, text }
+            ThinkingView { agent, id, text }
         },
         ItemBody::ToolCall(call) if call.edit.is_some() => rsx! {
             EditView { agent, id, folder, stage: CallStage::new(&call, awaits_approval), call }
@@ -1615,23 +1884,23 @@ fn task_label(text: &str) -> (Option<&str>, &str) {
 }
 
 #[component]
-fn ThinkingView(id: ItemId, text: String) -> Element {
-    let mut expanded = use_signal(|| false);
-    let open = expanded();
+fn ThinkingView(agent: AgentId, id: ItemId, text: String) -> Element {
+    let decided = use_kept_fold(agent, FoldKey::Item(id));
+    let open = decided.decided().unwrap_or(false);
     rsx! {
         div { class: "thinking",
             button {
                 class: "fold-button",
                 aria_expanded: open,
-                onclick: move |_| expanded.toggle(),
-                span { class: "muted", "Thinking" }
+                onclick: move |_| decided.set(!open),
+                span { class: "think-label", "{THINKING_LABEL}" }
                 if !open {
                     FoldChip { fold: FoldKey::Item(id) }
                 }
                 span { class: if open { "chevron open" } else { "chevron" }, Icon { kind: IconKind::ChevronRight, size: 12 } }
             }
             if open {
-                p { class: "thinking-text", "{text}" }
+                p { class: decided.body_class("thinking-text"), "{text}" }
             }
         }
     }
@@ -2170,17 +2439,16 @@ pub fn use_call_detail(cockpit: Cockpit) {
 /// Whether a call's input and output show, and the toggle a click on its line or its chevron
 /// gives. A call shows them as the preferences say, or while a quote being written holds a
 /// passage of them, until a click decides for it.
-fn use_call_fold(agent: AgentId, item: ItemId) -> (bool, Signal<Option<bool>>) {
+fn use_call_fold(agent: AgentId, item: ItemId) -> (bool, KeptFold) {
     let CallDetail { detail, quoted } = use_context();
-    let decided = use_signal(|| None::<bool>);
+    let decided = use_kept_fold(agent, FoldKey::Item(item));
     let shown = detail() == ToolCallDetail::Full || quoted.read().contains(&(agent, item));
-    (decided().unwrap_or(shown), decided)
+    (decided.decided().unwrap_or(shown), decided)
 }
 
 /// The chevron at the end of a call's line, which shows or hides its input and output.
 #[component]
-fn CallFold(open: bool, decided: Signal<Option<bool>>) -> Element {
-    let mut decided = decided;
+fn CallFold(open: bool, decided: KeptFold) -> Element {
     let label = if open {
         "Hide the input and output"
     } else {
@@ -2194,7 +2462,7 @@ fn CallFold(open: bool, decided: Signal<Option<bool>>) -> Element {
             title: label,
             onclick: move |event| {
                 event.stop_propagation();
-                decided.set(Some(!open));
+                decided.set(!open);
             },
             span { class: if open { "chevron open" } else { "chevron" }, Icon { kind: IconKind::ChevronRight, size: 12 } }
         }
@@ -2203,7 +2471,7 @@ fn CallFold(open: bool, decided: Signal<Option<bool>>) -> Element {
 
 #[component]
 fn ToolView(agent: AgentId, id: ItemId, call: ToolCall, stage: CallStage) -> Element {
-    let (open, mut decided) = use_call_fold(agent, id);
+    let (open, decided) = use_call_fold(agent, id);
     let shape = ToolShape::new(&call);
     let meta = tool_meta(&call, stage);
     let input = shape.input().map(str::to_owned);
@@ -2219,7 +2487,7 @@ fn ToolView(agent: AgentId, id: ItemId, call: ToolCall, stage: CallStage) -> Ele
     } else {
         TitleLayout::Compact
     };
-    let unfolded = if decided().is_some() {
+    let unfolded = if decided.clicked() {
         UNFOLDED_CLASS
     } else {
         ""
@@ -2230,7 +2498,7 @@ fn ToolView(agent: AgentId, id: ItemId, call: ToolCall, stage: CallStage) -> Ele
                 class: if framed { "tool-head {CALL_LINE_CLASS}" } else { "tool-head" },
                 onclick: move |_| {
                     if framed {
-                        decided.set(Some(!open));
+                        decided.set(!open);
                     }
                 },
                 {tool_title(agent, &call, &shape, layout)}
@@ -2269,7 +2537,7 @@ fn EditView(
     stage: CallStage,
 ) -> Element {
     let cockpit: Cockpit = use_context();
-    let (open, mut decided) = use_call_fold(agent, id);
+    let (open, decided) = use_call_fold(agent, id);
     let Some(edit) = call.edit.clone() else {
         return rsx! {};
     };
@@ -2311,7 +2579,7 @@ fn EditView(
         .clone()
         .filter(|_| call.status == ToolCallStatus::Failed);
     let foldable = !preview.is_empty() || failure.is_some();
-    let unfolded = if decided().is_some() {
+    let unfolded = if decided.clicked() {
         UNFOLDED_CLASS
     } else {
         ""
@@ -2322,7 +2590,7 @@ fn EditView(
                 class: if foldable { "tool-head {CALL_LINE_CLASS}" } else { "tool-head" },
                 onclick: move |_| {
                     if foldable {
-                        decided.set(Some(!open));
+                        decided.set(!open);
                     }
                 },
                 span { class: "tool-name", "{call.tool}" }
@@ -2436,6 +2704,8 @@ fn SubagentView(
 
 /// What a subagent's line calls it.
 pub(super) const SUBAGENT_NAME: &str = "Agent";
+/// The line of a thinking.
+pub(super) const THINKING_LABEL: &str = "Thinking";
 
 /// The words of a call's line in a subagent or a run of reads, as `CompactItem` shows them: its
 /// name and its description, file or summary, then its result in a word. The find counts them
@@ -2475,7 +2745,7 @@ pub(crate) fn CompactItem(
     nested: Vec<TranscriptItem>,
     awaits_approval: bool,
 ) -> Element {
-    let mut expanded = use_signal(|| false);
+    let decided = use_kept_fold(agent, FoldKey::Item(item.id));
     match &item.body {
         ItemBody::ToolCall(call) => {
             let stage = CallStage::new(call, awaits_approval);
@@ -2485,14 +2755,14 @@ pub(crate) fn CompactItem(
                 .clone()
                 .filter(|output| !output.is_empty() && call.tool.parse::<SearchTool>().is_ok());
             if let Some(output) = found {
-                let open = expanded();
+                let open = decided.decided().unwrap_or(false);
                 let title = tool_title(agent, call, &ToolShape::new(call), TitleLayout::Compact);
                 return rsx! {
                     div { class: "compact-search",
                         button {
                             class: "fold-button compact-tool {stage.class()}",
                             aria_expanded: open,
-                            onclick: move |_| expanded.toggle(),
+                            onclick: move |_| decided.set(!open),
                             span { class: "tool-dot", aria_hidden: true }
                             {title}
                             if !meta.is_empty() {
@@ -2504,7 +2774,7 @@ pub(crate) fn CompactItem(
                             span { class: if open { "chevron open" } else { "chevron" }, Icon { kind: IconKind::ChevronRight, size: 12 } }
                         }
                         if open {
-                            div { class: "tool-io",
+                            div { class: decided.body_class("tool-io"),
                                 IoRow { kind: IoKind::Out, text: output, fold: FoldEnd::First }
                             }
                         }
@@ -3237,18 +3507,22 @@ mod tests {
             call: &skill,
             instructions: None,
         };
-        let step = Step {
-            state: StepState::Done,
-            links: StepLinks::default(),
-            call: true,
-        };
+        let class = |row: &Row<'_>| Step::new(row, StepState::Done, StepLinks::default()).class();
 
         assert!(is_call(&Row::Item(&bash)));
         assert!(is_call(&explored));
         assert!(is_call(&skill_row));
         assert!(!is_call(&Row::Item(&text)));
-        assert!(!is_call(&Row::Item(&subagent)), "a subagent keeps its size");
-        assert_eq!(step.class(), "step step-done step-call");
+        assert!(
+            is_call(&Row::Item(&subagent)),
+            "a subagent's line is a call's size"
+        );
+        assert_eq!(class(&Row::Item(&bash)), "step step-done step-call");
+        assert_eq!(
+            class(&Row::Item(&subagent)),
+            "step step-done step-call subagent-step"
+        );
+        assert_eq!(class(&Row::Item(&text)), "step step-done agent-says");
     }
 
     #[test]
@@ -3310,6 +3584,53 @@ mod tests {
     }
 
     #[test]
+    fn a_run_of_thinking_only_takes_the_plain_dot() {
+        let thinking = |id| {
+            item(
+                id,
+                None,
+                ItemBody::Thinking {
+                    text: "The lexer counts from 0.".to_owned(),
+                },
+            )
+        };
+        let (first, second) = (thinking(1), thinking(2));
+        let bash = item(
+            3,
+            None,
+            ItemBody::ToolCall(call("Bash", "cargo test", ToolCallStatus::Done)),
+        );
+
+        assert_eq!(StepState::of_run(&[&first, &second]), StepState::Plain);
+        assert_eq!(StepState::of_run(&[&first, &bash]), StepState::Done);
+    }
+
+    #[test]
+    fn a_run_opens_while_it_runs_ends_a_working_turn_or_holds_a_quote() {
+        let bash = |id, status| {
+            item(
+                id,
+                None,
+                ItemBody::ToolCall(call("Bash", "cargo test", status)),
+            )
+        };
+        let (done, other) = (bash(1, ToolCallStatus::Done), bash(2, ToolCallStatus::Done));
+        let running = bash(3, ToolCallStatus::Running);
+        let items = [&done, &other];
+        let opens = |items: &[&TranscriptItem], ends_turn, quoted: Option<u32>| {
+            let rows: Vec<Row<'_>> = items.iter().copied().map(Row::Item).collect();
+            opens_by_default(&WorkSummary::of(&rows), items, ends_turn, |item| {
+                quoted.is_some_and(|quoted| item.get() == quoted)
+            })
+        };
+
+        assert!(!opens(&items, false, None));
+        assert!(opens(&items, true, None));
+        assert!(opens(&items, false, Some(2)));
+        assert!(opens(&[&done, &running], false, None));
+    }
+
+    #[test]
     fn an_opening_chat_draws_its_latest_rows_or_the_skeleton_over_a_place_scrolled_up() {
         let short = ShownRows::opening(FIRST_ROWS, true);
         let long = ShownRows::opening(140, false);
@@ -3352,6 +3673,53 @@ mod tests {
                 "lines_property": "--fold-lines",
                 "call_line": "foldable",
             })
+        );
+    }
+
+    /// The link of a message that waits for a running call opens the run that holds the call.
+    #[test]
+    fn an_item_in_a_run_of_work_names_the_run_to_open() {
+        let mut state = state::state_with(vec![state::summary(1, AgentStatus::Working)]);
+        let agent = AgentId::new(1);
+        let done = ToolCallStatus::Done;
+        let items = [
+            item(
+                1,
+                None,
+                ItemBody::ToolCall(call("Bash", "cargo build", done)),
+            ),
+            item(
+                2,
+                None,
+                ItemBody::ToolCall(call("Bash", "cargo test", done)),
+            ),
+            item(
+                3,
+                None,
+                ItemBody::AssistantText {
+                    markdown: "Built.".to_owned(),
+                },
+            ),
+        ];
+        if let Some(entry) = state.agents.get_mut(&agent) {
+            for item in items {
+                entry.transcript.append(item);
+            }
+        }
+
+        assert_eq!(
+            chat_place(&state, agent, ItemId::new(2)),
+            ChatPlace {
+                entry: ItemId::new(2),
+                run: Some(ItemId::new(1)),
+            }
+        );
+        assert_eq!(
+            chat_place(&state, agent, ItemId::new(3)),
+            ChatPlace {
+                entry: ItemId::new(3),
+                run: None,
+            }
         );
     }
 }

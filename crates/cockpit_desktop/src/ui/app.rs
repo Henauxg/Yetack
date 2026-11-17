@@ -22,6 +22,7 @@ use crate::ui::files_pane::{FilesPane, TreeMenu};
 use crate::ui::find::{ChatFindBar, use_find};
 use crate::ui::header::Header;
 use crate::ui::icons::{Icon, IconKind};
+use crate::ui::kept_folds::use_kept_folds;
 use crate::ui::no_daemon::NoDaemonScreen;
 use crate::ui::presence::use_presence;
 use crate::ui::project_menu::ProjectMenu;
@@ -52,6 +53,7 @@ pub fn App() -> Element {
     use_quotes(cockpit);
     use_find(cockpit);
     use_call_detail(cockpit);
+    use_kept_folds();
     use_splitter(cockpit);
     use_reorder(cockpit);
     use_held_release(cockpit);

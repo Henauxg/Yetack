@@ -3314,6 +3314,123 @@ html.reordering * {
   }
 }
 
+/* A thinking neither succeeds nor fails: a hollow dot, quieter than a call's. */
+.step.thinking-step > .step-dot {
+  background: transparent;
+  box-shadow: inset 0 0 0 1px var(--faint);
+}
+
+.think-label {
+  font-size: 12px;
+  font-style: italic;
+  color: var(--dim);
+}
+
+.subagent-step .subagent-title {
+  font-size: 12.5px;
+  color: var(--text-soft);
+}
+
+/* The agent's text to you: the room around it tells it from the work. */
+.step.agent-says {
+  --dot-top: 15px;
+  padding-top: 8px;
+  padding-bottom: 8px;
+}
+
+.step.agent-says > .step-dot {
+  background: var(--text-soft);
+}
+
+.notice-line-icon.message + .notice-line-label {
+  color: var(--violet);
+}
+
+/* A run of work folded into one line: a ring in place of the dot, in the run's color. */
+.step.step-call.work-run > .step-dot {
+  top: var(--dot-top);
+  left: 0;
+  width: 7px;
+  height: 7px;
+  background: transparent;
+  box-shadow: inset 0 0 0 1.5px var(--step);
+}
+
+.work-words {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.step-call .tool-meta.work-failed {
+  color: var(--red);
+}
+
+/* The rows of an open run, under its line, 6 px apart as calls in a row are. */
+.work-rows {
+  display: grid;
+  grid-template-rows: 1fr;
+  margin-top: -8px;
+}
+
+.work-rows-clip {
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.work-rows.arriving {
+  animation: work-rows-in var(--motion-in) var(--ease-out) backwards;
+}
+
+.work-rows.leaving {
+  animation: work-rows-out var(--motion-out) var(--ease-in) forwards;
+}
+
+/* The rows are cut at the run's top and bottom only while they unfold or fold. Past that, the
+   steps' line runs out of the last row, and the focus rings past the rows' sides. */
+@keyframes work-rows-in {
+  from {
+    grid-template-rows: 0fr;
+    opacity: 0;
+    clip-path: inset(0 -24px);
+  }
+
+  to {
+    clip-path: inset(0 -24px);
+  }
+}
+
+@keyframes work-rows-out {
+  from {
+    clip-path: inset(0 -24px);
+  }
+
+  to {
+    grid-template-rows: 0fr;
+    opacity: 0;
+    clip-path: inset(0 -24px);
+  }
+}
+
+/* The line crosses only the 6 px gap to the run's first row. */
+.transcript-entry:has(+ .work-rows) > .step.linked-below::after {
+  bottom: -6px;
+}
+
+/* A call-sized row after an open run sits as close as after a call. */
+.work-rows
+  + .transcript-entry:has(> :is(.step-call, .notice-line, .notice-line-block):first-child) {
+  margin-top: -14px;
+}
+
+.work-rows:has(+ .transcript-entry > .step-call:first-child)
+  > .work-rows-clip
+  > .transcript-entry:last-child
+  > .step-call.linked-below::after {
+  bottom: -6px;
+}
+
 /* The line runs through the dots' centers and across the column's 14 px gap, 2 px clear of each
    dot. */
 .step.linked-above::before,
@@ -10390,7 +10507,9 @@ label.icon-button,
 
 .fold-button:hover,
 .fold-button:hover .muted,
-.fold-button:hover .dim {
+.fold-button:hover .dim,
+.fold-button:hover .think-label,
+.fold-button:hover .work-words {
   color: var(--text-bright);
 }
 
@@ -10840,6 +10959,14 @@ html.splitting .sidebar {
 .notice-detail,
 .mcp-detail-view {
   animation: unfold var(--motion-in) var(--ease-out) backwards;
+}
+
+/* A fold drawn again open, as a row that moves into a run of work, shows its body at once. */
+.thinking-text.instant,
+.notice-detail.instant,
+.subagent-body.instant,
+.compact-search > .tool-io.instant {
+  animation: none;
 }
 
 .tooltip-anchor:hover .tooltip,

@@ -10,7 +10,9 @@ use dioxus::prelude::*;
 use crate::connection::{Clock, Cockpit};
 use crate::state::sending::{self, SendingPrompt};
 use crate::state::{MessageHold, RevealPlace, actions, chat_images};
+use crate::ui::find_folds::FoldKey;
 use crate::ui::icons::{Icon, IconKind};
+use crate::ui::kept_folds::KeptFolds;
 use crate::ui::transcript;
 use crate::{bridge, format};
 
@@ -93,6 +95,7 @@ fn WaitingRow(
     images: Option<Vec<Arc<Image>>>,
 ) -> Element {
     let cockpit: Cockpit = use_context();
+    let kept: KeptFolds = use_context();
     let Clock(now) = use_context::<Clock>();
     let id = prompt.id;
     let hold = hold.filter(|_| prompt.state == WaitingState::Sent);
@@ -150,8 +153,11 @@ fn WaitingRow(
                         class: "waiting-call",
                         title: "Show it in the chat",
                         onclick: move |_| cockpit.update(|state| {
-                            let entry = transcript::entry_item(state, agent, item);
-                            state.ui.reveal_in_chat(agent, entry, RevealPlace::Middle);
+                            let place = transcript::chat_place(state, agent, item);
+                            if let Some(run) = place.run {
+                                kept.open(agent, FoldKey::Run(run));
+                            }
+                            state.ui.reveal_in_chat(agent, place.entry, RevealPlace::Middle);
                         }),
                         "{name} ↑"
                     }

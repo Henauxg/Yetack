@@ -554,6 +554,11 @@ pub fn entry_id(agent: AgentId, item: ItemId) -> String {
     format!("entry-{}-{}", agent.get(), item.get())
 }
 
+/// The id of the line of a run of work that starts at `item`. It ends with the item too.
+pub fn run_entry_id(agent: AgentId, item: ItemId) -> String {
+    format!("entry-{}-run-{}", agent.get(), item.get())
+}
+
 /// The jump to the latest entry, while the chat is scrolled up: an arrow, with the count of the
 /// entries that arrived meanwhile. A click, or End, goes down; the script handles both.
 #[component]

@@ -10,9 +10,10 @@ use serde_json::Value;
 
 use crate::format;
 use crate::render::SearchTool;
-use crate::state::{actions, file_edits};
+use crate::state::file_edits;
 use crate::ui::find_folds::{FoldChip, FoldKey};
 use crate::ui::icons::{Icon, IconKind};
+use crate::ui::kept_folds::use_kept_fold;
 use crate::ui::markdown::MarkdownView;
 use crate::ui::transcript::{self, CallStage, CompactItem, RunningMeta};
 
@@ -119,17 +120,6 @@ pub fn rows<'item>(
     rows
 }
 
-/// How many rows hold new items, from `first_new` on: the count the chat's jump button shows.
-pub fn new_rows(rows: &[Row<'_>], first_new: Option<ItemId>) -> usize {
-    let Some(first_new) = first_new else {
-        return 0;
-    };
-    rows.iter()
-        .map(Row::first)
-        .filter(|item| item.id >= first_new && actions::is_counted(item))
-        .count()
-}
-
 fn skill_call(item: &TranscriptItem) -> Option<&ToolCall> {
     match &item.body {
         ItemBody::ToolCall(call) if is_skill(call) => Some(call),
@@ -188,8 +178,8 @@ pub fn SkillView(
     stage: CallStage,
     instructions: Option<String>,
 ) -> Element {
-    let mut expanded = use_signal(|| false);
-    let open = expanded() && instructions.is_some();
+    let decided = use_kept_fold(agent, FoldKey::Item(id));
+    let open = decided.decided().unwrap_or(false) && instructions.is_some();
     let skill = skill_name(&call);
     let args = text_field(&call.input, ARGS_FIELD);
     let meta = transcript::tool_meta(&call, stage);
@@ -213,7 +203,7 @@ pub fn SkillView(
                         class: "fold-button tool-head",
                         aria_expanded: open,
                         title: if open { "Hide the skill's instructions" } else { "Show the skill's instructions" },
-                        onclick: move |_| expanded.toggle(),
+                        onclick: move |_| decided.set(!open),
                         {head}
                         if !open {
                             FoldChip { fold: FoldKey::Item(id) }
@@ -221,7 +211,7 @@ pub fn SkillView(
                         span { class: if open { "chevron open" } else { "chevron" }, Icon { kind: IconKind::ChevronRight, size: 12 } }
                     }
                     if open {
-                        div { class: "notice-detail",
+                        div { class: decided.body_class("notice-detail"),
                             MarkdownView { agent, folder, markdown }
                         }
                     }
@@ -234,25 +224,47 @@ pub fn SkillView(
     }
 }
 
+/// The words of a skill's line, as `SkillView` shows them, for the find to count.
+pub fn skill_line(call: &ToolCall, stage: CallStage) -> Vec<String> {
+    let mut words = vec![call.tool.clone(), format!("/{}", skill_name(call))];
+    words.extend(text_field(&call.input, ARGS_FIELD));
+    // A running call's time changes every second, and the find leaves it out.
+    if stage != CallStage::Running {
+        words.push(transcript::tool_meta(call, stage));
+    }
+    words
+}
+
+/// The words of a run of reads' line, as `ExploredView` shows them, for the find to count.
+pub fn explored_line<'item>(calls: impl IntoIterator<Item = &'item TranscriptItem>) -> Vec<String> {
+    let summary = ExploredSummary::of(calls);
+    let mut words = vec![summary.title().to_owned(), summary.description()];
+    if summary.running.is_none() && summary.failed > 0 {
+        words.push(format!("{} failed", summary.failed));
+    }
+    words
+}
+
 /// A run of reads and searches on one line, which says how many files it read and how many
 /// searches it ran. A click lists each call.
 #[component]
-pub fn ExploredView(agent: AgentId, folder: PathBuf, calls: Vec<TranscriptItem>) -> Element {
-    let mut expanded = use_signal(|| false);
-    let open = expanded();
+pub fn ExploredView(
+    agent: AgentId,
+    folder: PathBuf,
+    /// The run's first call, which names its fold.
+    first: ItemId,
+    calls: Vec<TranscriptItem>,
+) -> Element {
+    let decided = use_kept_fold(agent, FoldKey::Explored(first));
+    let open = decided.decided().unwrap_or(false);
     let summary = ExploredSummary::of(&calls);
-    let first = calls.first().map(|call| call.id);
-    let title = if summary.running.is_some() {
-        "Exploring"
-    } else {
-        "Explored"
-    };
+    let title = summary.title();
     rsx! {
         div { class: summary.stage().class(),
             button {
                 class: "fold-button tool-head",
                 aria_expanded: open,
-                onclick: move |_| expanded.toggle(),
+                onclick: move |_| decided.set(!open),
                 span { class: "tool-name", "{title}" }
                 span { class: "call-description", "{summary.description()}" }
                 if let Some(item) = summary.running {
@@ -260,13 +272,13 @@ pub fn ExploredView(agent: AgentId, folder: PathBuf, calls: Vec<TranscriptItem>)
                 } else if summary.failed > 0 {
                     span { class: "tool-meta", "{summary.failed} failed" }
                 }
-                if let Some(first) = first.filter(|_| !open) {
+                if !open {
                     FoldChip { fold: FoldKey::Explored(first) }
                 }
                 span { class: if open { "chevron open" } else { "chevron" }, Icon { kind: IconKind::ChevronRight, size: 12 } }
             }
             if open {
-                div { class: "subagent-body",
+                div { class: decided.body_class("subagent-body"),
                     for call in calls {
                         CompactItem { key: "{call.id.get()}", agent, folder: folder.clone(), item: call, nested: Vec::new(), awaits_approval: false }
                     }
@@ -288,7 +300,7 @@ struct ExploredSummary {
 }
 
 impl ExploredSummary {
-    fn of(calls: &[TranscriptItem]) -> Self {
+    fn of<'item>(calls: impl IntoIterator<Item = &'item TranscriptItem>) -> Self {
         let mut files = BTreeSet::new();
         let mut summary = Self {
             files: 0,
@@ -316,6 +328,14 @@ impl ExploredSummary {
         }
         summary.files = files.len();
         summary
+    }
+
+    fn title(&self) -> &'static str {
+        if self.running.is_some() {
+            "Exploring"
+        } else {
+            "Explored"
+        }
     }
 
     /// "2 files read, 1 search".
@@ -421,23 +441,6 @@ mod tests {
         assert_eq!(shapes, [vec![1, 2, 3], vec![4], vec![5], vec![6]]);
         assert!(matches!(rows.first(), Some(Row::Explored { .. })));
         assert!(matches!(rows.get(2), Some(Row::Item(_))));
-    }
-
-    #[test]
-    fn a_run_of_new_reads_counts_as_one_new_row() {
-        let items = [
-            read(1, "src/a.rs"),
-            text(2),
-            read(3, "src/b.rs"),
-            read(4, "src/c.rs"),
-            read(5, "src/d.rs"),
-        ];
-        let refs: Vec<&TranscriptItem> = items.iter().collect();
-        let first_new = Some(ItemId::new(2));
-        let rows = rows(&refs, &BTreeSet::new(), first_new);
-
-        assert_eq!(new_rows(&rows, first_new), 2);
-        assert_eq!(new_rows(&rows, None), 0);
     }
 
     #[test]

@@ -331,7 +331,9 @@ class Finder {
         this.scrollNext = true;
         this.scrollBackward = backward;
         if (backward) {
-          const end = firstFrom(stops, pointAfter(line.parentElement));
+          // A fold's content sits beside its line, or where the line's `aria-controls` names.
+          const fold = document.getElementById(line.getAttribute("aria-controls") ?? "") ?? line.parentElement;
+          const end = firstFrom(stops, pointAfter(fold));
           return Math.max(end - 1, 0);
         }
         const start = firstFrom(stops, pointAfter(line));
