@@ -63,11 +63,12 @@ pub use position::{Placed, Position, list_order, move_agent, place_on_top};
 pub use repository::Repository;
 pub use request::{
     AccountAddParams, AccountChangeParams, AccountParams, AgentParams, Answer, AnswerParams,
-    COMMAND_PREFIX, FindFilesParams, FolderParams, FoldersListParams, HistoryParams, ListDirParams,
-    MAX_TITLE_CHARS, MarkParams, McpRemoveParams, McpServerParams, McpToggleAction,
-    McpToggleParams, Method, MoveParams, Prompt, PromptDelivery, PromptParams, QueuedPromptParams,
-    ReadFileParams, RenameParams, Request, SessionResumeParams, SetEffortParams, SetModeParams,
-    SetModelParams, StartParams, StopProcessParams, StopTaskParams,
+    COMMAND_PREFIX, DEFAULT_TITLE_MAX_CHARS, FindFilesParams, FolderParams, FoldersListParams,
+    HistoryParams, ListDirParams, MAX_TITLE_CHARS, MarkParams, McpRemoveParams, McpServerParams,
+    McpToggleAction, McpToggleParams, Method, MoveParams, Prompt, PromptDelivery, PromptParams,
+    QueuedPromptParams, ReadFileParams, RenameParams, Request, SessionResumeParams,
+    SetEffortParams, SetModeParams, SetModelParams, StartParams, StopProcessParams, StopTaskParams,
+    default_title,
 };
 pub use response::{
     Completeness, DirEntry, DirListing, EntryKind, EntryLink, ErrorBody, ErrorCode, GitIgnore,

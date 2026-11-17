@@ -11,6 +11,7 @@ use cockpit_protocol::{
     CostUsd, EffortSource, ErrorBody, ErrorCode, Event, MAX_TITLE_CHARS, Mark, MarkParams,
     Position, Prompt, PromptDelivery, PromptId, QueuedPromptParams, RenameParams, ResponseBody,
     ResponseResult, SetEffortParams, SignInWait, StartParams, TranscriptItem, WaitingState,
+    default_title,
 };
 
 use crate::accounts::ClaudeEnv;
@@ -25,7 +26,6 @@ use crate::transcript::{AgentView, AnswerError, FollowUp, ProcessSession, prompt
 use crate::{machine_load, read_file, repository, sessions};
 
 /// A title made from a prompt keeps this many characters.
-const TITLE_MAX_CHARS: usize = 60;
 /// The longest model name a client may set: every summary carries it.
 const MODEL_MAX_CHARS: usize = 100;
 
@@ -52,7 +52,12 @@ impl Hub {
         }
         let folder = agent_folder(&params.folder)?;
         let account = self.account(params.account)?;
-        let title = title.unwrap_or_else(|| default_title(params.prompt.as_ref(), &folder));
+        let title = title.unwrap_or_else(|| {
+            default_title(
+                params.prompt.as_ref().map(|prompt| prompt.text.as_str()),
+                &folder,
+            )
+        });
         let record = AgentRecord {
             id: self.next_agent,
             title,
@@ -860,29 +865,6 @@ fn check_length(what: &str, text: &str, max_chars: usize) -> Result<(), ErrorBod
     Ok(())
 }
 
-/// The prompt's first line, or the folder's name.
-fn default_title(prompt: Option<&Prompt>, folder: &Path) -> String {
-    let first_line = prompt.and_then(|prompt| {
-        prompt
-            .text
-            .lines()
-            .map(str::trim)
-            .find(|line| !line.is_empty())
-    });
-    if let Some(line) = first_line {
-        if line.chars().count() <= TITLE_MAX_CHARS {
-            return line.to_owned();
-        }
-        let mut title: String = line.chars().take(TITLE_MAX_CHARS - 1).collect();
-        title.push('…');
-        return title;
-    }
-    folder.file_name().map_or_else(
-        || folder.display().to_string(),
-        |name| name.to_string_lossy().into_owned(),
-    )
-}
-
 #[cfg(test)]
 mod tests {
     #[cfg(unix)]
@@ -896,24 +878,6 @@ mod tests {
     use crate::test_script;
 
     use super::*;
-
-    #[test]
-    fn a_title_comes_from_the_prompt_or_the_folder() {
-        let folder = Path::new("/srv/work/shop");
-        let prompt = |text: &str| Prompt {
-            text: text.to_owned(),
-            images: Vec::new(),
-        };
-
-        assert_eq!(default_title(None, folder), "shop");
-        assert_eq!(
-            default_title(Some(&prompt("\n  Fix the cart\nthen test")), folder),
-            "Fix the cart"
-        );
-        let long = default_title(Some(&prompt(&"word ".repeat(40))), folder);
-        assert_eq!(long.chars().count(), TITLE_MAX_CHARS);
-        assert!(long.ends_with('…'));
-    }
 
     #[test]
     fn a_folder_must_exist_and_be_absolute() {

@@ -9128,6 +9128,13 @@ button.map-toggle:hover {
   color: var(--muted);
 }
 
+/* After a label: what the field asks, said once, such as "optional". */
+.field-note {
+  margin-left: 6px;
+  font-weight: 400;
+  color: var(--dim);
+}
+
 /* A question mark after a label, outside it, so that the input's name stays the label's text. Its
    tooltip spans the field's group, below the label. */
 .field-group {

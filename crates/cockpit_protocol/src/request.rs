@@ -3,7 +3,7 @@
 //! A request is `{"method": "agent.prompt", "params": {...}}`. `Method` holds the method names,
 //! so `Request` serializes by hand through it.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::Value;
@@ -376,6 +376,29 @@ pub struct SetModeParams {
 /// The longest title the daemon keeps, for an agent or a past session: every title goes into
 /// every snapshot.
 pub const MAX_TITLE_CHARS: usize = 200;
+
+/// The longest title the daemon gives an agent started without one.
+pub const DEFAULT_TITLE_MAX_CHARS: usize = 60;
+
+/// The title of an agent started without one: the first line of its first message, cut to
+/// [`DEFAULT_TITLE_MAX_CHARS`], else its folder's name. The app shows it in the new agent
+/// dialog's name field before anything is typed there.
+pub fn default_title(prompt: Option<&str>, folder: &Path) -> String {
+    let first_line =
+        prompt.and_then(|text| text.lines().map(str::trim).find(|line| !line.is_empty()));
+    if let Some(line) = first_line {
+        if line.chars().count() <= DEFAULT_TITLE_MAX_CHARS {
+            return line.to_owned();
+        }
+        let mut title: String = line.chars().take(DEFAULT_TITLE_MAX_CHARS - 1).collect();
+        title.push('…');
+        return title;
+    }
+    folder.file_name().map_or_else(
+        || folder.display().to_string(),
+        |name| name.to_string_lossy().into_owned(),
+    )
+}
 
 /// The daemon collapses the title's whitespace and trims it, and refuses it empty or over
 /// [`MAX_TITLE_CHARS`] characters.

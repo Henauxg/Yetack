@@ -75,6 +75,8 @@ pub struct NewAgentDraft {
     pub folder_highlighted: Option<usize>,
     /// The first message.
     pub prompt: String,
+    /// The agent's name. Empty lets the daemon name it, after the first message or the folder.
+    pub name: String,
     /// What the "Resume a session" tab's search field holds.
     pub session_query: String,
     /// An index into the sessions the query leaves.

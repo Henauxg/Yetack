@@ -10,7 +10,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Debug;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use cockpit_protocol::{
@@ -20,11 +20,11 @@ use cockpit_protocol::{
     AskedQuestion, BackgroundTask, BackgroundTaskId, BackgroundTaskKind, BackgroundTaskStatus,
     BuildCommit, Catchup, ChangedFile, ClaudeCodeVersion, ClaudeRoute, ClaudeSessionId,
     ClientMessage, CommandKind, CommandLoad, Completeness, ContextCategory, ContextUsage, Cores,
-    CostUsd, CredentialSource, DetailsChange, DirEntry, DirListing, Effort, EffortSource,
-    EntryKind, EntryLink, EnvironmentCredentials, ErrorBody, ErrorCode, Event, EventRecord,
-    FileEdit, FindFilesParams, FolderParams, FoldersListParams, GitIgnore, HistoryPage,
-    HistoryParams, Image, ImageMediaType, ItemBody, ItemId, ListDirParams, LoadAverage,
-    LoadHistory, MachineLoad, Mark, MarkParams, McpRemoveParams, McpScope, McpServer,
+    CostUsd, CredentialSource, DEFAULT_TITLE_MAX_CHARS, DetailsChange, DirEntry, DirListing,
+    Effort, EffortSource, EntryKind, EntryLink, EnvironmentCredentials, ErrorBody, ErrorCode,
+    Event, EventRecord, FileEdit, FindFilesParams, FolderParams, FoldersListParams, GitIgnore,
+    HistoryPage, HistoryParams, Image, ImageMediaType, ItemBody, ItemId, ListDirParams,
+    LoadAverage, LoadHistory, MachineLoad, Mark, MarkParams, McpRemoveParams, McpScope, McpServer,
     McpServerParams, McpServerStatus, McpToggleAction, McpToggleParams, McpTool, McpTransport,
     Method, MoveParams, NoticeKind, OlderItems, PROTOCOL_VERSION, PastSession, PendingId,
     PermissionMode, Plan, PlanAnswer, PlanDecision, PlanUsage, Position, ProcessId, Prompt,
@@ -37,7 +37,7 @@ use cockpit_protocol::{
     TaskListItem, TaskProgress, TaskStatus, TerminalChange, TerminalExit, TerminalId, TerminalInfo,
     TerminalInputParams, TerminalOpenParams, TerminalParams, TerminalResizeParams, TerminalSize,
     TerminalUpdate, Timestamp, TokenUsage, ToolCall, ToolCallStatus, TranscriptItem, TurnEnd,
-    TurnOutcome, UsageWindow, UserMessage, WaitingPrompt, WaitingState, WindowUsage,
+    TurnOutcome, UsageWindow, UserMessage, WaitingPrompt, WaitingState, WindowUsage, default_title,
 };
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -3021,4 +3021,20 @@ fn a_refusal_that_names_the_daemons_build_on_the_wire() {
             "daemon_commit": "3f9c2e1a7b4d5c6e8f9a0b1c2d3e4f5a6b7c8d9e",
         }),
     );
+}
+
+#[test]
+fn a_default_title_comes_from_the_first_message_or_the_folder() {
+    let folder = Path::new("/srv/work/shop");
+
+    let long = default_title(Some(&"word ".repeat(40)), folder);
+
+    assert_eq!(default_title(None, folder), "shop");
+    assert_eq!(default_title(Some("  \n "), folder), "shop");
+    assert_eq!(
+        default_title(Some("\n  Fix the cart\nthen test"), folder),
+        "Fix the cart"
+    );
+    assert_eq!(long.chars().count(), DEFAULT_TITLE_MAX_CHARS);
+    assert!(long.ends_with('…'));
 }

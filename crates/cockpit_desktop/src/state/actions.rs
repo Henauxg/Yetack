@@ -2344,9 +2344,10 @@ pub fn start_agent(state: &mut AppState, drafts: &Drafts) -> Vec<Outgoing> {
     let machine = form.machine;
     let project = form.project.clone();
     let prompt = drafts.new_agent.prompt.trim();
+    let name = drafts.new_agent.name.trim();
     let params = StartParams {
         folder: PathBuf::from(folder),
-        title: None,
+        title: (!name.is_empty()).then(|| name.to_owned()),
         model: form.model.clone(),
         effort: form.effort,
         mode: form.mode,
@@ -5645,6 +5646,30 @@ mod tests {
 
         switcher_pick(&mut state, &drafts, None);
         assert_eq!(state.ui.selected, Some(AgentId::new(3)));
+    }
+
+    #[test]
+    fn a_new_agent_takes_the_name_typed_and_a_blank_one_lets_the_daemon_name_it() {
+        let title_with = |name: &str| {
+            let mut state = state(AgentStatus::Idle);
+            let mut drafts = Drafts::default();
+            open_new_agent(&mut state, &mut drafts);
+            drafts.new_agent.name = name.to_owned();
+            match start_agent(&mut state, &drafts).first() {
+                Some(Outgoing {
+                    request: Request::AgentStart(params),
+                    ..
+                }) => params.title.clone(),
+                other => panic!("expected a start, got {other:?}"),
+            }
+        };
+
+        assert_eq!(
+            title_with("  Lexer columns "),
+            Some("Lexer columns".to_owned())
+        );
+        assert_eq!(title_with("   "), None);
+        assert_eq!(title_with(""), None);
     }
 
     #[test]
