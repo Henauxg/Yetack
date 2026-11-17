@@ -513,6 +513,9 @@ mod tests {
             }))
             .unwrap();
         let killer = child.clone_killer();
+        // Windows' pseudo console holds the shell until a terminal answers its cursor query, which
+        // no test does: the shell is ended, not waited for.
+        let _ = child.kill();
         let _ = child.wait();
         Terminal {
             agent: AgentId::new(3),
