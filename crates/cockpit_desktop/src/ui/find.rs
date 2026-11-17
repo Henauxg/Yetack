@@ -767,6 +767,11 @@ pub(super) fn use_find(cockpit: Cockpit) {
 #[component]
 pub(super) fn ChatFindBar() -> Element {
     let cockpit: Cockpit = use_context();
+    // Before the early return below: hooks run in the same order at every render.
+    let UndrawnRows {
+        count,
+        mut draw_all,
+    } = use_context();
     let state = cockpit.state.read();
     let selected = state.ui.selected;
     let open = selected.filter(|agent| state.ui.chat_finds.contains(agent));
@@ -785,10 +790,6 @@ pub(super) fn ChatFindBar() -> Element {
         .get(FindPane::Chat, agent)
         .and_then(|draft| draft.found);
     let folded = found.map_or(0, |found| found.folded);
-    let UndrawnRows {
-        count,
-        mut draw_all,
-    } = use_context();
     let undrawn = count()
         .filter(|count| count.agent == agent)
         .map_or(0, |count| count.rows);
