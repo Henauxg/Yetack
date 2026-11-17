@@ -7020,6 +7020,43 @@ html.reordering * {
   color: var(--dim);
 }
 
+/* The new agent dialog's palette opens over the rows above its first message, as wide as it. */
+.palette.in-dialog {
+  left: 0;
+  right: 0;
+  bottom: calc(100% + 4px);
+  width: auto;
+  max-width: none;
+}
+
+/* The palette must stay below the window's top: the list scrolls after four or five commands, and
+   on a short window, where the field sits about 330 px above the window's bottom, sooner. */
+.palette.in-dialog .palette-list {
+  max-height: max(96px, min(236px, calc(100vh - 330px)));
+}
+
+/* Whose commands the dialog's palette lists, when that agent runs in another folder. */
+.palette-source {
+  display: block;
+  margin-bottom: 3px;
+  color: var(--muted);
+}
+
+.palette-source b {
+  font-weight: 600;
+  color: var(--text-soft);
+}
+
+.palette-source-mark {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  margin-right: 6px;
+  border-radius: 50%;
+  background: var(--amber);
+  vertical-align: 1px;
+}
+
 .palette-foot,
 .dialog-foot {
   padding: 6px 10px;
@@ -9419,6 +9456,7 @@ button.map-toggle:hover {
 
 /* The first message, in the composer's box. */
 .prompt-box {
+  position: relative;
   display: flex;
   flex-direction: column;
   gap: 4px;

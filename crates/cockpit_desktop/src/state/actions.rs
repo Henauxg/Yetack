@@ -270,7 +270,11 @@ pub fn slash_word_at(text: &str, caret: usize) -> Option<SlashWord> {
 
 /// `text` with the command in place of `word`, and the caret after it. A space follows the
 /// command, the one already there or an added one.
-fn with_command_at(text: &str, word: SlashWord, name: &str) -> Option<(String, Utf16Offset)> {
+pub(super) fn with_command_at(
+    text: &str,
+    word: SlashWord,
+    name: &str,
+) -> Option<(String, Utf16Offset)> {
     let before = text.get(..word.start)?;
     let after = text.get(word.end..)?;
     let spaced = after.starts_with(' ');
@@ -315,7 +319,7 @@ fn open_palette(state: &mut AppState, agent: AgentId, origin: PaletteOrigin) -> 
 }
 
 /// An agent whose commands the app has not seen yet is asked for them.
-fn commands_request(state: &mut AppState, agent: AgentId) -> Option<Outgoing> {
+pub(super) fn commands_request(state: &mut AppState, agent: AgentId) -> Option<Outgoing> {
     let entry = state.agents.get_mut(&agent)?;
     if !entry.commands.is_empty() || entry.commands_requested {
         return None;

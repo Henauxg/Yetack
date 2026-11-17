@@ -13,7 +13,9 @@ use dioxus::html::point_interaction::InteractionLocation;
 use dioxus::prelude::*;
 use rfd::AsyncFileDialog;
 
-use crate::bridge::{self, COMPOSER_ID, FOLDER_FIELD_ID, HIGHLIGHTED_CLASS, HighlightedList};
+use crate::bridge::{
+    self, COMPOSER_ID, FOLDER_FIELD_ID, HIGHLIGHTED_CLASS, HighlightedList, NEW_AGENT_PROMPT_ID,
+};
 use crate::connection::{Clock, Cockpit};
 use crate::daemon_label::DaemonPlace;
 use crate::format::{self, MODE_CHOICES, MODEL_CHOICES};
@@ -24,10 +26,12 @@ use crate::prefs::{AccountColor, EscStop};
 use crate::state::accounts::AccountLabel;
 use crate::state::actions::{Direction, StartField};
 use crate::state::folder_field::{self, FolderRow};
+use crate::state::new_agent_palette::{KeyResult, PaletteKey, Written};
 use crate::state::projects::ProjectKey;
 use crate::state::{
     AppState, Dialog, FolderAction, FolderList, FormMenu, ImageView, Loadable, NewAgentForm,
-    NewAgentTab, WorkingFolderForm, accounts, actions, projects, working_folder,
+    NewAgentTab, Utf16Offset, WorkingFolderForm, accounts, actions, new_agent_palette, projects,
+    working_folder,
 };
 use crate::ui::accounts::{self as accounts_view, AccountMini, AccountPicker};
 use crate::ui::agent_map::AgentMapDialog;
@@ -38,6 +42,7 @@ use crate::ui::icons::{Icon, IconKind};
 use crate::ui::machines::{MachinesDialog, machine_choices};
 use crate::ui::no_daemon::NoDaemonCard;
 use crate::ui::open_file::{self as open_file_view, OpenFileDialog, UP_ROW};
+use crate::ui::palette::NewAgentPalette;
 use crate::ui::presence::{Presence, Shown, use_presence};
 use crate::ui::settings::SettingsDialog;
 use crate::ui::zoom::ZoomImage;
@@ -56,8 +61,6 @@ const PLACEHOLDER_WIDTHS: [&str; RECENT_FOLDERS] = ["72%", "58%", "66%", "50%", 
 /// The widths of the rows that stand for the folder field's folders on their way.
 const FOLDER_LOADING_ROWS: [&str; 4] = ["34%", "22%", "46%", "28%"];
 
-/// The new agent dialog's first message.
-const PROMPT_FIELD_ID: &str = "new-agent-prompt";
 const NAME_FIELD_ID: &str = "new-agent-name";
 
 /// The "Resume a session" tab's search field.
@@ -658,11 +661,12 @@ fn FolderPath(folder: PathBuf) -> Element {
 fn StartForm(form: NewAgentForm) -> Element {
     let cockpit: Cockpit = use_context();
     let Clock(now) = use_context::<Clock>();
-    let (typed_folder, typed_prompt) = {
+    let (typed_folder, typed_prompt, palette_open) = {
         let drafts = cockpit.drafts.read();
         (
             drafts.new_agent.folder.clone(),
             drafts.new_agent.prompt.clone(),
+            drafts.new_agent.palette.is_some(),
         )
     };
     // The folder and the first message start from the drafts, then follow the keyboard alone: a
@@ -739,6 +743,48 @@ fn StartForm(form: NewAgentForm) -> Element {
         if plain_enter && !event.is_composing() {
             event.prevent_default();
             start();
+        }
+    };
+    // While the "/" palette is open, the keys move in it, Enter and Tab insert its command, and Esc
+    // closes it alone.
+    let prompt_key = move |event: KeyboardEvent| {
+        let modifiers = event.modifiers();
+        let plain = !(modifiers.ctrl() || modifiers.alt() || modifiers.meta() || modifiers.shift());
+        let key = match event.key() {
+            Key::ArrowUp if plain => PaletteKey::Up,
+            Key::ArrowDown if plain => PaletteKey::Down,
+            Key::Enter if plain => PaletteKey::Enter,
+            Key::Tab if plain => PaletteKey::Tab,
+            Key::Escape => PaletteKey::Escape,
+            _ => return start_on_enter(event),
+        };
+        if event.is_composing() {
+            return;
+        }
+        // A "/" word typed just before the key opens the palette now: the page script's message
+        // for it may come after the key. Esc never opens it.
+        let opened = cockpit.with_drafts(|state, drafts| {
+            if drafts.new_agent.palette.is_some() || key == PaletteKey::Escape {
+                return None;
+            }
+            let text = drafts.new_agent.prompt.clone();
+            new_agent_palette::typed(state, drafts, &text, Utf16Offset::end_of(&text))
+        });
+        if let Some(agent) = opened {
+            cockpit.change(|state| new_agent_palette::ask_commands(state, agent));
+        }
+        if cockpit.drafts.peek().new_agent.palette.is_none() {
+            return start_on_enter(event);
+        }
+        event.prevent_default();
+        let result =
+            cockpit.with_drafts(|state, drafts| new_agent_palette::press(state, drafts, key));
+        match result {
+            KeyResult::Taken => {}
+            KeyResult::Written(Written { text, caret }) => {
+                bridge::set_field_text_at(NEW_AGENT_PROMPT_ID, text, Some(caret));
+            }
+            KeyResult::Start => start(),
         }
     };
     let toggle_menu = move |menu: FormMenu| {
@@ -913,7 +959,7 @@ fn StartForm(form: NewAgentForm) -> Element {
             }
             div { class: "prompt-box",
                 textarea {
-                    id: PROMPT_FIELD_ID,
+                    id: NEW_AGENT_PROMPT_ID,
                     class: "prompt-input",
                     rows: "3",
                     aria_label: "First message",
@@ -921,11 +967,16 @@ fn StartForm(form: NewAgentForm) -> Element {
                     initial_value: "{prompt_seed}",
                     onmounted: move |_| {
                         if focus == StartField::Message {
-                            bridge::focus_field_at_end(PROMPT_FIELD_ID);
+                            bridge::focus_field_at_end(NEW_AGENT_PROMPT_ID);
                         }
                     },
                     oninput: move |event: FormEvent| cockpit.with_drafts(|_, drafts| drafts.new_agent.prompt = event.value()),
-                    onkeydown: start_on_enter,
+                    onkeydown: prompt_key,
+                    onblur: move |_| cockpit.with_drafts(|_, drafts| new_agent_palette::close(drafts)),
+                }
+                // After the field, so that Shift+Tab goes back to the name rather than to a row.
+                if palette_open {
+                    NewAgentPalette {}
                 }
                 div { class: "prompt-tools",
                     div { class: "menu-anchor",

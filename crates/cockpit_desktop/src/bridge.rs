@@ -32,6 +32,9 @@ pub const RECORDS_KEYS_ATTRIBUTE: &str = "data-records-keys";
 /// page, the script leaves Esc to it, so that Esc closes nothing else and never stops an agent.
 pub const TAKES_ESCAPE_ATTRIBUTE: &str = "data-takes-escape";
 
+/// The new agent dialog's first message.
+pub const NEW_AGENT_PROMPT_ID: &str = "new-agent-prompt";
+
 /// The hidden file input the composer's attach button opens.
 pub const ATTACH_INPUT_ID: &str = "attach-input";
 
@@ -295,15 +298,24 @@ document.addEventListener("keydown", (event) => {
     in_find: target !== null && settings.find_field_ids.includes(target.id),
   });
 }, true);
-// The composer's text goes to the app with the caret, which tells the "/" word being typed.
+// The composer's text goes to the app with the caret, which tells the "/" word being typed, and
+// so does the new agent dialog's first message.
 document.addEventListener("input", (event) => {
   const target = event.target;
-  if (target === null || target.id !== settings.composer_id) {
+  if (target === null) {
+    return;
+  }
+  const caret = target.selectionStart ?? target.value.length;
+  if (target.id === settings.new_agent_prompt_id) {
+    send({ type: "new_agent_prompt_input", text: target.value, caret });
+    return;
+  }
+  if (target.id !== settings.composer_id) {
     return;
   }
   const agent = Number(target.dataset.agent);
   if (Number.isInteger(agent)) {
-    send({ type: "composer_input", agent, text: target.value, caret: target.selectionStart ?? target.value.length });
+    send({ type: "composer_input", agent, text: target.value, caret });
   }
 });
 document.addEventListener("paste", (event) => {
@@ -495,6 +507,8 @@ struct FieldText {
 #[derive(Debug, Serialize)]
 struct Settings {
     composer_id: &'static str,
+    /// Its text goes to the app with the caret, as the composer's does, for its "/" palette.
+    new_agent_prompt_id: &'static str,
     /// The fields where Backspace at the end of the text goes up a folder.
     path_field_ids: [&'static str; 2],
     /// The fields where F2 moves the title edit to the other place.
@@ -623,6 +637,11 @@ enum BridgeMessage {
         text: String,
         caret: Utf16Offset,
     },
+    /// The new agent dialog's first message, with the caret.
+    NewAgentPromptInput {
+        text: String,
+        caret: Utf16Offset,
+    },
     Focus {
         focused: bool,
     },
@@ -638,6 +657,7 @@ pub fn use_bridge(cockpit: Cockpit) {
         let mut script = document::eval(SCRIPT);
         if let Err(error) = script.send(Settings {
             composer_id: COMPOSER_ID,
+            new_agent_prompt_id: NEW_AGENT_PROMPT_ID,
             path_field_ids: [OPEN_FILE_FIELD_ID, FOLDER_FIELD_ID],
             title_field_ids: [HEADER_TITLE_FIELD_ID, ROW_TITLE_FIELD_ID],
             undo_pause_ms: UNDO_PAUSE_MS,
@@ -706,6 +726,9 @@ fn receive(cockpit: Cockpit, message: BridgeMessage) {
         }
         BridgeMessage::ComposerInput { agent, text, caret } => {
             cockpit.type_in_composer(agent, text, caret);
+        }
+        BridgeMessage::NewAgentPromptInput { text, caret } => {
+            cockpit.type_in_new_agent_prompt(&text, caret);
         }
         BridgeMessage::Focus { focused } => {
             cockpit.set_window_focused(focused);
@@ -1031,6 +1054,7 @@ mod tests {
 
         let settings = Settings {
             composer_id: COMPOSER_ID,
+            new_agent_prompt_id: NEW_AGENT_PROMPT_ID,
             path_field_ids: [OPEN_FILE_FIELD_ID, FOLDER_FIELD_ID],
             title_field_ids: [HEADER_TITLE_FIELD_ID, ROW_TITLE_FIELD_ID],
             undo_pause_ms: 500,
@@ -1068,11 +1092,13 @@ mod tests {
             caret: Some(Utf16Offset::new(4)),
         };
         let input = r#"{"type":"composer_input","agent":3,"text":"please run /rev","caret":15}"#;
+        let prompt_input = r#"{"type":"new_agent_prompt_input","text":"/re","caret":3}"#;
 
         assert_eq!(
             serde_json::to_value(settings).unwrap(),
             json!({
                 "composer_id": "composer",
+                "new_agent_prompt_id": "new-agent-prompt",
                 "path_field_ids": ["open-file-path", "new-agent-folder"],
                 "title_field_ids": ["agent-title-field", "row-title-field"],
                 "undo_pause_ms": 500,
@@ -1126,6 +1152,11 @@ mod tests {
                 if agent == AgentId::new(3)
                     && text == "please run /rev"
                     && caret == Utf16Offset::new(15)
+        ));
+        assert!(matches!(
+            serde_json::from_str::<BridgeMessage>(prompt_input).unwrap(),
+            BridgeMessage::NewAgentPromptInput { text, caret }
+                if text == "/re" && caret == Utf16Offset::new(3)
         ));
     }
 }

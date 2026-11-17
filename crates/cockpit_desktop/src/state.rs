@@ -27,6 +27,7 @@ pub mod machine_status;
 pub mod machines;
 pub mod mcp_reconnect;
 pub mod menu_keys;
+pub mod new_agent_palette;
 pub mod no_daemon;
 pub mod notification_levels;
 pub mod open_file;

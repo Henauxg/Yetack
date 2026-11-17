@@ -39,7 +39,7 @@ use crate::state::update_plan::{
 };
 use crate::state::{
     self, AgentEntry, AppState, ConnectionState, Dialog, Drafts, MachineState, Outgoing, Purpose,
-    TitlePlace, Utf16Offset, actions, file_reread, notification_levels,
+    TitlePlace, Utf16Offset, actions, file_reread, new_agent_palette, notification_levels,
 };
 use crate::terminal_feed::{self, FeedSender, Output};
 use crate::update_script::APP_VERSION;
@@ -376,6 +376,16 @@ impl Cockpit {
         });
         if let Some(palette) = palette {
             self.change(|state| actions::change_palette(state, agent, palette));
+        }
+    }
+
+    /// Typing in the new agent dialog's first message changes the drafts, and the state only when
+    /// its palette opens on commands the app has not asked for.
+    pub fn type_in_new_agent_prompt(&self, text: &str, caret: Utf16Offset) {
+        let opened =
+            self.with_drafts(|state, drafts| new_agent_palette::typed(state, drafts, text, caret));
+        if let Some(agent) = opened {
+            self.change(|state| new_agent_palette::ask_commands(state, agent));
         }
     }
 

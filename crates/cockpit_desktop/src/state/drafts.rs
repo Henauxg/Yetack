@@ -8,6 +8,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use cockpit_protocol::{AgentId, Image, PendingId};
 
 use super::find::Finds;
+use super::new_agent_palette::OpenPalette;
 use super::quotes::{Quote, QuoteEditor};
 use super::utf16_offset::Utf16Offset;
 
@@ -81,6 +82,10 @@ pub struct NewAgentDraft {
     pub session_query: String,
     /// An index into the sessions the query leaves.
     pub session_highlighted: usize,
+    /// The "/" palette over the first message, while it is open.
+    pub palette: Option<OpenPalette>,
+    /// The start of the "/" word Esc closed the palette on: it stays closed for that word.
+    pub palette_dismissed: Option<usize>,
 }
 
 /// The "Add an account" dialog's fields, while it is open.
