@@ -8,9 +8,10 @@
 //! and when another entry comes to the top of the view.
 //!
 //! Within [`NEAR_TOP_SCREENS`] of the top, while the chat has [`LOADS_OLDER_ATTRIBUTE`], it asks
-//! for older messages, once per first entry: the chat draws more of the rows it holds, or loads
-//! the page before them. Either changes the first entry, so the next ask follows if the view is
-//! still near the top.
+//! for older messages, once per first entry and first entry past the subagent calls held before
+//! the loaded messages ([`EARLY_ATTRIBUTE`]): the chat draws more of the rows it holds, which
+//! changes the first entry, or loads the page before them, which arrives below those calls and
+//! changes the second. The next ask follows if the view is still near the top.
 
 use cockpit_protocol::{AgentId, ItemId};
 use dioxus::prelude::*;
@@ -45,8 +46,8 @@ pub const REVEALED_CLASS: &str = "chat-revealed";
 pub const LOADS_OLDER_ATTRIBUTE: &str = "data-loads-older";
 
 /// Marks the subagent calls the chat holds before its first loaded message. Older messages
-/// arrive below them, so the script holds none of them in place, and the first entry it counts
-/// for older messages comes after them. The chat's view writes it out.
+/// arrive below them, so the script holds none of them in place, and it looks past them for the
+/// entry an older page changes. The chat's view writes it out.
 pub const EARLY_ATTRIBUTE: &str = "data-early";
 
 /// How close to the bottom, in pixels, the chat still follows new entries.
@@ -227,8 +228,8 @@ const report = () => {
     reportedNearTop = "";
     return;
   }
-  const first = itemOf(firstLate(column.getElementsByClassName(settings.entry_class)));
-  const nearTop = `${agent} ${first}`;
+  const entries = column.getElementsByClassName(settings.entry_class);
+  const nearTop = `${agent} ${itemOf(entries[0] ?? null)} ${itemOf(firstLate(entries))}`;
   if (nearTop !== reportedNearTop) {
     reportedNearTop = nearTop;
     dioxus.send({ type: "near_top", agent: Number(agent) });
