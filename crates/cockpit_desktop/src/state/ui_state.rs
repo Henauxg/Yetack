@@ -358,11 +358,14 @@ pub struct ClosedAgent {
     pub project: Option<ProjectKey>,
 }
 
-/// A closed agent's session on its way back. Once it is an agent again, it goes back to its
-/// place, above `before`, and to the `project` it was moved to.
+/// A closed agent's session on its way back. Once it is an agent again, on the same machine and
+/// with the same account, it goes back to its place, above `before`, and to the `project` it was
+/// moved to.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Reopening {
     pub session: ClaudeSessionId,
+    pub machine: MachineId,
+    pub account: AccountId,
     pub before: Option<AgentId>,
     pub project: Option<ProjectKey>,
 }

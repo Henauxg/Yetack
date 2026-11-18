@@ -239,7 +239,11 @@ pub fn needed_requests(state: &mut AppState) -> Vec<Outgoing> {
         let back = state
             .agents
             .values()
-            .find(|entry| entry.summary.session.as_ref() == Some(&reopening.session))
+            .find(|entry| {
+                MachineId::of(entry.id()) == reopening.machine
+                    && entry.summary.account == reopening.account
+                    && entry.summary.session.as_ref() == Some(&reopening.session)
+            })
             .map(AgentEntry::id);
         if let Some(agent) = back {
             let before = reopening.before;

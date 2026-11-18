@@ -2161,16 +2161,19 @@ pub fn undo_close(state: &mut AppState) -> Vec<Outgoing> {
     let Some(session) = closed.session else {
         return Vec::new();
     };
+    let machine = MachineId::of(closed.agent);
     // A fork keeps its source's session until its first turn: the daemon answers with the agent
     // that has the session, which keeps its own place and project.
     let shared = state.agents.values().any(|entry| {
-        MachineId::of(entry.id()) == MachineId::of(closed.agent)
+        MachineId::of(entry.id()) == machine
             && entry.summary.session.as_ref() == Some(&session)
             && entry.summary.account == closed.account
     });
     if !shared {
         state.ui.reopening = Some(Reopening {
             session: session.clone(),
+            machine,
+            account: closed.account,
             before: closed.before,
             project: closed.project,
         });
@@ -2181,7 +2184,7 @@ pub fn undo_close(state: &mut AppState) -> Vec<Outgoing> {
             account: closed.account,
         }),
         purpose: Purpose::Reopen,
-        to: MachineId::of(closed.agent),
+        to: machine,
     }]
 }
 
@@ -3627,6 +3630,45 @@ mod tests {
             assert_eq!(before_close, [3, 1, 2], "{group_by:?}");
             assert_eq!(after_undo, [3, 4, 2], "{group_by:?}");
         }
+    }
+
+    #[test]
+    fn undo_leaves_another_accounts_agent_with_the_session_alone() {
+        let mut state = idle_ordered();
+        let mut drafts = Drafts::default();
+        let closed = AgentId::new(3);
+        let work_account = AccountId::new(2);
+        if let Some(entry) = state.agents.get_mut(&closed) {
+            entry.summary.session = Some(ClaudeSessionId::new("session-1".to_owned()));
+            entry.summary.account = work_account;
+        }
+        let work = ProjectKey::Kept(projects::create(&mut state, "Work"));
+        projects::move_agent(&mut state, closed, &work);
+        let mut back = state.agents[&closed].summary.clone();
+        let project = |state: &AppState, agent| projects::project_of(state, &state.agents[&agent]);
+        let other_project = project(&state, AgentId::new(1));
+        request_close(&mut state, &mut drafts, closed);
+        crate::state::apply::apply(
+            &mut state,
+            &mut drafts,
+            event(cockpit_protocol::Event::AgentRemoved { agent: closed }),
+            MachineId::THIS,
+        );
+
+        undo_close(&mut state);
+        let before_answer = needed_requests(&mut state);
+        back.id = AgentId::new(4);
+        crate::state::apply::apply(
+            &mut state,
+            &mut drafts,
+            event(cockpit_protocol::Event::AgentAdded(back)),
+            MachineId::THIS,
+        );
+        needed_requests(&mut state);
+
+        assert_eq!(sent_move(&before_answer), None);
+        assert_eq!(project(&state, AgentId::new(1)), other_project);
+        assert_eq!(project(&state, AgentId::new(4)), work);
     }
 
     #[test]

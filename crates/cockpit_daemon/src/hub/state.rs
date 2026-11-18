@@ -279,7 +279,11 @@ impl Hub {
                 generation,
                 event,
             } => self.process_event(agent, generation, event),
-            HubInput::SessionFound { found, reply } => self.resume_session(*found, reply),
+            HubInput::SessionFound {
+                found,
+                asked_at,
+                reply,
+            } => self.resume_session(*found, asked_at, reply),
             HubInput::ForkCopied { fork, found, reply } => self.fork_copied(*fork, found, reply),
             HubInput::MoveCopied {
                 agent,

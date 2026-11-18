@@ -58,6 +58,7 @@ impl Hub {
 #[cfg(unix)]
 mod tests {
     use std::path::Path;
+    use std::time::Instant;
 
     use cockpit_protocol::{
         AccountId, ClaudeSessionId, Effort, ErrorCode, Mark, PastSession, PermissionMode, Position,
@@ -261,7 +262,8 @@ mod tests {
         }
     }
 
-    /// An agent closed during the run comes back from its session with its choices.
+    /// An agent closed a moment ago comes back from its session with its choices, even after a
+    /// resume that failed.
     #[tokio::test]
     async fn a_closed_agents_session_comes_back_with_its_choices() {
         let temp = tempfile::tempdir().unwrap();
@@ -274,8 +276,18 @@ mod tests {
             agent.record.mode = Some(PermissionMode::Auto);
         }
         hub.close(first).unwrap();
+        let claude = hub.config.claude_program.clone();
+        hub.config.claude_program = temp.path().join("no-claude");
+        let (reply, mut failed) = oneshot::channel();
+        hub.resume_session(past_session(temp.path()), Instant::now(), reply);
+        hub.config.claude_program = claude;
 
-        hub.resume_session(past_session(temp.path()), oneshot::channel().0);
+        hub.resume_session(
+            past_session(temp.path()),
+            Instant::now(),
+            oneshot::channel().0,
+        );
+        assert!(matches!(failed.try_recv(), Ok(ResponseResult::Error(_))));
         let back = hub.agents.values().next().map(|agent| &agent.record);
 
         assert_eq!(
@@ -296,7 +308,7 @@ mod tests {
         start(&mut hub, temp.path(), "First");
         let (reply, mut answer) = oneshot::channel();
 
-        hub.resume_session(past_session(temp.path()), reply);
+        hub.resume_session(past_session(temp.path()), Instant::now(), reply);
 
         let started = ResponseBody::AgentStarted {
             agent: AgentId::new(2),

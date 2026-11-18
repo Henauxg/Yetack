@@ -655,13 +655,17 @@ impl Hub {
         }
     }
 
-    /// A past session becomes an agent, with the choices of an agent closed with it a moment ago,
-    /// or the agent that has it resumes.
-    pub(super) fn resume_session(&mut self, found: FoundSession, reply: Reply) {
-        respond(reply, self.agent_for_session(found));
+    /// A past session becomes an agent, with the choices of an agent closed with it a moment
+    /// before `asked_at`, or the agent that has it resumes.
+    pub(super) fn resume_session(&mut self, found: FoundSession, asked_at: Instant, reply: Reply) {
+        respond(reply, self.agent_for_session(found, asked_at));
     }
 
-    fn agent_for_session(&mut self, found: FoundSession) -> Result<ResponseBody, ErrorBody> {
+    fn agent_for_session(
+        &mut self,
+        found: FoundSession,
+        asked_at: Instant,
+    ) -> Result<ResponseBody, ErrorBody> {
         let FoundSession { session, past } = found;
         let account = self.account(session.account)?;
         if let Some(agent) = self.agent_with_session(&session.id, account.id) {
@@ -675,9 +679,7 @@ impl Hub {
             return Ok(ResponseBody::AgentStarted { agent });
         }
         let folder = agent_folder(&session.folder)?;
-        let choices = self
-            .closed_choices
-            .find(&session.id, account.id, Instant::now());
+        let choices = self.closed_choices.find(&session.id, account.id, asked_at);
         let record = AgentRecord {
             id: self.next_agent,
             title: session.title,
@@ -1043,9 +1045,11 @@ mod tests {
             },
         };
 
-        let relative = hub.agent_for_session(session("work")).unwrap_err();
+        let relative = hub
+            .agent_for_session(session("work"), Instant::now())
+            .unwrap_err();
         let missing = hub
-            .agent_for_session(session("/nonexistent/yetack/work"))
+            .agent_for_session(session("/nonexistent/yetack/work"), Instant::now())
             .unwrap_err();
 
         assert_eq!(relative.code, ErrorCode::InvalidRequest);
