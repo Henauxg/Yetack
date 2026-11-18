@@ -2043,7 +2043,7 @@ enum TitleLayout {
     Compact,
 }
 
-/// The tool's name in bold, then the description or the summary.
+/// The tool's name in bold, then the description, the summary, or the file's name and folder.
 fn tool_title(
     agent: AgentId,
     folder: &Path,
@@ -2072,11 +2072,10 @@ fn tool_title(
         },
         ToolShape::File { path, line } if !call.summary.is_empty() => {
             let shown = file_edits::call_path(folder, path);
-            let (path, line) = (path.clone(), *line);
             rsx! {
                 span { class: "tool-name", "{call.tool}" }
-                FileLink { agent, path: path.clone(), line, text: shown.name }
-                {call_folder(&shown.folder, &path)}
+                FileLink { agent, path: path.clone(), line: *line, text: shown.name }
+                {call_folder(&shown.folder, path)}
             }
         }
         ToolShape::Command { .. } | ToolShape::File { .. } | ToolShape::Other => rsx! {
@@ -2100,7 +2099,7 @@ fn call_folder(folder: &str, path: &Path) -> Element {
     }
 }
 
-/// A tool call's summary that opens its file in the file view.
+/// A tool call's file name that opens the file in the file view.
 #[component]
 fn FileLink(agent: AgentId, path: PathBuf, line: Option<u32>, text: String) -> Element {
     let cockpit: Cockpit = use_context();
