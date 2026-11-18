@@ -54,7 +54,7 @@ pub struct Transcript {
     history: HistoryState,
     revision: Revision,
     /// The first item from which the app holds every item. The items before it are subagent
-    /// calls that held items run under. `None` until a history page comes.
+    /// calls that held items run under. `None` until a history page comes or a trim drops items.
     loaded_from: Option<ItemId>,
 }
 
@@ -167,8 +167,9 @@ impl Transcript {
     }
 
     /// Drops the oldest items past `kept`, and marks that older items exist, so that scrolling up
-    /// loads them again through history. While a history page is on its way, nothing is dropped:
-    /// the page would come back with a gap before it.
+    /// loads them again through history. The subagent calls the kept items run under stay, so
+    /// their work shows under them. While a history page is on its way, nothing is dropped: the
+    /// page would come back with a gap before it.
     pub fn trim(&mut self, kept: usize) {
         if matches!(
             self.history,
@@ -181,7 +182,6 @@ impl Transcript {
         }
         let newest: Vec<ItemId> = self.items.keys().rev().take(kept).copied().collect();
         let keep_from = newest.last().copied();
-        // The subagent calls the kept items run under stay, so their work shows under them.
         let mut held: BTreeSet<ItemId> = newest.iter().copied().collect();
         let mut next: Vec<ItemId> = newest
             .iter()
@@ -219,7 +219,8 @@ impl Transcript {
         if let Some(first) = page.items.first() {
             self.loaded_from = Some(self.loaded_from.map_or(first.id, |from| from.min(first.id)));
         }
-        for item in page.items.into_iter().chain(page.ancestors) {
+        let items = page.items.into_iter().chain(page.ancestors);
+        for item in items {
             self.items.entry(item.id).or_insert(item);
         }
         self.changed();
