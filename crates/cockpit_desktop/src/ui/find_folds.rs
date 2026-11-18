@@ -1,8 +1,8 @@
 //! The matches of the chat's find in what the chat folds: a call's input and output, an edit's
-//! lines, thinking, a subagent's work, the instructions of a skill, a notice's detail. The page
-//! holds none of it until the fold opens, so the app counts them from the transcript, and a fold
-//! that is closed shows its count on a chip. The find's page script counts each chip as that many
-//! matches, and opens the fold when the find reaches it.
+//! lines, thinking, a subagent's work, the instructions of a skill, a notice's detail, an answered
+//! request. The page holds none of it until the fold opens, so the app counts them from the
+//! transcript, and a fold that is closed shows its count on a chip. The find's page script counts
+//! each chip as that many matches, and opens the fold when the find reaches it.
 //!
 //! The counts follow what each fold shows once open, from the item's text: a Markdown text counts
 //! its marks too, and an output counts each line of a run the chat shows once. The page counts
@@ -26,8 +26,9 @@ use crate::ui::code::TOO_LARGE_TO_SHOW;
 use crate::ui::icons::{Icon, IconKind};
 use crate::ui::tool_rows::{self, Row};
 use crate::ui::transcript::{
-    CallStage, Children, EDIT_CONTEXT_LINES, EDIT_PREVIEW_ROWS, SUBAGENT_NAME, THINKING_LABEL,
-    ToolShape, children_by_parent, compact_line, hides_output, top_items, waits_for_answer,
+    CallStage, Children, EDIT_CONTEXT_LINES, EDIT_PREVIEW_ROWS, RequestDetail, SUBAGENT_NAME,
+    THINKING_LABEL, ToolShape, children_by_parent, compact_line, hides_output, top_items,
+    waits_for_answer,
 };
 use crate::ui::work_runs::{self, Unit};
 
@@ -334,6 +335,14 @@ impl Gatherer<'_, '_> {
             },
             ItemBody::Subagent(call) if self.subagents.insert(item.id) => {
                 self.within(fold, |gatherer| gatherer.subagent(item.id, call));
+            }
+            // A request that waits shows on its card.
+            ItemBody::Approval(approval) if !waits_for_answer(item) => {
+                let RequestDetail { asked, said } = RequestDetail::of(self.folder, approval);
+                self.within(fold, |gatherer| {
+                    gatherer.add(&asked);
+                    gatherer.add(said.as_deref().unwrap_or_default());
+                });
             }
             _ => {}
         }
@@ -765,21 +774,26 @@ mod tests {
         );
     }
 
+    /// A request for `command`, answered, whose summary is the command's first line.
+    fn request(command: &str, answer: ApprovalAnswer, tool_call: Option<u32>) -> ItemBody {
+        ItemBody::Approval(Approval {
+            pending: PendingId::new("request-1".to_owned()),
+            tool: "Bash".to_owned(),
+            summary: command.lines().next().unwrap_or_default().to_owned(),
+            input: json!({ "command": command }),
+            edit: None,
+            reason: None,
+            answer: AnswerState::Answered(answer),
+            tool_call: tool_call.map(ItemId::new),
+        })
+    }
+
     /// The request shows on its call's line, so the call and the thinking after it make one run.
     #[test]
     fn a_request_you_allowed_does_not_end_a_run_of_work() {
-        let request = Approval {
-            pending: PendingId::new("request-2".to_owned()),
-            tool: "Bash".to_owned(),
-            summary: "cargo test".to_owned(),
-            input: json!({"command": "cargo test"}),
-            edit: None,
-            reason: None,
-            answer: AnswerState::Answered(ApprovalAnswer {
-                decision: ApprovalDecision::Allow,
-                message: None,
-            }),
-            tool_call: Some(ItemId::new(1)),
+        let allowed = ApprovalAnswer {
+            decision: ApprovalDecision::Allow,
+            message: None,
         };
         let items = [
             item(
@@ -787,7 +801,7 @@ mod tests {
                 None,
                 ItemBody::ToolCall(call("Bash", "cargo test", json!({}), "ok")),
             ),
-            item(2, None, ItemBody::Approval(request)),
+            item(2, None, request("cargo test", allowed, Some(1))),
             item(
                 3,
                 None,
@@ -803,6 +817,25 @@ mod tests {
                 (FoldKey::Item(ItemId::new(3)), 1),
                 (FoldKey::Run(ItemId::new(1)), 1),
             ])
+        );
+    }
+
+    /// The line shows the command's first line, and its fold the whole command and your message.
+    #[test]
+    fn a_denied_request_counts_its_whole_command_and_your_message() {
+        let denied = ApprovalAnswer {
+            decision: ApprovalDecision::Deny,
+            message: Some("Keep the build cache.".to_owned()),
+        };
+        let items = [item(
+            1,
+            None,
+            request("cargo clean\ncargo build --release", denied, None),
+        )];
+
+        assert_eq!(
+            matches(&items, "build"),
+            FoldMatches::from([(FoldKey::Item(ItemId::new(1)), 2)])
         );
     }
 

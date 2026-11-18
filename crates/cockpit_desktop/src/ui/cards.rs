@@ -180,7 +180,7 @@ pub fn ApprovalCard(agent: AgentId, folder: PathBuf, approval: Approval) -> Elem
 }
 
 /// What the approval asks to run: a command in full, else the daemon's summary.
-fn approval_text(approval: &Approval) -> String {
+pub(super) fn approval_text(approval: &Approval) -> String {
     match approval.input.get(COMMAND_FIELD) {
         Some(serde_json::Value::String(command)) => command.clone(),
         _ => approval.summary.clone(),
@@ -189,7 +189,7 @@ fn approval_text(approval: &Approval) -> String {
 
 /// The whole input as indented JSON, for a tool other than a command or an edit: the daemon's
 /// one-line summary leaves most of it out, and may be empty.
-fn approval_input(approval: &Approval) -> Option<String> {
+pub(super) fn approval_input(approval: &Approval) -> Option<String> {
     let shown_whole = approval.tool == COMMAND_TOOL || approval.edit.is_some();
     if shown_whole || approval.input.is_null() {
         return None;

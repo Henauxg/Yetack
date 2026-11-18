@@ -28,7 +28,7 @@ use crate::state::{
     chat_images, file_edits,
 };
 use crate::ui::accounts::SignInCard;
-use crate::ui::cards::{ApprovalCard, PlanCard};
+use crate::ui::cards::{self, ApprovalCard, PlanCard};
 use crate::ui::chat_scroll::{
     self, CHAT_SCROLL_ID, ENTRY_CLASS, FOLD_BUTTON_CLASS, InView, JumpToLatest, NewDivider,
 };
@@ -2204,45 +2204,75 @@ fn ApprovalLine(agent: AgentId, id: ItemId, folder: PathBuf, approval: Approval)
     let Some(answer) = Answer::of(&approval.answer) else {
         return rsx! {};
     };
-    let asked = match &approval.edit {
+    let RequestDetail { asked, said } = RequestDetail::of(&folder, &approval);
+    let line = match &approval.edit {
         Some(edit) => file_edits::call_path(&folder, &edit.path).name,
-        None => approval
-            .summary
-            .lines()
-            .next()
-            .unwrap_or_default()
-            .to_owned(),
+        None => asked.lines().next().unwrap_or_default().to_owned(),
     };
-    let denial = match &approval.answer {
-        AnswerState::Answered(ApprovalAnswer {
-            message: Some(message),
-            ..
-        }) => Some(message.clone()),
-        _ => None,
-    };
-    let whole = match &approval.edit {
-        Some(edit) => file_edits::shown_path(&folder, &edit.path),
-        None => approval.summary.clone(),
+    let foldable = !asked.is_empty() || said.is_some();
+    let unfolded = if decided.clicked() {
+        UNFOLDED_CLASS
+    } else {
+        ""
     };
     rsx! {
-        div { class: "tool-call",
+        div { class: "tool",
             div {
-                class: "tool-head {CALL_LINE_CLASS}",
-                onclick: move |_| decided.set(!open),
+                class: if foldable { "tool-head {CALL_LINE_CLASS}" } else { "tool-head" },
+                onclick: move |_| {
+                    if foldable {
+                        decided.set(!open);
+                    }
+                },
                 span { class: "tool-name", "{approval.tool}" }
                 AnswerTag { answer }
-                code { class: "tool-summary approval-asked", "{asked}" }
-                CallFold { open, decided }
+                code { class: "tool-summary approval-asked", "{line}" }
+                if foldable && !open {
+                    FoldChip { fold: FoldKey::Item(id) }
+                }
+                if foldable {
+                    CallFold { open, decided }
+                }
             }
-            if open {
-                div { class: decided.body_class("tool-io"),
-                    IoRow { kind: IoKind::In, text: whole, fold: FoldEnd::First }
-                    if let Some(denial) = denial {
-                        p { class: "approval-denial", "You said: {denial}" }
+            if foldable && open {
+                div { class: "tool-io {unfolded}",
+                    if !asked.is_empty() {
+                        IoRow { kind: IoKind::In, text: asked, fold: FoldEnd::First }
+                    }
+                    if let Some(said) = said {
+                        p { class: "approval-denial", "{said}" }
                     }
                 }
             }
         }
+    }
+}
+
+/// What an answered request's line shows unfolded.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct RequestDetail {
+    /// What it asked, whole: a command, an edit's file, or a tool's whole input.
+    pub asked: String,
+    /// What you said when you denied it.
+    pub said: Option<String>,
+}
+
+impl RequestDetail {
+    pub(super) fn of(folder: &Path, approval: &Approval) -> Self {
+        let asked = match &approval.edit {
+            Some(edit) => file_edits::shown_path(folder, &edit.path),
+            None => {
+                cards::approval_input(approval).unwrap_or_else(|| cards::approval_text(approval))
+            }
+        };
+        let said = match &approval.answer {
+            AnswerState::Answered(ApprovalAnswer {
+                message: Some(message),
+                ..
+            }) => Some(format!("You said: {message}")),
+            AnswerState::Answered(_) | AnswerState::Waiting | AnswerState::Cancelled => None,
+        };
+        Self { asked, said }
     }
 }
 
@@ -3194,6 +3224,70 @@ mod tests {
             Some(Answer::Denied)
         );
         assert_eq!(Answer::of(&AnswerState::Cancelled), Some(Answer::Withdrawn));
+    }
+
+    /// The daemon's summary keeps a command's first line, and may be empty for an MCP tool.
+    #[test]
+    fn an_answered_request_unfolds_to_what_it_asked_whole() {
+        let folder = Path::new("/work/app");
+        let with = |tool: &str, summary: &str, input: Value, answer| Approval {
+            pending: PendingId::new("request-1".to_owned()),
+            tool: tool.to_owned(),
+            summary: summary.to_owned(),
+            input,
+            edit: None,
+            reason: None,
+            answer,
+            tool_call: None,
+        };
+        let command = with(
+            "Bash",
+            "cargo clean",
+            serde_json::json!({ "command": "cargo clean\ncargo build" }),
+            AnswerState::Answered(ApprovalAnswer {
+                decision: ApprovalDecision::Deny,
+                message: Some("Keep the cache.".to_owned()),
+            }),
+        );
+        let mcp = with(
+            "mcp__notes__search",
+            "",
+            serde_json::json!({ "query": "release" }),
+            AnswerState::Cancelled,
+        );
+        let edit = Approval {
+            edit: Some(FileEdit {
+                path: PathBuf::from("/work/app/src/grid.rs"),
+                old_text: "a".to_owned(),
+                new_text: "b".to_owned(),
+                texts: EditTexts::Kept,
+            }),
+            ..with(
+                "Edit",
+                "src/grid.rs",
+                Value::Null,
+                answered(ApprovalDecision::Allow),
+            )
+        };
+
+        assert_eq!(
+            RequestDetail::of(folder, &command),
+            RequestDetail {
+                asked: "cargo clean\ncargo build".to_owned(),
+                said: Some("You said: Keep the cache.".to_owned()),
+            }
+        );
+        assert_eq!(
+            RequestDetail::of(folder, &mcp).asked,
+            "{\n  \"query\": \"release\"\n}"
+        );
+        assert_eq!(
+            RequestDetail::of(folder, &edit),
+            RequestDetail {
+                asked: "src/grid.rs".to_owned(),
+                said: None,
+            }
+        );
     }
 
     #[test]

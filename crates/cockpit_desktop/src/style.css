@@ -3515,10 +3515,17 @@ html.reordering * {
   white-space: nowrap;
 }
 
+/* What you said when you denied a request, under what it asked, inside the same box. */
 .approval-denial {
-  margin: 6px 0 0;
+  margin: 0;
+  padding: 7px 10px;
   font-size: 12px;
   color: var(--muted);
+  overflow-wrap: anywhere;
+}
+
+.io-row + .approval-denial {
+  border-top: 1px solid var(--line);
 }
 
 /* Where a call's file is, after its name: dim, and cut at its end when the line is narrow. */
