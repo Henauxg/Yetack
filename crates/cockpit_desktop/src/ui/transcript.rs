@@ -559,10 +559,7 @@ impl ChatView {
         let sign_in_notice = sign_in.as_ref().and_then(|turn| turn.notice);
         let sign_in_end = sign_in.as_ref().map(|turn| turn.turn_end);
         let waits_for_sign_in = entry.summary.sign_in_wait == SignInWait::Waiting;
-        let allowed = allowed_calls(&items);
-        let mut top_items = top_items(&items, &loaded, sign_in_notice);
-        // A request you allowed shows on its call's line.
-        top_items.retain(|item| !answered_on_its_call(item, &allowed));
+        let (top_items, allowed) = top_items_and_allowed(&items, &loaded, sign_in_notice);
         let divider = actions::new_divider(state, agent);
         let top_rows = tool_rows::rows(&top_items, &awaiting, divider);
         let started: Option<String> = top_items
@@ -1361,11 +1358,24 @@ pub(super) fn top_items<'item>(
     loaded: &BTreeSet<ItemId>,
     sign_in_notice: Option<ItemId>,
 ) -> Vec<&'item TranscriptItem> {
-    items
+    top_items_and_allowed(items, loaded, sign_in_notice).0
+}
+
+/// The items the chat shows at its top level, in order, and the calls among them whose line says
+/// you allowed them. A request you allowed shows on its call's line, not on its own.
+fn top_items_and_allowed<'item>(
+    items: &[&'item TranscriptItem],
+    loaded: &BTreeSet<ItemId>,
+    sign_in_notice: Option<ItemId>,
+) -> (Vec<&'item TranscriptItem>, BTreeSet<ItemId>) {
+    let mut top: Vec<&TranscriptItem> = items
         .iter()
         .copied()
         .filter(|item| shows_at_top(item, loaded) && Some(item.id) != sign_in_notice)
-        .collect()
+        .collect();
+    let allowed = allowed_calls(&top);
+    top.retain(|item| !answered_on_its_call(item, &allowed));
+    (top, allowed)
 }
 
 /// Where an item shows in the chat.

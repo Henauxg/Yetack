@@ -484,7 +484,10 @@ pub(crate) fn FoldChip(fold: FoldKey) -> Element {
 
 #[cfg(test)]
 mod tests {
-    use cockpit_protocol::{EditTexts, FileEdit, NoticeKind, UserMessage};
+    use cockpit_protocol::{
+        AnswerState, Approval, ApprovalAnswer, ApprovalDecision, EditTexts, FileEdit, NoticeKind,
+        PendingId, UserMessage,
+    };
     use serde_json::{Value, json};
 
     use super::*;
@@ -758,6 +761,47 @@ mod tests {
             FoldMatches::from([
                 (FoldKey::Explored(ItemId::new(1)), 2),
                 (FoldKey::Run(ItemId::new(1)), 4),
+            ])
+        );
+    }
+
+    /// The request shows on its call's line, so the call and the thinking after it make one run.
+    #[test]
+    fn a_request_you_allowed_does_not_end_a_run_of_work() {
+        let request = Approval {
+            pending: PendingId::new("request-2".to_owned()),
+            tool: "Bash".to_owned(),
+            summary: "cargo test".to_owned(),
+            input: json!({"command": "cargo test"}),
+            edit: None,
+            reason: None,
+            answer: AnswerState::Answered(ApprovalAnswer {
+                decision: ApprovalDecision::Allow,
+                message: None,
+            }),
+            tool_call: Some(ItemId::new(1)),
+        };
+        let items = [
+            item(
+                1,
+                None,
+                ItemBody::ToolCall(call("Bash", "cargo test", json!({}), "ok")),
+            ),
+            item(2, None, ItemBody::Approval(request)),
+            item(
+                3,
+                None,
+                ItemBody::Thinking {
+                    text: "The column parser passes.".to_owned(),
+                },
+            ),
+        ];
+
+        assert_eq!(
+            matches(&items, "column"),
+            FoldMatches::from([
+                (FoldKey::Item(ItemId::new(3)), 1),
+                (FoldKey::Run(ItemId::new(1)), 1),
             ])
         );
     }
