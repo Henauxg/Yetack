@@ -38,6 +38,8 @@ use tempfile::TempDir;
 
 const WAIT: Duration = Duration::from_secs(15);
 const SESSION_ID: &str = "11111111-2222-3333-4444-555555555555";
+/// The file in an account's folder whose presence says it is signed in.
+const CREDENTIALS_FILE: &str = ".credentials.json";
 /// The fake `claude` records this first on its command line when it should carry on with a turn
 /// that was cut off.
 const RESUME_INTERRUPTED_TURN: &str = "CLAUDE_CODE_RESUME_INTERRUPTED_TURN=1";
@@ -2264,7 +2266,7 @@ async fn the_default_account_runs_without_the_variable_and_a_new_one_signs_in_be
     let agent = client.start(&setup.work(), "hello").await;
     client.says(agent, "Echo: hello").await;
     let before = client.accounts().await;
-    std::fs::write(setup.default_folder().join(".credentials.json"), "{}").unwrap();
+    std::fs::write(setup.default_folder().join(CREDENTIALS_FILE), "{}").unwrap();
     let after = client.accounts().await;
     let added = client
         .add_account("Client Work", None, CredentialSource::SignIn)
@@ -2521,7 +2523,7 @@ async fn an_agent_without_a_login_needs_you_until_its_account_signs_in() {
     // The login must be written after the failed turn, on a clock that counts milliseconds.
     tokio::time::sleep(Duration::from_millis(20)).await;
     std::fs::create_dir_all(&folder).unwrap();
-    std::fs::write(folder.join(".credentials.json"), "{}").unwrap();
+    std::fs::write(folder.join(CREDENTIALS_FILE), "{}").unwrap();
     client.ok(Request::AccountsList).await;
     let (_listing, catchup) = setup.connect_after(None).await;
     let Catchup::Snapshot(listed) = catchup else {
@@ -2541,6 +2543,96 @@ async fn an_agent_without_a_login_needs_you_until_its_account_signs_in() {
         "the wait ended before accounts.list answered"
     );
     assert_eq!(signed_in.status, AgentStatus::Idle);
+}
+
+/// A credentials file Claude Code can no longer use, as one whose OAuth session expired and could
+/// not be refreshed, is no sign-in: a turn failed on it after it was written.
+#[tokio::test]
+async fn a_login_a_turn_failed_on_after_it_was_written_is_no_sign_in() {
+    let setup = Setup::new();
+    let mut client = setup.connect().await;
+    let folder = setup.temp.path().join("claude-work");
+    std::fs::create_dir_all(&folder).unwrap();
+    std::fs::write(folder.join(CREDENTIALS_FILE), "{}").unwrap();
+    let work = client
+        .add_account("Work", Some(&folder), CredentialSource::SignIn)
+        .await;
+    // The turn must fail after the login was written, on a clock that counts milliseconds.
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    let agent = client
+        .start_with(&setup.work(), "nologin", work.account.id)
+        .await;
+    client
+        .wait_for(|event| match event {
+            Event::AgentUpdated(summary)
+                if summary.id == agent && summary.sign_in_wait == SignInWait::Waiting =>
+            {
+                Some(())
+            }
+            _ => None,
+        })
+        .await;
+
+    let listed = |accounts: ResponseBody| {
+        let ResponseBody::Accounts { accounts, .. } = accounts else {
+            panic!("expected the accounts");
+        };
+        accounts
+            .iter()
+            .find(|state| state.account.id == work.account.id)
+            .map(|state| state.sign_in)
+    };
+
+    let failed_on = listed(client.ok(Request::AccountsList).await);
+    // A new sign-in writes the file again.
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    std::fs::write(folder.join(CREDENTIALS_FILE), "{}").unwrap();
+    let signed_in_again = listed(client.ok(Request::AccountsList).await);
+
+    assert_eq!(failed_on, Some(SignIn::NotSignedIn));
+    assert_eq!(signed_in_again, Some(SignIn::SignedIn));
+}
+
+/// A turn of an account that uses the daemon's API key fails on the key, not on the folder's
+/// login, which stays signed in.
+#[tokio::test]
+async fn a_refused_api_key_leaves_the_folders_login_signed_in() {
+    let setup = Setup::new_with(
+        None,
+        DefaultFolder::Variable,
+        vec![("ANTHROPIC_API_KEY", "test-api-key")],
+    );
+    let mut client = setup.connect().await;
+    let folder = setup.temp.path().join("claude-keyed");
+    std::fs::create_dir_all(&folder).unwrap();
+    std::fs::write(folder.join(CREDENTIALS_FILE), "{}").unwrap();
+    let keyed = client
+        .add_account("Keyed", Some(&folder), CredentialSource::Environment)
+        .await;
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    let agent = client
+        .start_with(&setup.work(), "nologin", keyed.account.id)
+        .await;
+    client
+        .wait_for(|event| match event {
+            Event::AgentUpdated(summary)
+                if summary.id == agent && summary.sign_in_wait == SignInWait::Waiting =>
+            {
+                Some(())
+            }
+            _ => None,
+        })
+        .await;
+
+    let ResponseBody::Accounts { accounts, .. } = client.ok(Request::AccountsList).await else {
+        panic!("expected the accounts");
+    };
+    let sign_in = accounts
+        .iter()
+        .find(|state| state.account.id == keyed.account.id)
+        .map(|state| state.sign_in);
+
+    assert_eq!(sign_in, Some(SignIn::SignedIn));
 }
 
 /// The daemon checks the accounts' folders on its own: no client has to ask `accounts.list`.
@@ -2573,7 +2665,7 @@ async fn a_sign_in_ends_the_wait_and_tells_the_clients_without_a_check() {
     // The login must be written after the failed turn, on a clock that counts milliseconds.
     tokio::time::sleep(Duration::from_millis(20)).await;
     std::fs::create_dir_all(&folder).unwrap();
-    std::fs::write(folder.join(".credentials.json"), "{}").unwrap();
+    std::fs::write(folder.join(CREDENTIALS_FILE), "{}").unwrap();
     let mut accounts_changed = false;
     let mut signed_in = None;
     while !accounts_changed || signed_in.is_none() {
@@ -2592,6 +2684,52 @@ async fn a_sign_in_ends_the_wait_and_tells_the_clients_without_a_check() {
         signed_in.map(|summary| summary.status),
         Some(AgentStatus::Idle)
     );
+}
+
+/// A turn that fails on the login tells the clients that the account is no longer signed in,
+/// without a check from them.
+#[tokio::test]
+async fn a_turn_that_fails_on_the_login_tells_the_clients_without_a_check() {
+    let mut setup = Setup::new();
+    let folder = setup.temp.path().join("claude-work");
+    std::fs::create_dir_all(&folder).unwrap();
+    std::fs::write(folder.join(CREDENTIALS_FILE), "{}").unwrap();
+    let work = setup
+        .connect()
+        .await
+        .add_account("Work", Some(&folder), CredentialSource::SignIn)
+        .await;
+    // The new daemon's first check sees the account signed in, so only the failure tells.
+    setup.restart();
+    let mut client = setup.connect().await;
+    // The turn must fail after the login was written, on a clock that counts milliseconds.
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    let agent = client
+        .start_with(&setup.work(), "nologin", work.account.id)
+        .await;
+
+    let mut waits = false;
+    let mut accounts_changed = false;
+    while !waits || !accounts_changed {
+        match client.next_event().await.event {
+            Event::AccountsChanged { .. } => accounts_changed = true,
+            Event::AgentUpdated(summary)
+                if summary.id == agent && summary.sign_in_wait == SignInWait::Waiting =>
+            {
+                waits = true;
+            }
+            _ => {}
+        }
+    }
+    let ResponseBody::Accounts { accounts, .. } = client.ok(Request::AccountsList).await else {
+        panic!("expected the accounts");
+    };
+    let sign_in = accounts
+        .iter()
+        .find(|state| state.account.id == work.account.id)
+        .map(|state| state.sign_in);
+
+    assert_eq!(sign_in, Some(SignIn::NotSignedIn));
 }
 
 /// The app restarts this computer's background service with its own program this way: the daemon

@@ -107,6 +107,17 @@ impl LoginStore {
             (false, Self::KeychainOrFile) => SignIn::Unknown,
         }
     }
+
+    /// The sign-in, once a turn failed on the login after the credentials file was last written:
+    /// the file holds no login Claude Code can use. The Keychain, which the daemon cannot see,
+    /// may hold a newer one.
+    fn failed_on(self, sign_in: SignIn) -> SignIn {
+        match (sign_in, self) {
+            (SignIn::SignedIn, Self::File) => SignIn::NotSignedIn,
+            (SignIn::SignedIn, Self::KeychainOrFile) => SignIn::Unknown,
+            (SignIn::NotSignedIn | SignIn::Unknown, _) => sign_in,
+        }
+    }
 }
 
 /// The command that signs in to the account with `program`, the `claude` the daemon runs. The
@@ -136,6 +147,12 @@ pub(crate) fn login_written(account: &Account) -> Option<Timestamp> {
 /// its content: it blocks.
 pub(crate) fn sign_in_of(account: &Account) -> SignIn {
     LoginStore::CURRENT.sign_in(account.folder.join(CREDENTIALS_FILE).is_file())
+}
+
+/// The account's sign-in, once one of its agents' turns failed on the login after the credentials
+/// file was last written, as when Claude Code could not refresh an expired OAuth session.
+pub(crate) fn failed_sign_in(sign_in: SignIn) -> SignIn {
+    LoginStore::CURRENT.failed_on(sign_in)
 }
 
 /// The account, whether its folder holds a login, how to sign in to it with `program`, and its
@@ -258,6 +275,17 @@ mod tests {
         assert_eq!(LoginStore::File.sign_in(false), SignIn::NotSignedIn);
         assert_eq!(LoginStore::KeychainOrFile.sign_in(true), SignIn::SignedIn);
         assert_eq!(LoginStore::KeychainOrFile.sign_in(false), SignIn::Unknown);
+    }
+
+    #[test]
+    fn a_login_a_turn_failed_on_is_none_unless_the_keychain_may_hold_a_newer_one() {
+        let file = LoginStore::File;
+        let keychain = LoginStore::KeychainOrFile;
+
+        assert_eq!(file.failed_on(SignIn::SignedIn), SignIn::NotSignedIn);
+        assert_eq!(keychain.failed_on(SignIn::SignedIn), SignIn::Unknown);
+        assert_eq!(file.failed_on(SignIn::NotSignedIn), SignIn::NotSignedIn);
+        assert_eq!(keychain.failed_on(SignIn::Unknown), SignIn::Unknown);
     }
 
     #[test]

@@ -382,11 +382,12 @@ pub fn credentials_refused(state: &AppState, machine: MachineId, id: AccountId) 
             .is_some_and(|account| account.credentials == CredentialSource::Environment)
 }
 
-/// Whether "Send the message again" sends: the account signed in, a check found its login, or no
+/// Whether "Send the message again" sends: the account signed in since the turn failed, or no
 /// check can end the wait; the app holds the message, and the card has not sent it yet. No check
 /// ends the wait when the daemon cannot see the sign-in (a login in the macOS Keychain), or when
-/// the account's credentials come from the environment. A login the check finds from before the
-/// failure does not end the wait, but it may well work again: a refusal can pass.
+/// the account's credentials come from the environment. A login from before the failure keeps
+/// the wait: Claude Code failed on it, as on an OAuth session it could not refresh, and the same
+/// message would fail again at once.
 pub fn can_send_again(state: &AppState, entry: &AgentEntry, turn: &SignInTurn) -> bool {
     let id = entry.summary.account;
     let machine = MachineId::of(entry.id());
@@ -394,9 +395,7 @@ pub fn can_send_again(state: &AppState, entry: &AgentEntry, turn: &SignInTurn) -
     let cannot_tell = checked == Some(SignIn::Unknown)
         || account(state, machine, id)
             .is_some_and(|account| account.credentials == CredentialSource::Environment);
-    let signed_in = entry.summary.sign_in_wait == SignInWait::NotWaiting
-        || cannot_tell
-        || checked == Some(SignIn::SignedIn);
+    let signed_in = entry.summary.sign_in_wait == SignInWait::NotWaiting || cannot_tell;
     signed_in && turn.message.is_some() && entry.sent_again != Some(turn.turn_end)
 }
 
@@ -1927,10 +1926,10 @@ mod tests {
         assert_eq!(second, [], "the card sends the message once");
     }
 
-    /// A check that finds the login, written before the failed turn, does not end the wait: the
-    /// card still lets the message go again, since a refusal can pass.
+    /// A login written before the failed turn keeps the wait, even when a check finds it: Claude
+    /// Code failed on it, and the message would fail again at once. A new sign-in ends the wait.
     #[test]
-    fn the_message_goes_again_while_waiting_when_a_check_finds_the_login() {
+    fn a_login_from_before_the_failure_does_not_send_the_message_again() {
         let mut waiting = in_folder(1, "/work/app", work());
         waiting.sign_in_wait = SignInWait::Waiting;
         waiting.status = AgentStatus::NeedsYou;
@@ -1946,13 +1945,15 @@ mod tests {
             older_items: OlderItems::None,
         });
 
-        signed(&mut state, work(), SignIn::NotSignedIn);
-        let not_found = sends_again(&state, agent);
         signed(&mut state, work(), SignIn::SignedIn);
-        let found = sends_again(&state, agent);
+        let found_before = sends_again(&state, agent);
+        let entry = state.agents.get_mut(&agent).unwrap();
+        entry.summary.sign_in_wait = SignInWait::NotWaiting;
+        entry.summary.status = AgentStatus::Idle;
+        let signed_in_again = sends_again(&state, agent);
 
-        assert!(!not_found);
-        assert!(found);
+        assert!(!found_before);
+        assert!(signed_in_again);
     }
 
     #[test]

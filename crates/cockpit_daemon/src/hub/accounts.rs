@@ -1,18 +1,19 @@
 //! The accounts' requests, and what an agent gets from its account: its folder, its plan usage,
 //! and the notice that says how to sign in to it.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 
 use claude_protocol::RateLimitInfo;
 use cockpit_protocol::{
     Account, AccountAddParams, AccountChangeParams, AccountId, AccountPlanUsage, AccountState,
     AgentId, CredentialSource, EnvironmentCredentials, ErrorBody, ErrorCode, Event, ResponseBody,
+    SignIn, SignInWait,
 };
 
 use crate::accounts::{
     API_KEY_ENV, AUTH_TOKEN_ENV, AccountList, SignInShell, account_state, environment_credentials,
-    login_written, sign_in_command, sign_in_of,
+    failed_sign_in, login_written, sign_in_command, sign_in_of,
 };
 use crate::daemon_config::HOME_ENV;
 use crate::hub::input::{AccountLogin, HubInput, Reply, SignInCheck};
@@ -94,11 +95,15 @@ impl Hub {
     /// Ends the waits the logins end, then answers `accounts.list`.
     pub(super) fn accounts_checked(
         &mut self,
-        accounts: Vec<AccountState>,
+        mut accounts: Vec<AccountState>,
         logins: &[AccountLogin],
         reply: Reply,
     ) {
         self.end_sign_in_waits(logins);
+        let waited_on = self.accounts_waited_on();
+        for state in &mut accounts {
+            state.sign_in = usable(state.sign_in, waited_on.contains(&state.account.id));
+        }
         agents::respond(
             reply,
             Ok(ResponseBody::Accounts {
@@ -106,6 +111,26 @@ impl Hub {
                 environment_credentials: environment_credentials(),
             }),
         );
+    }
+
+    /// The accounts one of whose agents waits on a sign-in: its turn found no valid login after
+    /// the account's credentials file was last written, as when Claude Code could not refresh an
+    /// expired OAuth session. The wait ends once the file is written again. An account whose
+    /// agents get the daemon's API key or token is left out: its turns never tried the file.
+    fn accounts_waited_on(&self) -> BTreeSet<AccountId> {
+        let keyed = environment_credentials() == EnvironmentCredentials::Set;
+        let mut waited_on = BTreeSet::new();
+        for agent in self.agents.values() {
+            let id = agent.record.account;
+            let tries_the_file = !keyed
+                || self
+                    .account(id)
+                    .is_ok_and(|account| account.credentials == CredentialSource::SignIn);
+            if agent.view.summary().sign_in_wait == SignInWait::Waiting && tries_the_file {
+                waited_on.insert(id);
+            }
+        }
+        waited_on
     }
 
     /// Ends the wait of each agent whose account signed in after its turn found no login.
@@ -168,6 +193,11 @@ impl Hub {
             return;
         };
         self.end_sign_in_waits(&logins);
+        let waited_on = self.accounts_waited_on();
+        let sign_ins: BTreeMap<AccountId, SignIn> = sign_ins
+            .into_iter()
+            .map(|(account, sign_in)| (account, usable(sign_in, waited_on.contains(&account))))
+            .collect();
         let first = self.sign_ins.is_empty();
         let changed = !first
             && sign_ins
@@ -290,10 +320,13 @@ impl Hub {
             Err(error) => return agents::respond(reply, Err(error)),
         };
         let configured = self.config.claude_program.clone();
+        let waited_on = self.accounts_waited_on().contains(&account.id);
         tokio::spawn(async move {
             let state = tokio::task::spawn_blocking(move || {
                 let program = program::resolve(&configured).name;
-                account_state(account, SignInShell::CURRENT, &program)
+                let mut state = account_state(account, SignInShell::CURRENT, &program);
+                state.sign_in = usable(state.sign_in, waited_on);
+                state
             })
             .await;
             let result = match state {
@@ -305,9 +338,18 @@ impl Hub {
     }
 }
 
+/// What the account's sign-in is once its agents' turns are known.
+fn usable(sign_in: SignIn, waited_on: bool) -> SignIn {
+    if waited_on {
+        failed_sign_in(sign_in)
+    } else {
+        sign_in
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use cockpit_protocol::{Frame, SignIn};
+    use cockpit_protocol::Frame;
     use tokio::sync::mpsc;
 
     use super::*;

@@ -281,8 +281,9 @@ The default account and an account that an agent uses cannot be removed. Ids are
 The user signs in by running `claude auth login`, with `CLAUDE_CONFIG_DIR` set, in a terminal on the daemon's machine. The daemon writes this command for a POSIX shell, or for PowerShell on a Windows daemon, and names the program it runs (module `process::program`).
 On Windows, it names plain `claude` only when PowerShell's own lookup finds the same file: PowerShell runs an npm install's `claude.ps1` first, and its execution policy may refuse it.
 
-An account counts as signed in when `.credentials.json` exists in its folder. The daemon never opens the file.
-On macOS, the login lives in the Keychain, so a missing file means `unknown`.
+An account counts as signed in when `.credentials.json` exists in its folder, unless one of its agents waits on a sign-in: that agent's turn failed on the login after the file was last written, as when Claude Code could not refresh an expired OAuth session. The daemon never opens the file.
+The wait of an agent whose account takes the daemon's API key or token does not count: its turn never tried the file.
+On macOS, the login lives in the Keychain, so a missing file means `unknown`, and so does a file an agent waits on: a new sign-in may be in the Keychain.
 A Console or `apiKeyHelper` login may keep its key elsewhere, so the check can say `not_signed_in` although `claude` works.
 An API key never passes through the cockpit.
 
@@ -468,7 +469,7 @@ The daemon in the app has no socket to check (see [The daemon in the app](#the-d
 - **Accounts** (`state/accounts.rs`, `ui/accounts.rs`): with two accounts or more, each agent shows its account. Each viewer picks the accounts' colors, and the preferences keep them: the protocol carries none.
   - The app asks `accounts.list` once connected, after `AccountsChanged`, when an accounts or new agent dialog opens, and on "Check again". The daemon ends the sign-in waits that are over before it answers.
   - The new agent dialog starts on the account of the agent it copies (see "New agent dialog"). The folder never changes it. Remove is off for an account any agent uses.
-  - An agent that waits for its account's sign-in shows a card whose button sends the message once the account has signed in. It also sends while the agent waits when a check finds a login written before the failed turn, since that login may work again, or when no check would end the wait (`unknown`, `environment`).
+  - An agent that waits for its account's sign-in shows a card whose button sends the message once the account has signed in. It also sends while the agent waits when no check would end the wait (`unknown`, `environment`). A login written before the failed turn does not: Claude Code failed on it, and the message would fail again at once.
 - **Sidebar foot**: Accounts, Machines and the Settings gear, and nothing else.
 - **Grouping** (`state/grouping.rs`, `ui/grouping.rs`): the sidebar groups the agents by machine, by project, or not at all. By machine, the agents follow the daemon's order. Otherwise the app keeps its own order across machines in the preferences (`agent_order`, keyed by machine name and agent id), and a move sends no `agent.move`. A machine that does not answer says so under its header, or in a strip at the top when no header names it (`machine_status::strip_lines`).
 - **Projects** (`state/projects.rs`, `ui/projects_tab.rs`): a project belongs to this desktop and lives in `prefs.json`: a name, a color and rules. A rule is a repository, or a folder, where a trailing `*` holds every path that starts with the rest.
