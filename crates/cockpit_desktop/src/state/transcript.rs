@@ -438,6 +438,39 @@ mod tests {
     }
 
     #[test]
+    fn older_pages_start_from_live_items_then_from_each_page() {
+        let mut transcript = Transcript::default();
+        assert_eq!(transcript.loaded_from(), None);
+        for id in 50..=60 {
+            transcript.append(text(id, "live"));
+        }
+        assert_eq!(
+            transcript.loaded_from(),
+            Some(ItemId::new(50)),
+            "live items"
+        );
+
+        transcript.merge_page(HistoryPage {
+            items: (45..=60).map(|id| text(id, "page")).collect(),
+            older_items: OlderItems::Exist,
+            ancestors: vec![text(2, "subagent")],
+        });
+        assert_eq!(transcript.loaded_from(), Some(ItemId::new(45)), "a page");
+        transcript.merge_page(HistoryPage {
+            items: Vec::new(),
+            older_items: OlderItems::None,
+            ancestors: Vec::new(),
+        });
+
+        assert_eq!(
+            transcript.loaded_from(),
+            Some(ItemId::new(45)),
+            "an empty page"
+        );
+        assert_eq!(transcript.first_id(), Some(ItemId::new(2)));
+    }
+
+    #[test]
     fn trimming_keeps_the_subagent_calls_of_the_items_it_keeps() {
         let mut transcript = Transcript::default();
         let mut items: Vec<TranscriptItem> = (1..=310).map(|id| text(id, "item")).collect();
