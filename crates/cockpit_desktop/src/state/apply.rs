@@ -371,6 +371,7 @@ pub fn apply(
             None
         }
         Event::TranscriptChanged { agent, item } => {
+            let looked_at = state.ui.selected == Some(agent);
             file_reread::item_finished(state, agent, &item);
             file_tree::item_finished(state, agent, &item);
             if let ItemBody::Question(question) = &item.body
@@ -386,7 +387,7 @@ pub fn apply(
                 entry
                     .cards_leaving
                     .retain(|_, answered| now.duration_since(*answered) < CARD_EXIT);
-                if answers_a_waiting_request(&entry.transcript, &item) {
+                if looked_at && answers_a_waiting_request(&entry.transcript, &item) {
                     entry.cards_leaving.insert(item.id, now);
                 }
                 entry.note_call(&item, Instant::now());
@@ -1404,7 +1405,11 @@ mod tests {
 
     #[test]
     fn a_request_answered_while_shown_keeps_its_card_for_its_exit() {
-        let mut state = state_with(vec![summary(1, AgentStatus::NeedsYou)]);
+        let mut state = state_with(vec![
+            summary(1, AgentStatus::NeedsYou),
+            summary(3, AgentStatus::NeedsYou),
+        ]);
+        state.ui.selected = Some(AgentId::new(1));
         let request = |answer| TranscriptItem {
             id: ItemId::new(2),
             parent: None,
@@ -1425,23 +1430,25 @@ mod tests {
                 message: None,
             })
         };
-        if let Some(entry) = state.agents.get_mut(&AgentId::new(1)) {
+        for entry in state.agents.values_mut() {
             entry.transcript.append(request(AnswerState::Waiting));
         }
-        let change = |state: &mut AppState, answer| {
+        let change = |state: &mut AppState, agent: u32, answer| {
+            let agent = AgentId::new(agent);
             apply(
                 state,
                 &mut Drafts::default(),
                 record(Event::TranscriptChanged {
-                    agent: AgentId::new(1),
+                    agent,
                     item: request(answer),
                 }),
                 MachineId::THIS,
             );
-            state.agents[&AgentId::new(1)].cards_leaving_ids()
+            state.agents[&agent].cards_leaving_ids()
         };
 
-        let answered = change(&mut state, allowed());
+        let answered = change(&mut state, 1, allowed());
+        let away = change(&mut state, 3, allowed());
         let again = {
             state
                 .agents
@@ -1449,10 +1456,14 @@ mod tests {
                 .unwrap()
                 .cards_leaving
                 .clear();
-            change(&mut state, allowed())
+            change(&mut state, 1, allowed())
         };
 
         assert_eq!(answered, BTreeSet::from([ItemId::new(2)]));
+        assert!(
+            away.is_empty(),
+            "the chat shows another agent: no card leaves when it switches back"
+        );
         assert!(
             again.is_empty(),
             "an answer to a request already answered leaves no card"
