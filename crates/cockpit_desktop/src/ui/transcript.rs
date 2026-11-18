@@ -559,7 +559,7 @@ impl ChatView {
         let sign_in_notice = sign_in.as_ref().and_then(|turn| turn.notice);
         let sign_in_end = sign_in.as_ref().map(|turn| turn.turn_end);
         let waits_for_sign_in = entry.summary.sign_in_wait == SignInWait::Waiting;
-        let allowed = allowed_calls(&items, &loaded);
+        let allowed = allowed_calls(&items);
         let mut top_items = top_items(&items, &loaded, sign_in_notice);
         // A request you allowed shows on its call's line.
         top_items.retain(|item| !answered_on_its_call(item, &allowed));
@@ -2104,8 +2104,17 @@ fn tool_title(
     }
 }
 
-/// The calls you allowed when Claude Code asked, among the items the window holds.
-fn allowed_calls(items: &[&TranscriptItem], loaded: &BTreeSet<ItemId>) -> BTreeSet<ItemId> {
+/// The calls among `items` you allowed when Claude Code asked, which show the answer on their
+/// line: a call on its own row. A read, a search or a skill can share its row, and its request
+/// keeps its own line.
+fn allowed_calls(items: &[&TranscriptItem]) -> BTreeSet<ItemId> {
+    let alone: BTreeSet<ItemId> = items
+        .iter()
+        .filter(
+            |item| matches!(&item.body, ItemBody::ToolCall(call) if !tool_rows::shares_a_row(call)),
+        )
+        .map(|item| item.id)
+        .collect();
     items
         .iter()
         .filter_map(|item| match &item.body {
@@ -2117,7 +2126,7 @@ fn allowed_calls(items: &[&TranscriptItem], loaded: &BTreeSet<ItemId>) -> BTreeS
                     }),
                 tool_call: Some(call),
                 ..
-            }) if loaded.contains(call) => Some(*call),
+            }) if alone.contains(call) => Some(*call),
             _ => None,
         })
         .collect()
@@ -3103,14 +3112,18 @@ mod tests {
 
     #[test]
     fn a_request_you_allowed_shows_on_its_call_when_the_call_is_held() {
+        let command = item(
+            1,
+            None,
+            ItemBody::ToolCall(call("Bash", "cargo test", ToolCallStatus::Done)),
+        );
         let allowed_held = request(2, answered(ApprovalDecision::Allow), Some(1));
         let allowed_away = request(4, answered(ApprovalDecision::Allow), Some(3));
         let denied = request(5, answered(ApprovalDecision::Deny), Some(1));
         let waiting = request(6, AnswerState::Waiting, Some(1));
-        let items = [&allowed_held, &allowed_away, &denied, &waiting];
-        let loaded: BTreeSet<ItemId> = [1, 2, 4, 5, 6].into_iter().map(ItemId::new).collect();
+        let items = [&command, &allowed_held, &allowed_away, &denied, &waiting];
 
-        let allowed = allowed_calls(&items, &loaded);
+        let allowed = allowed_calls(&items);
 
         assert_eq!(allowed, BTreeSet::from([ItemId::new(1)]));
         assert!(answered_on_its_call(&allowed_held, &allowed));
@@ -3120,6 +3133,43 @@ mod tests {
         );
         assert!(!answered_on_its_call(&denied, &allowed));
         assert!(!answered_on_its_call(&waiting, &allowed));
+    }
+
+    /// A read joins the reads around it, a skill's call its instructions, and a subagent shows its
+    /// own line: none of them shows the tag, so their requests keep their own line.
+    #[test]
+    fn a_request_you_allowed_keeps_its_line_when_its_call_shares_a_row() {
+        let first_read = item(
+            1,
+            None,
+            ItemBody::ToolCall(call("Read", "src/a.rs", ToolCallStatus::Done)),
+        );
+        let read = item(
+            2,
+            None,
+            ItemBody::ToolCall(call("Read", "src/b.rs", ToolCallStatus::Done)),
+        );
+        let skill = item(
+            4,
+            None,
+            ItemBody::ToolCall(call("Skill", "review", ToolCallStatus::Done)),
+        );
+        let subagent = item(
+            6,
+            None,
+            ItemBody::Subagent(call("Agent", "Explore", ToolCallStatus::Running)),
+        );
+        let command = item(
+            8,
+            None,
+            ItemBody::ToolCall(call("Bash", "cargo test", ToolCallStatus::Running)),
+        );
+        let allow = |id: u32, call: u32| request(id, answered(ApprovalDecision::Allow), Some(call));
+        let requests = [allow(3, 2), allow(5, 4), allow(7, 6), allow(9, 8)];
+        let mut items = vec![&first_read, &read, &skill, &subagent, &command];
+        items.extend(requests.iter());
+
+        assert_eq!(allowed_calls(&items), BTreeSet::from([ItemId::new(8)]));
     }
 
     #[test]
