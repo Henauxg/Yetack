@@ -510,7 +510,7 @@ impl ChatInputs {
                 .in_place(SendingPlace::Chat)
                 .cloned()
                 .collect(),
-            leaving: entry.cards_leaving.keys().copied().collect(),
+            leaving: entry.cards_leaving_ids(),
         })
     }
 }
@@ -562,11 +562,11 @@ impl ChatView {
         let sign_in_notice = sign_in.as_ref().and_then(|turn| turn.notice);
         let sign_in_end = sign_in.as_ref().map(|turn| turn.turn_end);
         let waits_for_sign_in = entry.summary.sign_in_wait == SignInWait::Waiting;
-        let leaving = entry.cards_leaving_ids();
         let TopItems {
             items: top_items,
             allowed,
-        } = TopItems::of(&items, &loaded, sign_in_notice, &leaving);
+            leaving,
+        } = TopItems::of(&items, &loaded, sign_in_notice, &entry.cards_leaving_ids());
         let divider = actions::new_divider(state, agent);
         let top_rows = tool_rows::rows(&top_items, &awaiting, divider);
         let started: Option<String> = top_items
@@ -809,9 +809,10 @@ pub fn TranscriptView(in_view: Signal<Option<InView>>) -> Element {
     });
     let inputs = use_memo(move || ChatInputs::of(&cockpit.state.read()));
     // A request answered a moment ago keeps its card while it shrinks, then the chat drops it.
-    let cards_leave = use_memo(move || inputs().is_some_and(|inputs| !inputs.leaving.is_empty()));
+    // Each card that starts to leave starts a wait of its own.
+    let cards_leaving = use_memo(move || inputs().map(|inputs| inputs.leaving).unwrap_or_default());
     use_effect(move || {
-        if cards_leave() {
+        if !cards_leaving.read().is_empty() {
             spawn(async move {
                 tokio::time::sleep(CARD_EXIT).await;
                 cockpit.update(|state| {
@@ -1124,7 +1125,7 @@ enum RowView {
         /// The item is a call you allowed when Claude Code asked: its line says so.
         allowed: bool,
         /// The item is a request answered a moment ago, whose card is leaving.
-        leaving: bool,
+        leaving: Option<CardLeaves>,
         /// The item is the end of a turn that found no login: it shows as the sign-in card.
         sign_in_card: bool,
     },
@@ -1143,7 +1144,7 @@ impl RowView {
         children: &Children<'_>,
         awaiting: &BTreeSet<ItemId>,
         allowed: &BTreeSet<ItemId>,
-        leaving: &BTreeSet<ItemId>,
+        leaving: &BTreeMap<ItemId, CardLeaves>,
         sign_in_end: Option<ItemId>,
     ) -> Self {
         match row {
@@ -1152,7 +1153,7 @@ impl RowView {
                 nested: subtree(children, item.id),
                 awaits_approval: awaiting.contains(&item.id),
                 allowed: allowed.contains(&item.id),
-                leaving: leaving.contains(&item.id),
+                leaving: leaving.get(&item.id).copied(),
                 sign_in_card: Some(item.id) == sign_in_end,
             },
             Row::Skill { call, instructions } => Self::Skill {
@@ -1389,6 +1390,15 @@ pub(super) fn top_items<'item>(
     TopItems::of(items, loaded, sign_in_notice, &BTreeSet::new()).items
 }
 
+/// What takes the place of a request's card while it shrinks away.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CardLeaves {
+    /// Nothing: its call's line says you allowed it, or it shows in its subagent.
+    Nothing,
+    /// The request's line, which unfolds as the card shrinks.
+    Line,
+}
+
 /// The items the chat shows at its top level. A request you allowed shows on its call's line, not
 /// on its own.
 struct TopItems<'item> {
@@ -1396,6 +1406,8 @@ struct TopItems<'item> {
     items: Vec<&'item TranscriptItem>,
     /// The calls among them whose line says you allowed them.
     allowed: BTreeSet<ItemId>,
+    /// The requests among them whose card is leaving, with what takes its place.
+    leaving: BTreeMap<ItemId, CardLeaves>,
 }
 
 impl<'item> TopItems<'item> {
@@ -1409,13 +1421,30 @@ impl<'item> TopItems<'item> {
         let mut top: Vec<&TranscriptItem> = items
             .iter()
             .copied()
-            .filter(|item| shows_at_top(item, loaded) && Some(item.id) != sign_in_notice)
+            .filter(|item| {
+                (shows_at_top(item, loaded) || leaving.contains(&item.id))
+                    && Some(item.id) != sign_in_notice
+            })
             .collect();
         let allowed = allowed_calls(&top);
-        top.retain(|item| leaving.contains(&item.id) || !answered_on_its_call(item, &allowed));
+        let leaving: BTreeMap<ItemId, CardLeaves> = top
+            .iter()
+            .filter(|item| leaving.contains(&item.id))
+            .map(|item| {
+                let line = shows_at_top(item, loaded) && !answered_on_its_call(item, &allowed);
+                let leaves = if line {
+                    CardLeaves::Line
+                } else {
+                    CardLeaves::Nothing
+                };
+                (item.id, leaves)
+            })
+            .collect();
+        top.retain(|item| leaving.contains_key(&item.id) || !answered_on_its_call(item, &allowed));
         Self {
             items: top,
             allowed,
+            leaving,
         }
     }
 }
@@ -1548,6 +1577,18 @@ fn TranscriptRow(
 ) -> Element {
     let item_id = id;
     let id = chat_scroll::entry_id(agent, item_id);
+    // A card that leaves alone takes its row and the column's gap above it.
+    let class = if matches!(
+        view,
+        RowView::Item {
+            leaving: Some(CardLeaves::Nothing),
+            ..
+        }
+    ) {
+        format!("{ENTRY_CLASS} row-leaving")
+    } else {
+        ENTRY_CLASS.to_owned()
+    };
     let view = match view {
         RowView::Item {
             sign_in_card: true, ..
@@ -1592,7 +1633,7 @@ fn TranscriptRow(
         None => view,
     };
     rsx! {
-        div { id, class: ENTRY_CLASS,
+        div { id, class,
             if new_above {
                 NewDivider {}
             }
@@ -1684,9 +1725,9 @@ pub fn ItemView(
     /// Whether the item is a call you allowed when Claude Code asked.
     #[props(default)]
     allowed: bool,
-    /// Whether the item is a request answered a moment ago, whose card is leaving.
+    /// For a request answered a moment ago, whose card is leaving: what takes its place.
     #[props(default)]
-    leaving: bool,
+    leaving: Option<CardLeaves>,
     /// A message whose time the next one, sent at the same minute, shows.
     #[props(default)]
     hides_time: bool,
@@ -1716,11 +1757,26 @@ pub fn ItemView(
         ItemBody::Approval(approval) if approval.answer == AnswerState::Waiting => rsx! {
             ApprovalCard { agent, folder, approval }
         },
-        // The card shrinks away, so the rows around it do not jump.
-        ItemBody::Approval(approval) if leaving => rsx! {
-            div { class: "card-leaving",
+        // The card shrinks away, and the request's line unfolds above it, so the rows around them
+        // do not jump.
+        ItemBody::Approval(approval) if leaving == Some(CardLeaves::Line) => rsx! {
+            div { class: "card-to-line",
+                div { class: "line-arriving",
+                    div { class: "line-arriving-body",
+                        ApprovalLine { agent, id, folder: folder.clone(), approval: approval.clone() }
+                    }
+                }
+                div { class: "card-leaving", inert: true,
+                    div { class: "card-leaving-body",
+                        ApprovalCard { agent, folder, approval, leaving: true }
+                    }
+                }
+            }
+        },
+        ItemBody::Approval(approval) if leaving.is_some() => rsx! {
+            div { class: "card-leaving", inert: true,
                 div { class: "card-leaving-body",
-                    ApprovalCard { agent, folder, approval }
+                    ApprovalCard { agent, folder, approval, leaving: true }
                 }
             }
         },
@@ -3269,6 +3325,51 @@ mod tests {
         assert_eq!(allowed_calls(&items), BTreeSet::from([ItemId::new(8)]));
     }
 
+    /// A subagent's request shows at the top while it waits: answered, its card leaves from there.
+    /// A denied request's line takes the place of its card.
+    #[test]
+    fn a_request_answered_a_moment_ago_keeps_its_row_until_its_card_left() {
+        let command = item(
+            1,
+            None,
+            ItemBody::ToolCall(call("Bash", "cargo test", ToolCallStatus::Running)),
+        );
+        let allowed = request(2, answered(ApprovalDecision::Allow), Some(1));
+        let subagent = item(
+            3,
+            None,
+            ItemBody::Subagent(call("Agent", "Explore", ToolCallStatus::Running)),
+        );
+        let nested = TranscriptItem {
+            parent: Some(ItemId::new(3)),
+            ..request(4, answered(ApprovalDecision::Allow), None)
+        };
+        let denied = request(5, answered(ApprovalDecision::Deny), Some(1));
+        let items = [&command, &allowed, &subagent, &nested, &denied];
+        let loaded: BTreeSet<ItemId> = items.iter().map(|item| item.id).collect();
+        let top = |leaving: &[u32]| {
+            let leaving = leaving.iter().copied().map(ItemId::new).collect();
+            let top = TopItems::of(&items, &loaded, None, &leaving);
+            let ids: Vec<u32> = top.items.iter().map(|item| item.id.get()).collect();
+            (ids, top.leaving)
+        };
+
+        let (ids, leaving) = top(&[2, 4, 5]);
+        let (ids_after, leaving_after) = top(&[]);
+
+        assert_eq!(ids, [1, 2, 3, 4, 5]);
+        assert_eq!(
+            leaving,
+            BTreeMap::from([
+                (ItemId::new(2), CardLeaves::Nothing),
+                (ItemId::new(4), CardLeaves::Nothing),
+                (ItemId::new(5), CardLeaves::Line),
+            ])
+        );
+        assert_eq!(ids_after, [1, 3, 5]);
+        assert!(leaving_after.is_empty());
+    }
+
     #[test]
     fn a_request_is_tagged_with_what_became_of_it() {
         assert_eq!(Answer::of(&AnswerState::Waiting), None);
@@ -3865,7 +3966,7 @@ mod tests {
             &Children::new(),
             &awaiting,
             &BTreeSet::new(),
-            &BTreeSet::new(),
+            &BTreeMap::new(),
             None,
         );
 

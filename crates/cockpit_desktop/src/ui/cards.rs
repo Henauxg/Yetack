@@ -61,10 +61,23 @@ fn card_class(waiting: bool, kind: &str) -> String {
 }
 
 #[component]
-pub fn ApprovalCard(agent: AgentId, folder: PathBuf, approval: Approval) -> Element {
+pub fn ApprovalCard(
+    agent: AgentId,
+    folder: PathBuf,
+    approval: Approval,
+    /// The request was answered a moment ago and its card shrinks away. It keeps the look it had
+    /// once its answer went, so that its content does not change height as it starts to shrink.
+    #[props(default)]
+    leaving: bool,
+) -> Element {
     let cockpit: Cockpit = use_context();
     let waiting = approval.answer == AnswerState::Waiting;
     let sent = use_answer_sent(agent, &approval.pending, waiting);
+    let (waiting, sent) = if leaving {
+        (true, true)
+    } else {
+        (waiting, sent)
+    };
     let heading = if approval.tool == COMMAND_TOOL {
         "Claude asks to run a command".to_owned()
     } else if let Some(edit) = &approval.edit {
@@ -103,6 +116,7 @@ pub fn ApprovalCard(agent: AgentId, folder: PathBuf, approval: Approval) -> Elem
         .as_ref()
         .is_some_and(|edit| edit.texts == EditTexts::TooLarge);
     let outcome = match &approval.answer {
+        _ if leaving => None,
         AnswerState::Waiting => None,
         AnswerState::Answered(answer) => Some(match (answer.decision, &answer.message) {
             (ApprovalDecision::Allow, _) => "You allowed it.".to_owned(),

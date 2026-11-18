@@ -3267,14 +3267,16 @@ html.reordering * {
 .step {
   /* From the step's top to its dot's: the dot sits in the middle of a 13 or 14 px first line. */
   --dot-top: 7px;
+  /* A card's first line sits below its padding. */
+  --card-dot-top: 21px;
   --step: var(--dim);
   position: relative;
   padding-left: 22px;
 }
 
-/* A card's first line sits below its padding. */
-.step:has(> .card) {
-  --dot-top: 21px;
+.step:has(> .card),
+.step:has(> .card-leaving) {
+  --dot-top: var(--card-dot-top);
 }
 
 .step.step-running {
@@ -3486,23 +3488,52 @@ html.reordering * {
   color: var(--muted);
 }
 
-/* A request answered a moment ago: its card shrinks away, closing the column's gap above it. */
+/* A request answered a moment ago: its card shrinks away. Alone, it takes its row and the column's
+   gap above it, and its dot fades. With the request's line, which unfolds above it in the same
+   time and easing, the row's height changes in one move, and the dot rises to the line. */
 .card-leaving {
-  --fold-gap: 14px;
+  --fold-gap: 0px;
   display: grid;
   grid-template-rows: 1fr;
   animation: line-fold-out var(--motion-out) var(--ease-in) forwards;
   pointer-events: none;
 }
 
-.card-leaving-body {
+/* The row's top margin goes from the entry's -6px to -20px, closing the column's 14px gap. */
+.transcript-entry.row-leaving {
+  animation: row-gap-out var(--motion-out) var(--ease-in) forwards;
+}
+
+@keyframes row-gap-out {
+  to {
+    margin-top: -20px;
+  }
+}
+
+.line-arriving {
+  --fold-gap: 0px;
+  display: grid;
+  grid-template-rows: 1fr;
+  animation: line-fold-in var(--motion-out) var(--ease-in) backwards;
+}
+
+.card-leaving-body,
+.line-arriving-body {
   min-height: 0;
   overflow: hidden;
 }
 
-@media (prefers-reduced-motion: reduce) {
-  .card-leaving {
-    animation: none;
+.step:has(> .card-leaving) > .step-dot {
+  animation: fade-out var(--motion-out) var(--ease-in) forwards;
+}
+
+.step:has(> .card-to-line) > .step-dot {
+  animation: dot-rise var(--motion-out) var(--ease-in) backwards;
+}
+
+@keyframes dot-rise {
+  from {
+    top: var(--card-dot-top);
   }
 }
 
