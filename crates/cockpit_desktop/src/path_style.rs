@@ -211,7 +211,8 @@ impl PathStyle {
         }
     }
 
-    fn same_root(self, left: &str, right: &str) -> bool {
+    /// Whether two paths start with the same root, both none for two relative paths.
+    pub fn same_root(self, left: &str, right: &str) -> bool {
         let root = |text: &str| {
             let length = self.root_len(text).unwrap_or(0);
             let root = text.get(..length).unwrap_or_default();
