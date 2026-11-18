@@ -71,8 +71,9 @@ fn page_within(
         let encoded = encoded_size(ancestor);
         let stand_in = (encoded > limits.item_bytes).then(|| placeholder(ancestor, encoded));
         let size = stand_in.as_ref().map_or(encoded, encoded_size);
+        // A smaller call after one that does not fit may still fit.
         if bytes.saturating_add(size) > limits.page_bytes {
-            break;
+            continue;
         }
         bytes = bytes.saturating_add(size);
         ancestors.push(stand_in.unwrap_or_else(|| ancestor.clone()));
@@ -181,6 +182,29 @@ mod tests {
         assert_eq!(page.older_items, OlderItems::Exist);
         assert_eq!(ids(&older), [7, 8, 9]);
         assert!(older.ancestors.is_empty());
+    }
+
+    #[test]
+    fn a_subagent_call_past_the_budget_leaves_room_for_a_smaller_one() {
+        // Two subagents started early, at 2 and 3: 5 runs under 2, whose call is large, and 6
+        // under 3.
+        let mut items = items(6);
+        items[1] = notice(2, "x".repeat(500));
+        for (id, parent) in [(5, 2), (6, 3)] {
+            if let Some(item) = items.get_mut(id - 1) {
+                item.parent = Some(ItemId::new(parent));
+            }
+        }
+        let fits = encoded_size(&items[4]) + encoded_size(&items[5]) + encoded_size(&items[2]);
+        let limits = Limits {
+            page_bytes: fits,
+            item_bytes: MAX_ITEM_BYTES,
+        };
+
+        let page = page_within(&items, None, 2, limits);
+
+        assert_eq!(ids(&page), [5, 6]);
+        assert_eq!(page.ancestors, items[2..3]);
     }
 
     #[test]
