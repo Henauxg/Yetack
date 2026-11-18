@@ -897,12 +897,13 @@ pub fn TranscriptView(in_view: Signal<Option<InView>>) -> Element {
         };
         let (agent, opened) = *timed.peek();
         let rows = view.row_ids.len();
+        let drawn = view.early.len() + view.top.len();
         if agent != Some(view.agent) {
             timed.set((Some(view.agent), view.named));
-            perf::chat_drawn(view.top.len(), rows, ChatStage::First);
+            perf::chat_drawn(drawn, rows, ChatStage::First);
         } else if view.named && !opened {
             timed.set((Some(view.agent), true));
-            perf::chat_drawn(view.top.len(), rows, ChatStage::Opened);
+            perf::chat_drawn(drawn, rows, ChatStage::Opened);
         }
     });
     let new_agent_keys = use_memo(move || {
