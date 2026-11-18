@@ -3486,6 +3486,41 @@ html.reordering * {
   color: var(--muted);
 }
 
+/* What you answered when Claude Code asked, on the call's line. */
+.answer-tag {
+  flex: none;
+  padding: 0 5px;
+  border: 1px solid var(--line-strong);
+  border-radius: 4px;
+  font-size: 10.5px;
+  line-height: 15px;
+  color: var(--muted);
+}
+
+.answer-tag.allowed {
+  border-color: rgba(74, 194, 107, 0.35);
+  color: var(--green);
+}
+
+.answer-tag.denied {
+  border-color: rgba(244, 112, 103, 0.35);
+  color: var(--red);
+}
+
+/* What an answered request asked about: its first line, cut to the line. */
+.approval-asked {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.approval-denial {
+  margin: 6px 0 0;
+  font-size: 12px;
+  color: var(--muted);
+}
+
 /* Where a call's file is, after its name: dim, and cut at its end when the line is narrow. */
 .call-folder {
   flex: 0 1 auto;

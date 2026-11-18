@@ -9,8 +9,9 @@ use std::time::{Duration, SystemTime};
 
 use chrono::NaiveDate;
 use cockpit_protocol::{
-    AgentId, AgentStatus, AnswerState, EditTexts, ItemBody, ItemId, NoticeKind, SignInWait,
-    Timestamp, ToolCall, ToolCallStatus, TranscriptItem, TurnEnd, TurnOutcome, UserMessage,
+    AgentId, AgentStatus, AnswerState, Approval, ApprovalAnswer, ApprovalDecision, EditTexts,
+    ItemBody, ItemId, NoticeKind, SignInWait, Timestamp, ToolCall, ToolCallStatus, TranscriptItem,
+    TurnEnd, TurnOutcome, UserMessage,
 };
 use dioxus::prelude::*;
 use serde::Serialize;
@@ -558,7 +559,10 @@ impl ChatView {
         let sign_in_notice = sign_in.as_ref().and_then(|turn| turn.notice);
         let sign_in_end = sign_in.as_ref().map(|turn| turn.turn_end);
         let waits_for_sign_in = entry.summary.sign_in_wait == SignInWait::Waiting;
-        let top_items = top_items(&items, &loaded, sign_in_notice);
+        let allowed = allowed_calls(&items, &loaded);
+        let mut top_items = top_items(&items, &loaded, sign_in_notice);
+        // A request you allowed shows on its call's line.
+        top_items.retain(|item| !answered_on_its_call(item, &allowed));
         let divider = actions::new_divider(state, agent);
         let top_rows = tool_rows::rows(&top_items, &awaiting, divider);
         let started: Option<String> = top_items
@@ -610,7 +614,7 @@ impl ChatView {
                 hides_time: grouped.contains(&row.first().id),
                 new_above: divider
                     .is_some_and(|divider| row.items().iter().any(|item| item.id == divider)),
-                view: RowView::of(row, &children, &awaiting, sign_in_end),
+                view: RowView::of(row, &children, &awaiting, &allowed, sign_in_end),
                 step: states
                     .get(index)
                     .copied()
@@ -1096,6 +1100,8 @@ enum RowView {
         item: TranscriptItem,
         nested: Vec<TranscriptItem>,
         awaits_approval: bool,
+        /// The item is a call you allowed when Claude Code asked: its line says so.
+        allowed: bool,
         /// The item is the end of a turn that found no login: it shows as the sign-in card.
         sign_in_card: bool,
     },
@@ -1113,6 +1119,7 @@ impl RowView {
         row: &Row<'_>,
         children: &Children<'_>,
         awaiting: &BTreeSet<ItemId>,
+        allowed: &BTreeSet<ItemId>,
         sign_in_end: Option<ItemId>,
     ) -> Self {
         match row {
@@ -1120,6 +1127,7 @@ impl RowView {
                 item: (*item).clone(),
                 nested: subtree(children, item.id),
                 awaits_approval: awaiting.contains(&item.id),
+                allowed: allowed.contains(&item.id),
                 sign_in_card: Some(item.id) == sign_in_end,
             },
             Row::Skill { call, instructions } => Self::Skill {
@@ -1278,10 +1286,12 @@ impl Step {
 /// Whether a row is as small as a tool call: one call, an edit, a run of reads, a skill, a
 /// thinking, or a subagent's line.
 fn is_call(row: &Row<'_>) -> bool {
-    matches!(
-        row.first().body,
-        ItemBody::ToolCall(_) | ItemBody::Thinking { .. } | ItemBody::Subagent(_)
-    )
+    match &row.first().body {
+        ItemBody::ToolCall(_) | ItemBody::Thinking { .. } | ItemBody::Subagent(_) => true,
+        // Answered, a request shows as one line, as a call does.
+        ItemBody::Approval(approval) => approval.answer != AnswerState::Waiting,
+        _ => false,
+    }
 }
 
 /// The class a call-sized row's kind adds to its step.
@@ -1496,9 +1506,10 @@ fn TranscriptRow(
             item,
             nested,
             awaits_approval,
+            allowed,
             ..
         } => rsx! {
-            ItemView { agent, folder, item, nested, awaits_approval, hides_time }
+            ItemView { agent, folder, item, nested, awaits_approval, allowed, hides_time }
         },
         RowView::Skill {
             item:
@@ -1617,6 +1628,9 @@ pub fn ItemView(
     nested: Vec<TranscriptItem>,
     /// Whether the item is a running tool call whose approval card waits for an answer.
     awaits_approval: bool,
+    /// Whether the item is a call you allowed when Claude Code asked.
+    #[props(default)]
+    allowed: bool,
     /// A message whose time the next one, sent at the same minute, shows.
     #[props(default)]
     hides_time: bool,
@@ -1635,16 +1649,19 @@ pub fn ItemView(
             ThinkingView { agent, id, text }
         },
         ItemBody::ToolCall(call) if call.edit.is_some() => rsx! {
-            EditView { agent, id, folder, stage: CallStage::new(&call, awaits_approval), call }
+            EditView { agent, id, folder, stage: CallStage::new(&call, awaits_approval), call, allowed }
         },
         ItemBody::ToolCall(call) => rsx! {
-            ToolView { agent, id, folder, stage: CallStage::new(&call, awaits_approval), call }
+            ToolView { agent, id, folder, stage: CallStage::new(&call, awaits_approval), call, allowed }
         },
         ItemBody::Subagent(call) => rsx! {
             SubagentView { agent, folder, id, call, nested }
         },
-        ItemBody::Approval(approval) => rsx! {
+        ItemBody::Approval(approval) if approval.answer == AnswerState::Waiting => rsx! {
             ApprovalCard { agent, folder, approval }
+        },
+        ItemBody::Approval(approval) => rsx! {
+            ApprovalLine { agent, id, folder, approval }
         },
         ItemBody::Question(question) => rsx! {
             QuestionCard { agent, item: id, question, place: CardPlace::Chat }
@@ -2087,6 +2104,129 @@ fn tool_title(
     }
 }
 
+/// The calls you allowed when Claude Code asked, among the items the window holds.
+fn allowed_calls(items: &[&TranscriptItem], loaded: &BTreeSet<ItemId>) -> BTreeSet<ItemId> {
+    items
+        .iter()
+        .filter_map(|item| match &item.body {
+            ItemBody::Approval(Approval {
+                answer:
+                    AnswerState::Answered(ApprovalAnswer {
+                        decision: ApprovalDecision::Allow,
+                        ..
+                    }),
+                tool_call: Some(call),
+                ..
+            }) if loaded.contains(call) => Some(*call),
+            _ => None,
+        })
+        .collect()
+}
+
+/// Whether the item is a request you allowed whose call shows the answer on its line.
+fn answered_on_its_call(item: &TranscriptItem, allowed: &BTreeSet<ItemId>) -> bool {
+    matches!(
+        &item.body,
+        ItemBody::Approval(Approval {
+            answer: AnswerState::Answered(ApprovalAnswer {
+                decision: ApprovalDecision::Allow,
+                ..
+            }),
+            tool_call: Some(call),
+            ..
+        }) if allowed.contains(call)
+    )
+}
+
+/// What became of a request, as its tag says it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Answer {
+    Allowed,
+    Denied,
+    /// Claude Code withdrew the request, after an interrupt or when its process ended.
+    Withdrawn,
+}
+
+impl Answer {
+    fn of(answer: &AnswerState<ApprovalAnswer>) -> Option<Self> {
+        match answer {
+            AnswerState::Waiting => None,
+            AnswerState::Answered(ApprovalAnswer {
+                decision: ApprovalDecision::Allow,
+                ..
+            }) => Some(Self::Allowed),
+            AnswerState::Answered(ApprovalAnswer {
+                decision: ApprovalDecision::Deny,
+                ..
+            }) => Some(Self::Denied),
+            AnswerState::Cancelled => Some(Self::Withdrawn),
+        }
+    }
+}
+
+/// A small tag on a call's line: whether you allowed or denied what Claude Code asked.
+#[component]
+fn AnswerTag(answer: Answer) -> Element {
+    let (class, text) = match answer {
+        Answer::Allowed => ("answer-tag allowed", "you allowed"),
+        Answer::Denied => ("answer-tag denied", "you denied"),
+        Answer::Withdrawn => ("answer-tag", "withdrawn"),
+    };
+    rsx! {
+        span { class, "{text}" }
+    }
+}
+
+/// A request Claude Code no longer waits on, whose call does not show its answer: one line with
+/// the tool, the answer and what it asked about. A click shows the whole request.
+#[component]
+fn ApprovalLine(agent: AgentId, id: ItemId, folder: PathBuf, approval: Approval) -> Element {
+    let (open, decided) = use_call_fold(agent, id);
+    let Some(answer) = Answer::of(&approval.answer) else {
+        return rsx! {};
+    };
+    let asked = match &approval.edit {
+        Some(edit) => file_edits::call_path(&folder, &edit.path).name,
+        None => approval
+            .summary
+            .lines()
+            .next()
+            .unwrap_or_default()
+            .to_owned(),
+    };
+    let denial = match &approval.answer {
+        AnswerState::Answered(ApprovalAnswer {
+            message: Some(message),
+            ..
+        }) => Some(message.clone()),
+        _ => None,
+    };
+    let whole = match &approval.edit {
+        Some(edit) => file_edits::shown_path(&folder, &edit.path),
+        None => approval.summary.clone(),
+    };
+    rsx! {
+        div { class: "tool-call",
+            div {
+                class: "tool-head {CALL_LINE_CLASS}",
+                onclick: move |_| decided.set(!open),
+                span { class: "tool-name", "{approval.tool}" }
+                AnswerTag { answer }
+                code { class: "tool-summary approval-asked", "{asked}" }
+                CallFold { open, decided }
+            }
+            if open {
+                div { class: decided.body_class("tool-io"),
+                    IoRow { kind: IoKind::In, text: whole, fold: FoldEnd::First }
+                    if let Some(denial) = denial {
+                        p { class: "approval-denial", "You said: {denial}" }
+                    }
+                }
+            }
+        }
+    }
+}
+
 /// Where a call's file is, dim after its name, and its whole path on hover. Nothing for a file at
 /// the top of the agent's folder.
 fn call_folder(folder: &str, path: &Path) -> Element {
@@ -2504,6 +2644,9 @@ fn ToolView(
     folder: PathBuf,
     call: ToolCall,
     stage: CallStage,
+    /// You allowed the call when Claude Code asked.
+    #[props(default)]
+    allowed: bool,
 ) -> Element {
     let (open, decided) = use_call_fold(agent, id);
     let shape = ToolShape::new(&call);
@@ -2536,6 +2679,9 @@ fn ToolView(
                     }
                 },
                 {tool_title(agent, &folder, &call, &shape, layout)}
+                if allowed {
+                    AnswerTag { answer: Answer::Allowed }
+                }
                 if stage == CallStage::Running {
                     RunningMeta { agent, item: id }
                 } else if !meta.is_empty() {
@@ -2569,6 +2715,9 @@ fn EditView(
     folder: PathBuf,
     call: ToolCall,
     stage: CallStage,
+    /// You allowed the edit when Claude Code asked.
+    #[props(default)]
+    allowed: bool,
 ) -> Element {
     let cockpit: Cockpit = use_context();
     let (open, decided) = use_call_fold(agent, id);
@@ -2631,6 +2780,9 @@ fn EditView(
                 span { class: "tool-name", "{call.tool}" }
                 button { class: "path-link mono", onclick: open_file, "{shown.name}" }
                 {call_folder(&shown.folder, &edit.path)}
+                if allowed {
+                    AnswerTag { answer: Answer::Allowed }
+                }
                 match meta {
                     EditMeta::Stage(words) => rsx! {
                         span { class: "tool-meta", "{words}" }
@@ -2923,6 +3075,65 @@ mod tests {
             (None, "A background task ended")
         );
         assert_eq!(task_label(" \"Fix\" ended"), (None, " \"Fix\" ended"));
+    }
+
+    fn request(id: u32, answer: AnswerState<ApprovalAnswer>, call: Option<u32>) -> TranscriptItem {
+        TranscriptItem {
+            id: ItemId::new(id),
+            parent: None,
+            body: ItemBody::Approval(Approval {
+                pending: PendingId::new(format!("request-{id}")),
+                tool: "Bash".to_owned(),
+                summary: "cargo test".to_owned(),
+                input: Value::Null,
+                edit: None,
+                reason: None,
+                answer,
+                tool_call: call.map(ItemId::new),
+            }),
+        }
+    }
+
+    fn answered(decision: ApprovalDecision) -> AnswerState<ApprovalAnswer> {
+        AnswerState::Answered(ApprovalAnswer {
+            decision,
+            message: None,
+        })
+    }
+
+    #[test]
+    fn a_request_you_allowed_shows_on_its_call_when_the_call_is_held() {
+        let allowed_held = request(2, answered(ApprovalDecision::Allow), Some(1));
+        let allowed_away = request(4, answered(ApprovalDecision::Allow), Some(3));
+        let denied = request(5, answered(ApprovalDecision::Deny), Some(1));
+        let waiting = request(6, AnswerState::Waiting, Some(1));
+        let items = [&allowed_held, &allowed_away, &denied, &waiting];
+        let loaded: BTreeSet<ItemId> = [1, 2, 4, 5, 6].into_iter().map(ItemId::new).collect();
+
+        let allowed = allowed_calls(&items, &loaded);
+
+        assert_eq!(allowed, BTreeSet::from([ItemId::new(1)]));
+        assert!(answered_on_its_call(&allowed_held, &allowed));
+        assert!(
+            !answered_on_its_call(&allowed_away, &allowed),
+            "its call is not held"
+        );
+        assert!(!answered_on_its_call(&denied, &allowed));
+        assert!(!answered_on_its_call(&waiting, &allowed));
+    }
+
+    #[test]
+    fn a_request_is_tagged_with_what_became_of_it() {
+        assert_eq!(Answer::of(&AnswerState::Waiting), None);
+        assert_eq!(
+            Answer::of(&answered(ApprovalDecision::Allow)),
+            Some(Answer::Allowed)
+        );
+        assert_eq!(
+            Answer::of(&answered(ApprovalDecision::Deny)),
+            Some(Answer::Denied)
+        );
+        assert_eq!(Answer::of(&AnswerState::Cancelled), Some(Answer::Withdrawn));
     }
 
     #[test]
@@ -3431,7 +3642,7 @@ mod tests {
             instructions: None,
         };
 
-        let view = RowView::of(&row, &Children::new(), &awaiting, None);
+        let view = RowView::of(&row, &Children::new(), &awaiting, &BTreeSet::new(), None);
 
         assert!(matches!(
             view,

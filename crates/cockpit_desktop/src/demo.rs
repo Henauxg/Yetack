@@ -9,20 +9,20 @@ use cockpit_client::RequestError;
 use cockpit_daemon::NOT_SERVING_HINT;
 use cockpit_protocol::{
     Account, AccountId, AccountState, AgentDetails, AgentHistory, AgentId, AgentLoad, AgentStatus,
-    AgentSummary, Answer, AnswerState, Approval, AskedQuestion, BackgroundTask, BackgroundTaskId,
-    BackgroundTaskKind, BackgroundTaskStatus, BuildCommit, ChangedFile, ClaudeCodeVersion,
-    ClaudeRoute, ClaudeSessionId, CommandKind, CommandLoad, Completeness, ContextCategory,
-    ContextUsage, Cores, CostUsd, CredentialSource, DirEntry, DirListing, EditTexts, Effort,
-    EffortSource, EntryKind, EntryLink, EnvironmentCredentials, ErrorBody, ErrorCode, FileEdit,
-    GitIgnore, HistoryPage, Image, ImageMediaType, ItemBody, ItemId, LoadAverage, LoadHistory,
-    MachineLoad, Mark, McpScope, McpServer, McpServerStatus, McpTool, McpTransport, NoticeKind,
-    OlderItems, PROTOCOL_VERSION, PastSession, PendingId, PermissionMode, Plan, PlanUsage,
-    Position, ProcessId, Prompt, PromptId, Question, QuestionAnswer, QuestionOption,
-    RateLimitStatus, ReleaseVersion, Repository, Request, ResourceUse, ResponseBody, Selection,
-    ServerLoad, ServerPoint, SignIn, SignInWait, SlashCommand, Subagent, SubagentRun,
-    SubagentStatus, SubagentToolCall, TaskListItem, TaskProgress, TaskStatus, Timestamp,
-    TokenUsage, ToolCall, ToolCallStatus, TranscriptItem, TurnEnd, TurnOutcome, UsageWindow,
-    UserMessage, WaitingPrompt, WaitingState, WindowUsage,
+    AgentSummary, Answer, AnswerState, Approval, ApprovalAnswer, ApprovalDecision, AskedQuestion,
+    BackgroundTask, BackgroundTaskId, BackgroundTaskKind, BackgroundTaskStatus, BuildCommit,
+    ChangedFile, ClaudeCodeVersion, ClaudeRoute, ClaudeSessionId, CommandKind, CommandLoad,
+    Completeness, ContextCategory, ContextUsage, Cores, CostUsd, CredentialSource, DirEntry,
+    DirListing, EditTexts, Effort, EffortSource, EntryKind, EntryLink, EnvironmentCredentials,
+    ErrorBody, ErrorCode, FileEdit, GitIgnore, HistoryPage, Image, ImageMediaType, ItemBody,
+    ItemId, LoadAverage, LoadHistory, MachineLoad, Mark, McpScope, McpServer, McpServerStatus,
+    McpTool, McpTransport, NoticeKind, OlderItems, PROTOCOL_VERSION, PastSession, PendingId,
+    PermissionMode, Plan, PlanUsage, Position, ProcessId, Prompt, PromptId, Question,
+    QuestionAnswer, QuestionOption, RateLimitStatus, ReleaseVersion, Repository, Request,
+    ResourceUse, ResponseBody, Selection, ServerLoad, ServerPoint, SignIn, SignInWait,
+    SlashCommand, Subagent, SubagentRun, SubagentStatus, SubagentToolCall, TaskListItem,
+    TaskProgress, TaskStatus, Timestamp, TokenUsage, ToolCall, ToolCallStatus, TranscriptItem,
+    TurnEnd, TurnOutcome, UsageWindow, UserMessage, WaitingPrompt, WaitingState, WindowUsage,
 };
 use dioxus::prelude::{Signal, WritableExt};
 use serde_json::Value;
@@ -3405,6 +3405,29 @@ fn parser_agent(now: SystemTime) -> Sample {
                 None,
             )),
         ),
+        // Answered requests: the allowed one shows on its call's line, the denied one alone.
+        item(
+            24,
+            None,
+            answered_approval(
+                "parser-tests",
+                PARSER_TESTS_COMMAND,
+                ApprovalDecision::Allow,
+                None,
+                Some(ItemId::new(PARSER_TESTS_CALL)),
+            ),
+        ),
+        item(
+            25,
+            None,
+            answered_approval(
+                "clean-build",
+                "cargo clean && cargo build --release",
+                ApprovalDecision::Deny,
+                Some("Keep the build cache: run the tests alone."),
+                None,
+            ),
+        ),
     ];
     let task = |content: &str, status: TaskStatus| TaskListItem {
         content: content.to_owned(),
@@ -3694,6 +3717,29 @@ fn approval_agent(now: SystemTime) -> Sample {
         items,
         details: details(),
     }
+}
+
+/// A request for a command, answered.
+fn answered_approval(
+    pending: &str,
+    command: &str,
+    decision: ApprovalDecision,
+    message: Option<&str>,
+    tool_call: Option<ItemId>,
+) -> ItemBody {
+    ItemBody::Approval(Approval {
+        pending: PendingId::new(pending.to_owned()),
+        tool: "Bash".to_owned(),
+        summary: command.to_owned(),
+        input: serde_json::json!({ "command": command }),
+        edit: None,
+        reason: None,
+        answer: AnswerState::Answered(ApprovalAnswer {
+            decision,
+            message: message.map(str::to_owned),
+        }),
+        tool_call,
+    })
 }
 
 fn plan_agent(now: SystemTime) -> Sample {
