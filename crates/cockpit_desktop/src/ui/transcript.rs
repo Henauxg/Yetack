@@ -2204,11 +2204,7 @@ fn ApprovalLine(agent: AgentId, id: ItemId, folder: PathBuf, approval: Approval)
     let Some(answer) = Answer::of(&approval.answer) else {
         return rsx! {};
     };
-    let RequestDetail { asked, said } = RequestDetail::of(&folder, &approval);
-    let line = match &approval.edit {
-        Some(edit) => file_edits::call_path(&folder, &edit.path).name,
-        None => asked.lines().next().unwrap_or_default().to_owned(),
-    };
+    let RequestDetail { line, asked, said } = RequestDetail::of(&folder, &approval);
     let foldable = !asked.is_empty() || said.is_some();
     let unfolded = if decided.clicked() {
         UNFOLDED_CLASS
@@ -2248,9 +2244,11 @@ fn ApprovalLine(agent: AgentId, id: ItemId, folder: PathBuf, approval: Approval)
     }
 }
 
-/// What an answered request's line shows unfolded.
+/// What an answered request's line shows, and what it shows unfolded.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct RequestDetail {
+    /// After the tag: an edit's file name, or the first line of a command or a summary.
+    pub line: String,
     /// What it asked, whole: a command, an edit's file, or a tool's whole input.
     pub asked: String,
     /// What you said when you denied it.
@@ -2259,11 +2257,16 @@ pub(super) struct RequestDetail {
 
 impl RequestDetail {
     pub(super) fn of(folder: &Path, approval: &Approval) -> Self {
-        let asked = match &approval.edit {
-            Some(edit) => file_edits::shown_path(folder, &edit.path),
-            None => {
-                cards::approval_input(approval).unwrap_or_else(|| cards::approval_text(approval))
-            }
+        let text = cards::approval_text(approval);
+        let (line, asked) = match &approval.edit {
+            Some(edit) => (
+                file_edits::call_path(folder, &edit.path).name,
+                file_edits::shown_path(folder, &edit.path),
+            ),
+            None => (
+                text.lines().next().unwrap_or_default().to_owned(),
+                cards::approval_input(approval).unwrap_or(text),
+            ),
         };
         let said = match &approval.answer {
             AnswerState::Answered(ApprovalAnswer {
@@ -2272,7 +2275,7 @@ impl RequestDetail {
             }) => Some(format!("You said: {message}")),
             AnswerState::Answered(_) | AnswerState::Waiting | AnswerState::Cancelled => None,
         };
-        Self { asked, said }
+        Self { line, asked, said }
     }
 }
 
@@ -3273,17 +3276,24 @@ mod tests {
         assert_eq!(
             RequestDetail::of(folder, &command),
             RequestDetail {
+                line: "cargo clean".to_owned(),
                 asked: "cargo clean\ncargo build".to_owned(),
                 said: Some("You said: Keep the cache.".to_owned()),
             }
         );
         assert_eq!(
-            RequestDetail::of(folder, &mcp).asked,
-            "{\n  \"query\": \"release\"\n}"
+            RequestDetail::of(folder, &mcp),
+            RequestDetail {
+                line: String::new(),
+                asked: "{\n  \"query\": \"release\"\n}".to_owned(),
+                said: None,
+            },
+            "the line does not show the input's first line"
         );
         assert_eq!(
             RequestDetail::of(folder, &edit),
             RequestDetail {
+                line: "grid.rs".to_owned(),
                 asked: "src/grid.rs".to_owned(),
                 said: None,
             }

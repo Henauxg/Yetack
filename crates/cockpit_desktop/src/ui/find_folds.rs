@@ -338,7 +338,7 @@ impl Gatherer<'_, '_> {
             }
             // A request that waits shows on its card.
             ItemBody::Approval(approval) if !waits_for_answer(item) => {
-                let RequestDetail { asked, said } = RequestDetail::of(self.folder, approval);
+                let RequestDetail { asked, said, .. } = RequestDetail::of(self.folder, approval);
                 self.within(fold, |gatherer| {
                     gatherer.add(&asked);
                     gatherer.add(said.as_deref().unwrap_or_default());
