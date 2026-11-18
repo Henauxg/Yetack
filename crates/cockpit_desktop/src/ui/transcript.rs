@@ -524,6 +524,9 @@ struct ChatView {
     shown: ShownRows,
     /// The ids of all the rows, drawn or not, oldest first: a run of work is one row.
     row_ids: Vec<ItemId>,
+    /// The subagent calls held before the first loaded message, whose work runs under them.
+    /// Older messages arrive below them, where the history note stands.
+    early: Vec<TopUnit>,
     top: Vec<TopUnit>,
     history: HistoryState,
     started: Option<String>,
@@ -681,6 +684,12 @@ impl ChatView {
                 actions::new_entries(entry, last_seen).first,
             )
         });
+        let loaded_from = entry.transcript.loaded_from();
+        let early_count = top
+            .iter()
+            .take_while(|unit| loaded_from.is_some_and(|from| unit.id() < from))
+            .count();
+        let early: Vec<TopUnit> = top.drain(..early_count).collect();
         Self {
             agent,
             folder: entry.summary.folder.clone(),
@@ -690,6 +699,7 @@ impl ChatView {
             working_linked,
             shown,
             row_ids,
+            early,
             top,
             history,
             started,
@@ -917,6 +927,7 @@ pub fn TranscriptView(in_view: Signal<Option<InView>>) -> Element {
         quiet_since,
         working_linked,
         shown,
+        early,
         top,
         history,
         started,
@@ -937,6 +948,13 @@ pub fn TranscriptView(in_view: Signal<Option<InView>>) -> Element {
             // `chat_scroll::LOADS_OLDER_ATTRIBUTE`, written out: an attribute name takes no constant.
             "data-loads-older": loads_older.then_some("true"),
             div { class: "chat-column",
+                // `chat_scroll::EARLY_ATTRIBUTE`, written out: the scroll script holds none of
+                // these rows in place, as older messages arrive below them.
+                div { class: "early-rows", "data-early": "true",
+                    for unit in early {
+                        {top_unit(unit, agent, &folder)}
+                    }
+                }
                 if shown == ShownRows::Skeleton {
                     TranscriptSkeleton {}
                 } else if shown == ShownRows::All {
@@ -944,20 +962,8 @@ pub fn TranscriptView(in_view: Signal<Option<InView>>) -> Element {
                 } else if named {
                     OlderSkeleton { loading: false }
                 }
-                // Item ids repeat across agents: with the agent in the key, another agent's item
-                // never takes over the state of this one's (a fold, a typed answer).
                 for unit in top {
-                    match unit {
-                        TopUnit::Row(row) => {
-                            let TopRow { id, hides_time, new_above, view, step, older_step } = *row;
-                            rsx! {
-                                TranscriptRow { key: "{agent.get()}-{id.get()}", agent, folder: folder.clone(), new_above, id, hides_time, view, step, older_step }
-                            }
-                        }
-                        TopUnit::Run(run) => rsx! {
-                            WorkRunView { key: "{agent.get()}-run-{run.id.get()}", agent, folder: folder.clone(), run }
-                        },
-                    }
+                    {top_unit(unit, agent, &folder)}
                 }
                 if shown != ShownRows::Skeleton {
                     for prompt in sending {
@@ -985,6 +991,30 @@ pub fn TranscriptView(in_view: Signal<Option<InView>>) -> Element {
         }
         LastInstruction { in_view }
         JumpToLatest { shown: scrolled_up, count: waiting }
+    }
+}
+
+/// A row or a run of the main conversation. Item ids repeat across agents: with the agent in the
+/// key, another agent's item never takes over the state of this one's (a fold, a typed answer).
+fn top_unit(unit: TopUnit, agent: AgentId, folder: &Path) -> Element {
+    let folder = folder.to_path_buf();
+    match unit {
+        TopUnit::Row(row) => {
+            let TopRow {
+                id,
+                hides_time,
+                new_above,
+                view,
+                step,
+                older_step,
+            } = *row;
+            rsx! {
+                TranscriptRow { key: "{agent.get()}-{id.get()}", agent, folder, new_above, id, hides_time, view, step, older_step }
+            }
+        }
+        TopUnit::Run(run) => rsx! {
+            WorkRunView { key: "{agent.get()}-run-{run.id.get()}", agent, folder, run }
+        },
     }
 }
 
@@ -1044,6 +1074,16 @@ fn history_note(
 enum TopUnit {
     Row(Box<TopRow>),
     Run(TopRun),
+}
+
+impl TopUnit {
+    /// The first item of the row or run, which names its entry.
+    fn id(&self) -> ItemId {
+        match self {
+            Self::Row(row) => row.id,
+            Self::Run(run) => run.id,
+        }
+    }
 }
 
 /// A run of the agent's work, as `WorkRunView` takes it.

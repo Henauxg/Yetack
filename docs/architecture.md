@@ -164,7 +164,7 @@ Its `git ls-files` search stops at 20 matches or 3 seconds.
 `folders.list` sends no file names, and leaves out a name that is not UTF-8, since the protocol carries paths as text.
 
 A history page is limited by bytes as well as by count, since images travel inline.
-A page also carries the subagent calls its items run under that are older than the page (`ancestors`), so a subagent's work shows under its call when the call itself is far back, as for a subagent that runs in the background for hours. The app asks for the next older page before the first item of the page (`Transcript::loaded_from`), not before those calls, and its trim keeps the subagent calls of the items it keeps.
+A page also carries the subagent calls its items run under that are older than the page (`ancestors`), so a subagent's work shows under its call when the call itself is far back, as for a subagent that runs in the background for hours. The app asks for the next older page before the first item of the page (`Transcript::loaded_from`), not before those calls, and its trim keeps the subagent calls of the items it keeps. Those calls come first in the chat, in a wrapper marked `data-early`, and the grey rows of older messages stand below them, where the older messages arrive. The scroll script holds none of them in place: at the very top, it holds the first row past them, so an older page that arrives moves the view down and the loading stops.
 An item too large for any response comes as a `Notice` under its id, so paging moves on.
 Titles and model names go into every snapshot, so the daemon refuses a title over 200 characters and a model name over 100.
 

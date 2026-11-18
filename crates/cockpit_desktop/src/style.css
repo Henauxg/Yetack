@@ -11239,6 +11239,12 @@ html.splitting .sidebar {
   border-radius: 50%;
 }
 
+/* The subagent calls held before the first loaded message: rows of the column as the others,
+   in a wrapper the scroll script reads (`data-early`). */
+.early-rows {
+  display: contents;
+}
+
 /* The older messages' rows: as many as fill the space above the first loaded message. */
 .older-skeleton {
   display: flex;
