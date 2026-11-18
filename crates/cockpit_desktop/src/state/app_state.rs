@@ -378,12 +378,12 @@ impl AgentEntry {
         self.summary.id
     }
 
-    /// The daemon's start of the running turn, else the app's own record of it.
     /// The requests whose card is leaving.
     pub fn cards_leaving_ids(&self) -> BTreeSet<ItemId> {
         self.cards_leaving.keys().copied().collect()
     }
 
+    /// The daemon's start of the running turn, else the app's own record of it.
     pub fn turn_start(&self) -> Option<TurnStart> {
         self.summary
             .turn_started_at

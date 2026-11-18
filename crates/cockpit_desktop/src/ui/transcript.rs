@@ -3348,7 +3348,7 @@ mod tests {
         let items = [&command, &allowed, &subagent, &nested, &denied];
         let loaded: BTreeSet<ItemId> = items.iter().map(|item| item.id).collect();
         let top = |leaving: &[u32]| {
-            let leaving = leaving.iter().copied().map(ItemId::new).collect();
+            let leaving: BTreeSet<ItemId> = leaving.iter().copied().map(ItemId::new).collect();
             let top = TopItems::of(&items, &loaded, None, &leaving);
             let ids: Vec<u32> = top.items.iter().map(|item| item.id.get()).collect();
             (ids, top.leaving)

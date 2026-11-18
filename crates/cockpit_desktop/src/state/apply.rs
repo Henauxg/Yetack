@@ -42,15 +42,6 @@ pub enum AlertKind {
 }
 
 /// Applies an update from `machine`'s daemon, whose agent ids are already the app's.
-/// Whether `item` answers a request the transcript holds as waiting: its card leaves.
-fn answers_a_waiting_request(transcript: &Transcript, item: &TranscriptItem) -> bool {
-    let waited = transcript.get(item.id).is_some_and(|held| {
-        matches!(&held.body, ItemBody::Approval(approval) if approval.answer == AnswerState::Waiting)
-    });
-    waited
-        && matches!(&item.body, ItemBody::Approval(approval) if approval.answer != AnswerState::Waiting)
-}
-
 pub fn apply_update(
     state: &mut AppState,
     drafts: &mut Drafts,
@@ -443,6 +434,15 @@ pub fn apply(
             None
         }
     }
+}
+
+/// Whether `item` answers a request the transcript holds as waiting: its card leaves.
+fn answers_a_waiting_request(transcript: &Transcript, item: &TranscriptItem) -> bool {
+    let waited = transcript.get(item.id).is_some_and(|held| {
+        matches!(&held.body, ItemBody::Approval(approval) if approval.answer == AnswerState::Waiting)
+    });
+    waited
+        && matches!(&item.body, ItemBody::Approval(approval) if approval.answer != AnswerState::Waiting)
 }
 
 /// The pending id of an approval, question or plan that no longer waits.
