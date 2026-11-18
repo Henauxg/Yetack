@@ -14,6 +14,7 @@ use tokio::sync::mpsc;
 use tokio::time::MissedTickBehavior;
 
 use crate::daemon_config::DaemonConfig;
+use crate::hub::closed_choices::ClosedChoices;
 use crate::hub::folders::PendingMove;
 use crate::hub::input::{ControlPurpose, HubInput, Joined, Registration};
 use crate::hub::restore::Restored;
@@ -61,6 +62,8 @@ pub(crate) struct Hub {
     /// A periodic check of the accounts' folders runs.
     pub(super) checking_sign_ins: bool,
     pub(super) terminals: Terminals,
+    /// What the agents closed a moment ago were given, for an undo that resumes their session.
+    pub(super) closed_choices: ClosedChoices,
 }
 
 pub(super) struct Agent {
@@ -225,6 +228,7 @@ impl Hub {
             sign_ins: BTreeMap::new(),
             checking_sign_ins: false,
             terminals: Terminals::default(),
+            closed_choices: ClosedChoices::default(),
         }
     }
 
@@ -275,7 +279,11 @@ impl Hub {
                 generation,
                 event,
             } => self.process_event(agent, generation, event),
-            HubInput::SessionFound { found, reply } => self.resume_session(*found, reply),
+            HubInput::SessionFound {
+                found,
+                asked_at,
+                reply,
+            } => self.resume_session(*found, asked_at, reply),
             HubInput::ForkCopied { fork, found, reply } => self.fork_copied(*fork, found, reply),
             HubInput::MoveCopied {
                 agent,

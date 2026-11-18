@@ -6,7 +6,8 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use cockpit_protocol::{
-    AccountId, AgentId, ClaudeSessionId, DirListing, Effort, Image, ItemId, PermissionMode,
+    AccountId, AgentId, AgentSummary, ClaudeSessionId, DirListing, Effort, Image, ItemId,
+    PermissionMode,
 };
 use serde::Serialize;
 use strum::{EnumString, IntoStaticStr, VariantArray};
@@ -353,14 +354,20 @@ pub struct ClosedAgent {
     pub account: AccountId,
     /// The agent that was just below it, which it goes back above.
     pub before: Option<AgentId>,
+    /// The project it was moved to by hand. The rules give back any other.
+    pub project: Option<ProjectKey>,
 }
 
-/// A closed agent's session on its way back. Once it is an agent again, it goes back to its
-/// place, above `before`.
+/// A closed agent's session on its way back. Once it is an agent again, on the same machine and
+/// with the same account, it goes back to its place, above `before`, and to the `project` it was
+/// moved to.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Reopening {
     pub session: ClaudeSessionId,
+    pub machine: MachineId,
+    pub account: AccountId,
     pub before: Option<AgentId>,
+    pub project: Option<ProjectKey>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -711,19 +718,18 @@ impl UiState {
     /// Shows the undo note for an agent just closed, in place of the last one's.
     pub fn note_closed(
         &mut self,
-        agent: AgentId,
-        title: String,
-        session: Option<ClaudeSessionId>,
-        account: AccountId,
+        summary: &AgentSummary,
         before: Option<AgentId>,
+        project: Option<ProjectKey>,
     ) {
         self.closed = Some(ClosedAgent {
             serial: self.next_closed,
-            agent,
-            title,
-            session,
-            account,
+            agent: summary.id,
+            title: summary.title.clone(),
+            session: summary.session.clone(),
+            account: summary.account,
             before,
+            project,
         });
         self.next_closed = self.next_closed.wrapping_add(1);
     }

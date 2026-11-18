@@ -2,6 +2,7 @@
 //! own, so the hub never waits on them.
 
 use std::path::PathBuf;
+use std::time::Instant;
 
 use claude_protocol::{ControlRequest, TaskId};
 use cockpit_protocol::{
@@ -356,6 +357,7 @@ impl Hub {
             account: account.id,
             folder: account.folder,
         };
+        let asked_at = Instant::now();
         let inputs = self.inputs.clone();
         tokio::spawn(async move {
             let id = params.session;
@@ -364,6 +366,7 @@ impl Hub {
                 Ok(Some(found)) => {
                     let input = HubInput::SessionFound {
                         found: Box::new(found),
+                        asked_at,
                         reply,
                     };
                     if let Err(unsent) = inputs.send(input).await

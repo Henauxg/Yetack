@@ -58,14 +58,16 @@ impl Hub {
 #[cfg(unix)]
 mod tests {
     use std::path::Path;
+    use std::time::{Duration, Instant};
 
     use cockpit_protocol::{
-        AccountId, ClaudeSessionId, ErrorCode, Mark, PastSession, Position, RenameParams,
-        ResponseResult, StartParams, Timestamp,
+        AccountId, ClaudeSessionId, Effort, ErrorCode, Mark, PastSession, PermissionMode, Position,
+        RenameParams, ResponseResult, StartParams, Timestamp,
     };
     use tokio::sync::{mpsc, oneshot};
 
     use super::*;
+    use crate::hub::closed_choices::KEPT_FOR;
     use crate::sessions::{FoundSession, SessionPast};
     use crate::store::{AgentRecord, AgentsFile, PastFile, ResumeAs, StateDir};
     use crate::test_script;
@@ -237,18 +239,16 @@ mod tests {
         assert_eq!(snapshot_order(&hub), [3, 1, 2]);
     }
 
-    /// A past session made into an agent is a new agent.
-    #[tokio::test]
-    async fn a_resumed_past_session_goes_on_top() {
-        let temp = tempfile::tempdir().unwrap();
-        let mut hub = hub(temp.path());
-        start(&mut hub, temp.path(), "First");
-        let id = ClaudeSessionId::new("11111111-2222-3333-4444-555555555555".to_owned());
-        let found = FoundSession {
+    const SESSION: &str = "11111111-2222-3333-4444-555555555555";
+
+    /// The past session [`SESSION`] in `folder`, found on disk.
+    fn past_session(folder: &Path) -> FoundSession {
+        let id = ClaudeSessionId::new(SESSION.to_owned());
+        FoundSession {
             session: PastSession {
                 id: id.clone(),
                 title: "Fix the cart".to_owned(),
-                folder: temp.path().to_owned(),
+                folder: folder.to_owned(),
                 last_activity: Timestamp::from_unix_millis(0),
                 turns: 1,
                 account: AccountId::DEFAULT,
@@ -260,10 +260,79 @@ mod tests {
                     bytes: 0,
                 },
             },
-        };
+        }
+    }
+
+    /// The choices wait from the close to the resume request, not to the end of the session
+    /// file's reading.
+    #[tokio::test]
+    async fn a_resume_asked_too_late_starts_without_the_choices() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut hub = hub(temp.path());
+        let first = start(&mut hub, temp.path(), "First");
+        if let Some(agent) = hub.agents.get_mut(&first) {
+            agent.record.session = Some(ClaudeSessionId::new(SESSION.to_owned()));
+            agent.record.mode = Some(PermissionMode::Auto);
+        }
+        hub.close(first).unwrap();
+        let now = Instant::now();
+        let late = now
+            .checked_add(KEPT_FOR + Duration::from_secs(1))
+            .unwrap_or(now);
+
+        hub.resume_session(past_session(temp.path()), late, oneshot::channel().0);
+        let back = hub.agents.values().next().map(|agent| agent.record.mode);
+
+        assert_eq!(back, Some(None));
+    }
+
+    /// An agent closed a moment ago comes back from its session with its choices, even after a
+    /// resume that failed.
+    #[tokio::test]
+    async fn a_closed_agents_session_comes_back_with_its_choices() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut hub = hub(temp.path());
+        let first = start(&mut hub, temp.path(), "First");
+        if let Some(agent) = hub.agents.get_mut(&first) {
+            agent.record.session = Some(ClaudeSessionId::new(SESSION.to_owned()));
+            agent.record.model = Some("opus[1m]".to_owned());
+            agent.record.effort = Some(Effort::High);
+            agent.record.mode = Some(PermissionMode::Auto);
+        }
+        hub.close(first).unwrap();
+        let claude = hub.config.claude_program.clone();
+        hub.config.claude_program = temp.path().join("no-claude");
+        let (reply, mut failed) = oneshot::channel();
+        hub.resume_session(past_session(temp.path()), Instant::now(), reply);
+        hub.config.claude_program = claude;
+
+        hub.resume_session(
+            past_session(temp.path()),
+            Instant::now(),
+            oneshot::channel().0,
+        );
+        assert!(matches!(failed.try_recv(), Ok(ResponseResult::Error(_))));
+        let back = hub.agents.values().next().map(|agent| &agent.record);
+
+        assert_eq!(
+            back.map(|record| (record.model.as_deref(), record.effort, record.mode)),
+            Some((
+                Some("opus[1m]"),
+                Some(Effort::High),
+                Some(PermissionMode::Auto)
+            ))
+        );
+    }
+
+    /// A past session made into an agent is a new agent.
+    #[tokio::test]
+    async fn a_resumed_past_session_goes_on_top() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut hub = hub(temp.path());
+        start(&mut hub, temp.path(), "First");
         let (reply, mut answer) = oneshot::channel();
 
-        hub.resume_session(found, reply);
+        hub.resume_session(past_session(temp.path()), Instant::now(), reply);
 
         let started = ResponseBody::AgentStarted {
             agent: AgentId::new(2),

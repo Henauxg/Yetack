@@ -239,11 +239,19 @@ pub fn needed_requests(state: &mut AppState) -> Vec<Outgoing> {
         let back = state
             .agents
             .values()
-            .find(|entry| entry.summary.session.as_ref() == Some(&reopening.session))
+            .find(|entry| {
+                MachineId::of(entry.id()) == reopening.machine
+                    && entry.summary.account == reopening.account
+                    && entry.summary.session.as_ref() == Some(&reopening.session)
+            })
             .map(AgentEntry::id);
         if let Some(agent) = back {
             let before = reopening.before;
+            let project = reopening.project.clone();
             state.ui.reopening = None;
+            if let Some(project) = project {
+                projects::move_agent(state, agent, &project);
+            }
             requests.extend(actions::move_agent(state, agent, before));
         }
     }

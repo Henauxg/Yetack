@@ -1,5 +1,6 @@
 use std::collections::BTreeMap;
 use std::path::PathBuf;
+use std::time::Instant;
 
 use cockpit_protocol::{
     AccountId, AccountState, AgentId, CostUsd, Frame, PermissionMode, Request, ResponseResult, Seq,
@@ -35,6 +36,8 @@ pub(crate) enum HubInput {
     /// `sessions.resume` found the session on disk, and read its transcript.
     SessionFound {
         found: Box<FoundSession>,
+        /// When the request came, from which a closed agent's choices count their time.
+        asked_at: Instant,
         reply: Reply,
     },
     /// `accounts.list` read the accounts' folders. The hub answers once the agents that waited
