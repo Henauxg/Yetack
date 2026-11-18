@@ -145,13 +145,23 @@ fn is_instructions_of(next: &TranscriptItem, item: &TranscriptItem, call: &ToolC
         && *text == cockpit_protocol::skill_instructions_title(&skill_name(call))
 }
 
-/// A read or a search: a call that only looks at the agent's files.
+/// A read or a search that does not wait for approval.
 fn explores(item: &TranscriptItem, awaiting: &BTreeSet<ItemId>) -> bool {
     let ItemBody::ToolCall(call) = &item.body else {
         return false;
     };
+    only_looks(call) && !awaiting.contains(&item.id)
+}
+
+/// A read or a search: a call that only looks at the agent's files.
+fn only_looks(call: &ToolCall) -> bool {
     let looks = call.tool == file_edits::READ_TOOL || call.tool.parse::<SearchTool>().is_ok();
-    looks && call.edit.is_none() && !awaiting.contains(&item.id)
+    looks && call.edit.is_none()
+}
+
+/// Whether a call can show in a row with other items: a skill's call, a read or a search.
+pub fn shares_a_row(call: &ToolCall) -> bool {
+    is_skill(call) || only_looks(call)
 }
 
 /// The skill a call starts, without its slash.

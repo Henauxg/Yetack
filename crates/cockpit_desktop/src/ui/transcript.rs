@@ -5,12 +5,13 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::{Duration, SystemTime};
+use std::time::{Duration, Instant, SystemTime};
 
 use chrono::NaiveDate;
 use cockpit_protocol::{
-    AgentId, AgentStatus, AnswerState, EditTexts, ItemBody, ItemId, NoticeKind, SignInWait,
-    Timestamp, ToolCall, ToolCallStatus, TranscriptItem, TurnEnd, TurnOutcome, UserMessage,
+    AgentId, AgentStatus, AnswerState, Approval, ApprovalAnswer, ApprovalDecision, EditTexts,
+    ItemBody, ItemId, NoticeKind, SignInWait, Timestamp, ToolCall, ToolCallStatus, TranscriptItem,
+    TurnEnd, TurnOutcome, UserMessage,
 };
 use dioxus::prelude::*;
 use serde::Serialize;
@@ -23,11 +24,11 @@ use crate::prefs::ToolCallDetail;
 use crate::render::{self, Diff, Found, Language, OutputPart, SearchTool, diff_lines};
 use crate::state::sending::{SendingPlace, SendingPrompt};
 use crate::state::{
-    self, AgentEntry, AppState, ChatReveal, HistoryState, Revision, TurnStart, accounts, actions,
-    chat_images, file_edits,
+    self, AgentEntry, AppState, CARD_EXIT, ChatReveal, HistoryState, Revision, TurnStart, accounts,
+    actions, chat_images, file_edits,
 };
 use crate::ui::accounts::SignInCard;
-use crate::ui::cards::{ApprovalCard, PlanCard};
+use crate::ui::cards::{self, ApprovalCard, PlanCard};
 use crate::ui::chat_scroll::{
     self, CHAT_SCROLL_ID, ENTRY_CLASS, FOLD_BUTTON_CLASS, InView, JumpToLatest, NewDivider,
 };
@@ -485,6 +486,8 @@ struct ChatInputs {
     scrolled_up: Option<ScrolledUp>,
     new_from: Option<ItemId>,
     sending: Vec<SendingPrompt>,
+    /// The requests answered while the chat showed them, whose card is leaving.
+    leaving: BTreeSet<ItemId>,
 }
 
 impl ChatInputs {
@@ -507,6 +510,7 @@ impl ChatInputs {
                 .in_place(SendingPlace::Chat)
                 .cloned()
                 .collect(),
+            leaving: entry.cards_leaving_ids(),
         })
     }
 }
@@ -561,7 +565,11 @@ impl ChatView {
         let sign_in_notice = sign_in.as_ref().and_then(|turn| turn.notice);
         let sign_in_end = sign_in.as_ref().map(|turn| turn.turn_end);
         let waits_for_sign_in = entry.summary.sign_in_wait == SignInWait::Waiting;
-        let top_items = top_items(&items, &loaded, sign_in_notice);
+        let TopItems {
+            items: top_items,
+            allowed,
+            leaving,
+        } = TopItems::of(&items, &loaded, sign_in_notice, &entry.cards_leaving_ids());
         let divider = actions::new_divider(state, agent);
         let top_rows = tool_rows::rows(&top_items, &awaiting, divider);
         let started: Option<String> = top_items
@@ -619,7 +627,7 @@ impl ChatView {
                 hides_time: grouped.contains(&row.first().id),
                 new_above: divider
                     .is_some_and(|divider| row.items().iter().any(|item| item.id == divider)),
-                view: RowView::of(row, &children, &awaiting, sign_in_end),
+                view: RowView::of(row, &children, &awaiting, &allowed, &leaving, sign_in_end),
                 step: states
                     .get(index)
                     .copied()
@@ -815,6 +823,24 @@ pub fn TranscriptView(in_view: Signal<Option<InView>>) -> Element {
         }
     });
     let inputs = use_memo(move || ChatInputs::of(&cockpit.state.read()));
+    // A request answered a moment ago keeps its card while it shrinks, then the chat drops it.
+    // Each card that starts to leave starts a wait of its own.
+    let cards_leaving = use_memo(move || inputs().map(|inputs| inputs.leaving).unwrap_or_default());
+    use_effect(move || {
+        if !cards_leaving.read().is_empty() {
+            spawn(async move {
+                tokio::time::sleep(CARD_EXIT).await;
+                cockpit.update(|state| {
+                    let now = Instant::now();
+                    for entry in state.agents.values_mut() {
+                        entry
+                            .cards_leaving
+                            .retain(|_, answered| now.duration_since(*answered) < CARD_EXIT);
+                    }
+                });
+            });
+        }
+    });
     let view = use_memo(move || {
         let inputs = inputs()?;
         let _timer = perf::Timer::start(Timed::ChatBuild);
@@ -1141,6 +1167,10 @@ enum RowView {
         item: TranscriptItem,
         nested: Vec<TranscriptItem>,
         awaits_approval: bool,
+        /// The item is a call you allowed when Claude Code asked: its line says so.
+        allowed: bool,
+        /// The item is a request answered a moment ago, whose card is leaving.
+        leaving: Option<CardLeaves>,
         /// The item is the end of a turn that found no login: it shows as the sign-in card.
         sign_in_card: bool,
     },
@@ -1158,6 +1188,8 @@ impl RowView {
         row: &Row<'_>,
         children: &Children<'_>,
         awaiting: &BTreeSet<ItemId>,
+        allowed: &BTreeSet<ItemId>,
+        leaving: &BTreeMap<ItemId, CardLeaves>,
         sign_in_end: Option<ItemId>,
     ) -> Self {
         match row {
@@ -1165,6 +1197,8 @@ impl RowView {
                 item: (*item).clone(),
                 nested: subtree(children, item.id),
                 awaits_approval: awaiting.contains(&item.id),
+                allowed: allowed.contains(&item.id),
+                leaving: leaving.get(&item.id).copied(),
                 sign_in_card: Some(item.id) == sign_in_end,
             },
             Row::Skill { call, instructions } => Self::Skill {
@@ -1323,10 +1357,12 @@ impl Step {
 /// Whether a row is as small as a tool call: one call, an edit, a run of reads, a skill, a
 /// thinking, or a subagent's line.
 fn is_call(row: &Row<'_>) -> bool {
-    matches!(
-        row.first().body,
-        ItemBody::ToolCall(_) | ItemBody::Thinking { .. } | ItemBody::Subagent(_)
-    )
+    match &row.first().body {
+        ItemBody::ToolCall(_) | ItemBody::Thinking { .. } | ItemBody::Subagent(_) => true,
+        // Answered, a request shows as one line, as a call does.
+        ItemBody::Approval(approval) => approval.answer != AnswerState::Waiting,
+        _ => false,
+    }
 }
 
 /// The class a call-sized row's kind adds to its step.
@@ -1398,11 +1434,66 @@ pub(super) fn top_items<'item>(
     loaded: &BTreeSet<ItemId>,
     sign_in_notice: Option<ItemId>,
 ) -> Vec<&'item TranscriptItem> {
-    items
-        .iter()
-        .copied()
-        .filter(|item| shows_at_top(item, loaded) && Some(item.id) != sign_in_notice)
-        .collect()
+    TopItems::of(items, loaded, sign_in_notice, &BTreeSet::new()).items
+}
+
+/// What takes the place of a request's card while it shrinks away.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CardLeaves {
+    /// Nothing: its call's line says you allowed it, or it shows in its subagent.
+    Nothing,
+    /// The request's line, which unfolds as the card shrinks.
+    Line,
+}
+
+/// The items the chat shows at its top level. A request you allowed shows on its call's line, not
+/// on its own.
+struct TopItems<'item> {
+    /// In order.
+    items: Vec<&'item TranscriptItem>,
+    /// The calls among them whose line says you allowed them.
+    allowed: BTreeSet<ItemId>,
+    /// The requests among them whose card is leaving, with what takes its place.
+    leaving: BTreeMap<ItemId, CardLeaves>,
+}
+
+impl<'item> TopItems<'item> {
+    /// `leaving` holds the requests whose card is leaving: they keep their row until it left.
+    fn of(
+        items: &[&'item TranscriptItem],
+        loaded: &BTreeSet<ItemId>,
+        sign_in_notice: Option<ItemId>,
+        leaving: &BTreeSet<ItemId>,
+    ) -> Self {
+        let mut top: Vec<&TranscriptItem> = items
+            .iter()
+            .copied()
+            .filter(|item| {
+                (shows_at_top(item, loaded) || leaving.contains(&item.id))
+                    && Some(item.id) != sign_in_notice
+            })
+            .collect();
+        let allowed = allowed_calls(&top);
+        let leaving: BTreeMap<ItemId, CardLeaves> = top
+            .iter()
+            .filter(|item| leaving.contains(&item.id))
+            .map(|item| {
+                let line = shows_at_top(item, loaded) && !answered_on_its_call(item, &allowed);
+                let leaves = if line {
+                    CardLeaves::Line
+                } else {
+                    CardLeaves::Nothing
+                };
+                (item.id, leaves)
+            })
+            .collect();
+        top.retain(|item| leaving.contains_key(&item.id) || !answered_on_its_call(item, &allowed));
+        Self {
+            items: top,
+            allowed,
+            leaving,
+        }
+    }
 }
 
 /// Where an item shows in the chat.
@@ -1533,6 +1624,18 @@ fn TranscriptRow(
 ) -> Element {
     let item_id = id;
     let id = chat_scroll::entry_id(agent, item_id);
+    // A card that leaves alone takes its row and the column's gap above it.
+    let class = if matches!(
+        view,
+        RowView::Item {
+            leaving: Some(CardLeaves::Nothing),
+            ..
+        }
+    ) {
+        format!("{ENTRY_CLASS} row-leaving")
+    } else {
+        ENTRY_CLASS.to_owned()
+    };
     let view = match view {
         RowView::Item {
             sign_in_card: true, ..
@@ -1543,9 +1646,11 @@ fn TranscriptRow(
             item,
             nested,
             awaits_approval,
+            allowed,
+            leaving,
             ..
         } => rsx! {
-            ItemView { agent, folder, item, nested, awaits_approval, hides_time }
+            ItemView { agent, folder, item, nested, awaits_approval, allowed, leaving, hides_time }
         },
         RowView::Skill {
             item:
@@ -1575,7 +1680,7 @@ fn TranscriptRow(
         None => view,
     };
     rsx! {
-        div { id, class: ENTRY_CLASS,
+        div { id, class,
             if new_above {
                 NewDivider {}
             }
@@ -1664,6 +1769,12 @@ pub fn ItemView(
     nested: Vec<TranscriptItem>,
     /// Whether the item is a running tool call whose approval card waits for an answer.
     awaits_approval: bool,
+    /// Whether the item is a call you allowed when Claude Code asked.
+    #[props(default)]
+    allowed: bool,
+    /// For a request answered a moment ago, whose card is leaving: what takes its place.
+    #[props(default)]
+    leaving: Option<CardLeaves>,
     /// A message whose time the next one, sent at the same minute, shows.
     #[props(default)]
     hides_time: bool,
@@ -1682,16 +1793,42 @@ pub fn ItemView(
             ThinkingView { agent, id, text }
         },
         ItemBody::ToolCall(call) if call.edit.is_some() => rsx! {
-            EditView { agent, id, folder, stage: CallStage::new(&call, awaits_approval), call }
+            EditView { agent, id, folder, stage: CallStage::new(&call, awaits_approval), call, allowed }
         },
         ItemBody::ToolCall(call) => rsx! {
-            ToolView { agent, id, folder, stage: CallStage::new(&call, awaits_approval), call }
+            ToolView { agent, id, folder, stage: CallStage::new(&call, awaits_approval), call, allowed }
         },
         ItemBody::Subagent(call) => rsx! {
             SubagentView { agent, folder, id, call, nested }
         },
-        ItemBody::Approval(approval) => rsx! {
+        ItemBody::Approval(approval) if approval.answer == AnswerState::Waiting => rsx! {
             ApprovalCard { agent, folder, approval }
+        },
+        // The card shrinks away, and the request's line unfolds above it, so the rows around them
+        // do not jump.
+        ItemBody::Approval(approval) if leaving == Some(CardLeaves::Line) => rsx! {
+            div { class: "card-to-line",
+                div { class: "line-arriving",
+                    div { class: "line-arriving-body",
+                        ApprovalLine { agent, id, folder: folder.clone(), approval: approval.clone() }
+                    }
+                }
+                div { class: "card-leaving", inert: true,
+                    div { class: "card-leaving-body",
+                        ApprovalCard { agent, folder, approval, leaving: true }
+                    }
+                }
+            }
+        },
+        ItemBody::Approval(approval) if leaving.is_some() => rsx! {
+            div { class: "card-leaving", inert: true,
+                div { class: "card-leaving-body",
+                    ApprovalCard { agent, folder, approval, leaving: true }
+                }
+            }
+        },
+        ItemBody::Approval(approval) => rsx! {
+            ApprovalLine { agent, id, folder, approval }
         },
         ItemBody::Question(question) => rsx! {
             QuestionCard { agent, item: id, question, place: CardPlace::Chat }
@@ -2134,6 +2271,171 @@ fn tool_title(
     }
 }
 
+/// The calls among `items` you allowed when Claude Code asked, which show the answer on their
+/// line: a call on its own row. A read, a search or a skill can share its row, and its request
+/// keeps its own line.
+fn allowed_calls(items: &[&TranscriptItem]) -> BTreeSet<ItemId> {
+    let alone: BTreeSet<ItemId> = items
+        .iter()
+        .filter(
+            |item| matches!(&item.body, ItemBody::ToolCall(call) if !tool_rows::shares_a_row(call)),
+        )
+        .map(|item| item.id)
+        .collect();
+    items
+        .iter()
+        .filter_map(|item| match &item.body {
+            ItemBody::Approval(Approval {
+                answer:
+                    AnswerState::Answered(ApprovalAnswer {
+                        decision: ApprovalDecision::Allow,
+                        ..
+                    }),
+                tool_call: Some(call),
+                ..
+            }) if alone.contains(call) => Some(*call),
+            _ => None,
+        })
+        .collect()
+}
+
+/// Whether the item is a request you allowed whose call shows the answer on its line.
+fn answered_on_its_call(item: &TranscriptItem, allowed: &BTreeSet<ItemId>) -> bool {
+    matches!(
+        &item.body,
+        ItemBody::Approval(Approval {
+            answer: AnswerState::Answered(ApprovalAnswer {
+                decision: ApprovalDecision::Allow,
+                ..
+            }),
+            tool_call: Some(call),
+            ..
+        }) if allowed.contains(call)
+    )
+}
+
+/// What became of a request, as its tag says it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Answer {
+    Allowed,
+    Denied,
+    /// Claude Code withdrew the request, after an interrupt or when its process ended.
+    Withdrawn,
+}
+
+impl Answer {
+    fn of(answer: &AnswerState<ApprovalAnswer>) -> Option<Self> {
+        match answer {
+            AnswerState::Waiting => None,
+            AnswerState::Answered(ApprovalAnswer {
+                decision: ApprovalDecision::Allow,
+                ..
+            }) => Some(Self::Allowed),
+            AnswerState::Answered(ApprovalAnswer {
+                decision: ApprovalDecision::Deny,
+                ..
+            }) => Some(Self::Denied),
+            AnswerState::Cancelled => Some(Self::Withdrawn),
+        }
+    }
+}
+
+/// A small tag on a call's line: whether you allowed or denied what Claude Code asked.
+#[component]
+fn AnswerTag(answer: Answer) -> Element {
+    let (class, text) = match answer {
+        Answer::Allowed => ("answer-tag allowed", "you allowed"),
+        Answer::Denied => ("answer-tag denied", "you denied"),
+        Answer::Withdrawn => ("answer-tag", "withdrawn"),
+    };
+    rsx! {
+        span { class, "{text}" }
+    }
+}
+
+/// A request Claude Code no longer waits on, whose call does not show its answer: one line with
+/// the tool, the answer and what it asked about. A click shows the whole request.
+#[component]
+fn ApprovalLine(agent: AgentId, id: ItemId, folder: PathBuf, approval: Approval) -> Element {
+    let (open, decided) = use_call_fold(agent, id);
+    let Some(answer) = Answer::of(&approval.answer) else {
+        return rsx! {};
+    };
+    let RequestDetail { line, asked, said } = RequestDetail::of(&folder, &approval);
+    let foldable = !asked.is_empty() || said.is_some();
+    let unfolded = if decided.clicked() {
+        UNFOLDED_CLASS
+    } else {
+        ""
+    };
+    rsx! {
+        div { class: "tool",
+            div {
+                class: if foldable { "tool-head {CALL_LINE_CLASS}" } else { "tool-head" },
+                onclick: move |_| {
+                    if foldable {
+                        decided.set(!open);
+                    }
+                },
+                span { class: "tool-name", "{approval.tool}" }
+                AnswerTag { answer }
+                code { class: "tool-summary approval-asked", "{line}" }
+                if foldable && !open {
+                    FoldChip { fold: FoldKey::Item(id) }
+                }
+                if foldable {
+                    CallFold { open, decided }
+                }
+            }
+            if foldable && open {
+                div { class: "tool-io {unfolded}",
+                    if !asked.is_empty() {
+                        IoRow { kind: IoKind::In, text: asked, fold: FoldEnd::First }
+                    }
+                    if let Some(said) = said {
+                        p { class: "approval-denial", "{said}" }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// What an answered request's line shows, and what it shows unfolded.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct RequestDetail {
+    /// After the tag: an edit's file name, or the first line of a command or a summary.
+    pub line: String,
+    /// What it asked, whole: a command, an edit's file, or a tool's whole input.
+    pub asked: String,
+    /// What you said when you denied it.
+    pub said: Option<String>,
+}
+
+impl RequestDetail {
+    pub(super) fn of(folder: &Path, approval: &Approval) -> Self {
+        let text = cards::approval_text(approval);
+        let (line, asked) = match &approval.edit {
+            Some(edit) => (
+                file_edits::call_path(folder, &edit.path).name,
+                file_edits::shown_path(folder, &edit.path),
+            ),
+            None => (
+                text.lines().next().unwrap_or_default().to_owned(),
+                cards::approval_input(approval).unwrap_or(text),
+            ),
+        };
+        let said = match &approval.answer {
+            AnswerState::Answered(ApprovalAnswer {
+                message: Some(message),
+                ..
+            }) => Some(format!("You said: {message}")),
+            AnswerState::Answered(_) | AnswerState::Waiting | AnswerState::Cancelled => None,
+        };
+        Self { line, asked, said }
+    }
+}
+
 /// Where a call's file is, dim after its name, and its whole path on hover. Nothing for a file at
 /// the top of the agent's folder.
 fn call_folder(folder: &str, path: &Path) -> Element {
@@ -2551,6 +2853,9 @@ fn ToolView(
     folder: PathBuf,
     call: ToolCall,
     stage: CallStage,
+    /// You allowed the call when Claude Code asked.
+    #[props(default)]
+    allowed: bool,
 ) -> Element {
     let (open, decided) = use_call_fold(agent, id);
     let shape = ToolShape::new(&call);
@@ -2583,6 +2888,9 @@ fn ToolView(
                     }
                 },
                 {tool_title(agent, &folder, &call, &shape, layout)}
+                if allowed {
+                    AnswerTag { answer: Answer::Allowed }
+                }
                 if stage == CallStage::Running {
                     RunningMeta { agent, item: id }
                 } else if !meta.is_empty() {
@@ -2616,6 +2924,9 @@ fn EditView(
     folder: PathBuf,
     call: ToolCall,
     stage: CallStage,
+    /// You allowed the edit when Claude Code asked.
+    #[props(default)]
+    allowed: bool,
 ) -> Element {
     let cockpit: Cockpit = use_context();
     let (open, decided) = use_call_fold(agent, id);
@@ -2678,6 +2989,9 @@ fn EditView(
                 span { class: "tool-name", "{call.tool}" }
                 button { class: "path-link mono", onclick: open_file, "{shown.name}" }
                 {call_folder(&shown.folder, &edit.path)}
+                if allowed {
+                    AnswerTag { answer: Answer::Allowed }
+                }
                 match meta {
                     EditMeta::Stage(words) => rsx! {
                         span { class: "tool-meta", "{words}" }
@@ -2970,6 +3284,222 @@ mod tests {
             (None, "A background task ended")
         );
         assert_eq!(task_label(" \"Fix\" ended"), (None, " \"Fix\" ended"));
+    }
+
+    fn request(id: u32, answer: AnswerState<ApprovalAnswer>, call: Option<u32>) -> TranscriptItem {
+        TranscriptItem {
+            id: ItemId::new(id),
+            parent: None,
+            body: ItemBody::Approval(Approval {
+                pending: PendingId::new(format!("request-{id}")),
+                tool: "Bash".to_owned(),
+                summary: "cargo test".to_owned(),
+                input: Value::Null,
+                edit: None,
+                reason: None,
+                answer,
+                tool_call: call.map(ItemId::new),
+            }),
+        }
+    }
+
+    fn answered(decision: ApprovalDecision) -> AnswerState<ApprovalAnswer> {
+        AnswerState::Answered(ApprovalAnswer {
+            decision,
+            message: None,
+        })
+    }
+
+    #[test]
+    fn a_request_you_allowed_shows_on_its_call_when_the_call_is_held() {
+        let command = item(
+            1,
+            None,
+            ItemBody::ToolCall(call("Bash", "cargo test", ToolCallStatus::Done)),
+        );
+        let allowed_held = request(2, answered(ApprovalDecision::Allow), Some(1));
+        let allowed_away = request(4, answered(ApprovalDecision::Allow), Some(3));
+        let denied = request(5, answered(ApprovalDecision::Deny), Some(1));
+        let waiting = request(6, AnswerState::Waiting, Some(1));
+        let items = [&command, &allowed_held, &allowed_away, &denied, &waiting];
+
+        let allowed = allowed_calls(&items);
+
+        assert_eq!(allowed, BTreeSet::from([ItemId::new(1)]));
+        assert!(answered_on_its_call(&allowed_held, &allowed));
+        assert!(
+            !answered_on_its_call(&allowed_away, &allowed),
+            "its call is not held"
+        );
+        assert!(!answered_on_its_call(&denied, &allowed));
+        assert!(!answered_on_its_call(&waiting, &allowed));
+    }
+
+    /// A read joins the reads around it, a skill's call its instructions, and a subagent shows its
+    /// own line: none of them shows the tag, so their requests keep their own line.
+    #[test]
+    fn a_request_you_allowed_keeps_its_line_when_its_call_shares_a_row() {
+        let first_read = item(
+            1,
+            None,
+            ItemBody::ToolCall(call("Read", "src/a.rs", ToolCallStatus::Done)),
+        );
+        let read = item(
+            2,
+            None,
+            ItemBody::ToolCall(call("Read", "src/b.rs", ToolCallStatus::Done)),
+        );
+        let skill = item(
+            4,
+            None,
+            ItemBody::ToolCall(call("Skill", "review", ToolCallStatus::Done)),
+        );
+        let subagent = item(
+            6,
+            None,
+            ItemBody::Subagent(call("Agent", "Explore", ToolCallStatus::Running)),
+        );
+        let command = item(
+            8,
+            None,
+            ItemBody::ToolCall(call("Bash", "cargo test", ToolCallStatus::Running)),
+        );
+        let allow = |id: u32, call: u32| request(id, answered(ApprovalDecision::Allow), Some(call));
+        let requests = [allow(3, 2), allow(5, 4), allow(7, 6), allow(9, 8)];
+        let mut items = vec![&first_read, &read, &skill, &subagent, &command];
+        items.extend(requests.iter());
+
+        assert_eq!(allowed_calls(&items), BTreeSet::from([ItemId::new(8)]));
+    }
+
+    /// A subagent's request shows at the top while it waits: answered, its card leaves from there.
+    /// A denied request's line takes the place of its card.
+    #[test]
+    fn a_request_answered_a_moment_ago_keeps_its_row_until_its_card_left() {
+        let command = item(
+            1,
+            None,
+            ItemBody::ToolCall(call("Bash", "cargo test", ToolCallStatus::Running)),
+        );
+        let allowed = request(2, answered(ApprovalDecision::Allow), Some(1));
+        let subagent = item(
+            3,
+            None,
+            ItemBody::Subagent(call("Agent", "Explore", ToolCallStatus::Running)),
+        );
+        let nested = TranscriptItem {
+            parent: Some(ItemId::new(3)),
+            ..request(4, answered(ApprovalDecision::Allow), None)
+        };
+        let denied = request(5, answered(ApprovalDecision::Deny), Some(1));
+        let items = [&command, &allowed, &subagent, &nested, &denied];
+        let loaded: BTreeSet<ItemId> = items.iter().map(|item| item.id).collect();
+        let top = |leaving: &[u32]| {
+            let leaving: BTreeSet<ItemId> = leaving.iter().copied().map(ItemId::new).collect();
+            let top = TopItems::of(&items, &loaded, None, &leaving);
+            let ids: Vec<u32> = top.items.iter().map(|item| item.id.get()).collect();
+            (ids, top.leaving)
+        };
+
+        let (ids, leaving) = top(&[2, 4, 5]);
+        let (ids_after, leaving_after) = top(&[]);
+
+        assert_eq!(ids, [1, 2, 3, 4, 5]);
+        assert_eq!(
+            leaving,
+            BTreeMap::from([
+                (ItemId::new(2), CardLeaves::Nothing),
+                (ItemId::new(4), CardLeaves::Nothing),
+                (ItemId::new(5), CardLeaves::Line),
+            ])
+        );
+        assert_eq!(ids_after, [1, 3, 5]);
+        assert!(leaving_after.is_empty());
+    }
+
+    #[test]
+    fn a_request_is_tagged_with_what_became_of_it() {
+        assert_eq!(Answer::of(&AnswerState::Waiting), None);
+        assert_eq!(
+            Answer::of(&answered(ApprovalDecision::Allow)),
+            Some(Answer::Allowed)
+        );
+        assert_eq!(
+            Answer::of(&answered(ApprovalDecision::Deny)),
+            Some(Answer::Denied)
+        );
+        assert_eq!(Answer::of(&AnswerState::Cancelled), Some(Answer::Withdrawn));
+    }
+
+    /// The daemon's summary keeps a command's first line, and may be empty for an MCP tool.
+    #[test]
+    fn an_answered_request_unfolds_to_what_it_asked_whole() {
+        let folder = Path::new("/work/app");
+        let with = |tool: &str, summary: &str, input: Value, answer| Approval {
+            pending: PendingId::new("request-1".to_owned()),
+            tool: tool.to_owned(),
+            summary: summary.to_owned(),
+            input,
+            edit: None,
+            reason: None,
+            answer,
+            tool_call: None,
+        };
+        let command = with(
+            "Bash",
+            "cargo clean",
+            serde_json::json!({ "command": "cargo clean\ncargo build" }),
+            AnswerState::Answered(ApprovalAnswer {
+                decision: ApprovalDecision::Deny,
+                message: Some("Keep the cache.".to_owned()),
+            }),
+        );
+        let mcp = with(
+            "mcp__notes__search",
+            "",
+            serde_json::json!({ "query": "release" }),
+            AnswerState::Cancelled,
+        );
+        let edit = Approval {
+            edit: Some(FileEdit {
+                path: PathBuf::from("/work/app/src/grid.rs"),
+                old_text: "a".to_owned(),
+                new_text: "b".to_owned(),
+                texts: EditTexts::Kept,
+            }),
+            ..with(
+                "Edit",
+                "src/grid.rs",
+                Value::Null,
+                answered(ApprovalDecision::Allow),
+            )
+        };
+
+        assert_eq!(
+            RequestDetail::of(folder, &command),
+            RequestDetail {
+                line: "cargo clean".to_owned(),
+                asked: "cargo clean\ncargo build".to_owned(),
+                said: Some("You said: Keep the cache.".to_owned()),
+            }
+        );
+        assert_eq!(
+            RequestDetail::of(folder, &mcp),
+            RequestDetail {
+                line: String::new(),
+                asked: "{\n  \"query\": \"release\"\n}".to_owned(),
+                said: None,
+            },
+            "the line does not show the input's first line"
+        );
+        assert_eq!(
+            RequestDetail::of(folder, &edit),
+            RequestDetail {
+                line: "grid.rs".to_owned(),
+                asked: "src/grid.rs".to_owned(),
+                said: None,
+            }
+        );
     }
 
     #[test]
@@ -3504,7 +4034,14 @@ mod tests {
             instructions: None,
         };
 
-        let view = RowView::of(&row, &Children::new(), &awaiting, None);
+        let view = RowView::of(
+            &row,
+            &Children::new(),
+            &awaiting,
+            &BTreeSet::new(),
+            &BTreeMap::new(),
+            None,
+        );
 
         assert!(matches!(
             view,
