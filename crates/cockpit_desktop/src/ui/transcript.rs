@@ -954,8 +954,7 @@ pub fn TranscriptView(in_view: Signal<Option<InView>>) -> Element {
             // `chat_scroll::LOADS_OLDER_ATTRIBUTE`, written out: an attribute name takes no constant.
             "data-loads-older": loads_older.then_some("true"),
             div { class: "chat-column",
-                // `chat_scroll::EARLY_ATTRIBUTE`, written out: the scroll script holds none of
-                // these rows in place, as older messages arrive below them.
+                // `chat_scroll::EARLY_ATTRIBUTE`, written out: an attribute name takes no constant.
                 div { class: "early-rows", "data-early": "true",
                     for unit in early {
                         {top_unit(unit, agent, &folder)}
