@@ -609,7 +609,7 @@ fn unlinked(content: Vec<Inline>) -> Vec<Inline> {
 
 /// An http or https address the browser opener reads as one. It opens an address that `url` cannot
 /// parse, such as `https://x:99999`, as a local file.
-fn is_web_url(url: &str) -> bool {
+pub fn is_web_url(url: &str) -> bool {
     let web_scheme = url.split_once(SCHEME_SEPARATOR).is_some_and(|(scheme, _)| {
         WEB_SCHEMES
             .iter()
@@ -1357,6 +1357,24 @@ mod tests {
             }]
         );
         assert_eq!(line.get(6..22), Some("src/main.rs:12:5"));
+    }
+
+    /// The terminal opens what this accepts, from any program's output.
+    #[test]
+    fn only_http_and_https_addresses_are_web_urls() {
+        let urls = [
+            "https://example.org/login?code=42",
+            "HTTP://example.org",
+            "file:///etc/passwd",
+            "mailto:someone@example.org",
+            "javascript:alert(1)",
+            "https://x:99999",
+            "ssh://example.org",
+        ];
+
+        let web: Vec<bool> = urls.iter().map(|url| is_web_url(url)).collect();
+
+        assert_eq!(web, [true, true, false, false, false, false, false]);
     }
 
     #[test]

@@ -6,16 +6,15 @@ use std::path::PathBuf;
 use std::rc::Rc;
 
 use cockpit_protocol::{AgentId, ItemId};
-use dioxus::dioxus_core::spawn_forever;
 use dioxus::prelude::*;
 
+use crate::bridge;
 use crate::connection::Cockpit;
 use crate::render::{self, Block, FileRef, Inline, parse_markdown, parse_markdown_file};
 use crate::state::chat_images::{self, ImageKey, ImageSize};
 use crate::state::{Loadable, actions};
 use crate::ui::code::CodeBlock;
 use crate::ui::icons::{Icon, IconKind};
-use crate::{bridge, browser};
 
 /// A table cell this short keeps to one line: a name, a number or a status reads badly wrapped,
 /// and a table too wide for the column scrolls instead.
@@ -231,14 +230,7 @@ fn WebLink(agent: AgentId, item: Option<ItemId>, url: String, content: Vec<Inlin
             href: "{url}",
             onclick: move |event: MouseEvent| {
                 event.prevent_default();
-                let url = url.clone();
-                // Not tied to the link, which may leave the screen before the opener is done.
-                spawn_forever(async move {
-                    if let Err(error) = browser::open(&url).await {
-                        tracing::warn!("cannot open {url}: {error}");
-                        cockpit.update(|state| state.ui.report(format!("Cannot open {url}: {error}")));
-                    }
-                });
+                cockpit.open_in_browser(url.clone());
             },
             {inlines_view(Source { agent, item }, &content)}
         }

@@ -4,4 +4,9 @@ The terminal emulator of the terminal pane: [coder/ghostty-web](https://github.c
 
 `ghostty-web.js` is the package's `dist/ghostty-web.js`, unchanged. It holds Ghostty's parser as an inline WebAssembly module, so it needs no other file. The npm tarball's sha512 integrity was `0puDBik2qapbD/QQBW9o5ZHfXnZBqZWx/ctBiVtKZ6ZLds4NYb+wZuw1cRLXZk9zYovIQ908z3rvFhexAvc5Hg==`.
 
-The pane's script uses two of its private members, to stop drawing the terminals not on screen: `Terminal.startRenderLoop()` and `Terminal.animationFrameId`. Check them when updating the library.
+The pane's script uses three of its private members:
+
+- `Terminal.startRenderLoop()` and `Terminal.animationFrameId`, to stop drawing the terminals not on screen.
+- `Terminal.linkDetector.providers`, to open the library's own web links in the browser: their `activate` calls `window.open`, which the window ignores.
+
+Check them when updating the library.

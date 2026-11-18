@@ -12,6 +12,7 @@ use cockpit_client::{
 use cockpit_daemon::PROGRAM;
 use cockpit_protocol::{AgentId, Catchup, Request, TerminalChange, TerminalUpdate};
 use dioxus::desktop::DesktopContext;
+use dioxus::dioxus_core::spawn_forever;
 use dioxus::prelude::*;
 use tokio::sync::mpsc;
 
@@ -43,7 +44,7 @@ use crate::state::{
 };
 use crate::terminal_feed::{self, FeedSender, Output};
 use crate::update_script::APP_VERSION;
-use crate::{bridge, demo, format, release_daemon, server_daemon, update_script};
+use crate::{bridge, browser, demo, format, release_daemon, server_daemon, update_script};
 
 /// What the window was started with.
 #[derive(Debug, Clone, PartialEq)]
@@ -342,6 +343,17 @@ impl Cockpit {
         self.change(|state| {
             change(state);
             Vec::new()
+        });
+    }
+
+    /// Opens `url` in the browser, and reports a failure. The opening outlives the control that
+    /// asked for it, which may leave the screen first.
+    pub fn open_in_browser(self, url: String) {
+        spawn_forever(async move {
+            if let Err(error) = browser::open(&url).await {
+                tracing::warn!("cannot open {url}: {error}");
+                self.update(|state| state.ui.report(format!("Cannot open {url}: {error}")));
+            }
         });
     }
 

@@ -12,6 +12,7 @@ use cockpit_protocol::{AgentId, TerminalId, TerminalParams, TerminalSize};
 use dioxus::prelude::*;
 use serde::{Deserialize, Serialize};
 
+use crate::bridge;
 use crate::connection::Cockpit;
 use crate::keymap::{Chord, Command};
 use crate::machine::MachineId;
@@ -174,8 +175,44 @@ function terminalFor(agent, terminal) {
       send({ type: "toggle" });
       return true;
     }
+    // Ctrl+Shift+C copies, as in Linux terminals. ghostty-web would send it as Ctrl+C, which
+    // stops the command that runs. Its letter is found as ghostty-web finds it, and AltGr, which
+    // is Ctrl+Alt on Windows, still types its character.
+    const ascii = event.key.length === 1 && event.key.charCodeAt(0) < 128;
+    const letterC = ascii ? event.key.toLowerCase() === "c" : event.code === "KeyC";
+    if (event.type === "keydown" && event.ctrlKey && event.shiftKey && !event.altKey && letterC) {
+      event.preventDefault();
+      if (term.hasSelection()) {
+        send({ type: "copy", text: term.getSelection() });
+      }
+      return true;
+    }
     return false;
   });
+  // ghostty-web opens its web links with `window.open`, which the window ignores: the app opens
+  // the web ones in the browser, and the others are no links. The pointer over a link shows
+  // where it leads, which a program's own link may hide behind other text.
+  const providers = term.linkDetector?.providers;
+  if (providers === undefined) {
+    send({ type: "problem", text: "ghostty-web has no link providers to open in the browser" });
+  }
+  for (const provider of providers ?? []) {
+    const provide = provider.provideLinks.bind(provider);
+    provider.provideLinks = (y, callback) => provide(y, (links) => {
+      const web = (links ?? []).filter((link) => /^https?:\/\//i.test(link.text)).map((link) => ({
+        ...link,
+        activate: (event) => {
+          if (event.ctrlKey || event.metaKey) {
+            send({ type: "open_url", url: link.text });
+          }
+        },
+        hover: (on) => {
+          box.title = on ? link.text : "";
+        },
+      }));
+      callback(web.length === 0 ? undefined : web);
+    });
+  }
   // `path:line` references, which the app finds as in the chat. A Ctrl+click opens the file view.
   term.registerLinkProvider({
     provideLinks(y, callback) {
@@ -444,6 +481,14 @@ enum FromPage {
         path: String,
         line: u32,
     },
+    /// A Ctrl+click on a web link, which a program may have marked with any address.
+    OpenUrl {
+        url: String,
+    },
+    /// Ctrl+Shift+C on a selection.
+    Copy {
+        text: String,
+    },
 }
 
 /// What the page's script receives.
@@ -615,6 +660,17 @@ fn receive(cockpit: Cockpit, script: document::Eval, message: FromPage) {
         FromPage::OpenFile { agent, path, line } => cockpit.update(|state| {
             actions::open_file(state, agent, PathBuf::from(path), Some(line));
         }),
+        // Only a web address opens: the opener would run any other, such as a `file:` one.
+        FromPage::OpenUrl { url } if !render::is_web_url(&url) => {
+            tracing::warn!("a terminal link is no web address: {url}");
+            cockpit.update(|state| {
+                state
+                    .ui
+                    .report(format!("Cannot open {url}: only web addresses open"))
+            });
+        }
+        FromPage::OpenUrl { url } => cockpit.open_in_browser(url),
+        FromPage::Copy { text } => bridge::copy_to_clipboard(text),
         FromPage::Input {
             agent,
             terminal,
@@ -890,6 +946,8 @@ mod tests {
             r#"{"type":"size","size":300}"#,
             r#"{"type":"links","id":5,"agent":3,"text":"a.rs:2"}"#,
             r#"{"type":"open_file","agent":3,"path":"a.rs","line":2}"#,
+            r#"{"type":"open_url","url":"https://example.org/login"}"#,
+            r#"{"type":"copy","text":"ls"}"#,
         ];
 
         let parsed: Vec<FromPage> = from_page
@@ -926,6 +984,8 @@ mod tests {
                     FromPage::Size { size: 300 },
                     FromPage::Links { id: 5, .. },
                     FromPage::OpenFile { line: 2, .. },
+                    FromPage::OpenUrl { .. },
+                    FromPage::Copy { .. },
                 ]
             ),
             "{parsed:?}"

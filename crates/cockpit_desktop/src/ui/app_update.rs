@@ -20,7 +20,7 @@ use crate::ui::icons::{Icon, IconKind};
 use crate::ui::presence::{Presence, use_presence};
 use crate::ui::settings::APP_ICON;
 use crate::update_script::{APP_VERSION, app_commit};
-use crate::{browser, format, self_update};
+use crate::{format, self_update};
 
 const TITLE_ID: &str = "app-update-title";
 const CHECK_LABEL_ID: &str = "setting-release-check";
@@ -55,14 +55,6 @@ fn start_update(cockpit: Cockpit) {
     } else {
         spawn_forever(self_update::run(signal, started));
     }
-}
-
-fn open_page(cockpit: Cockpit, url: String) {
-    spawn_forever(async move {
-        if let Err(error) = browser::open(&url).await {
-            cockpit.update(|state| state.ui.report(format!("Cannot open {url}: {error}")));
-        }
-    });
 }
 
 /// Starts the new app, then closes the window as its close button does, which stops the agents
@@ -269,7 +261,7 @@ fn ReleaseRow(release: Release, now: SystemTime) -> Element {
             div { class: "about-actions",
                 button {
                     class: "button",
-                    onclick: move |_| open_page(cockpit, page.clone()),
+                    onclick: move |_| cockpit.open_in_browser(page.clone()),
                     "What's new"
                 }
                 if running {
@@ -415,7 +407,7 @@ fn ReleaseNotes(release: Release) -> Element {
             }
             button {
                 class: "release-notes-link",
-                onclick: move |_| open_page(cockpit, page.clone()),
+                onclick: move |_| cockpit.open_in_browser(page.clone()),
                 "The full notes on GitHub"
                 Icon { kind: IconKind::External, size: 12 }
             }
@@ -455,7 +447,7 @@ fn ReleasePageButton(page: String) -> Element {
     rsx! {
         button {
             class: "button primary",
-            onclick: move |_| open_page(cockpit, page.clone()),
+            onclick: move |_| cockpit.open_in_browser(page.clone()),
             "Open the release page"
         }
     }

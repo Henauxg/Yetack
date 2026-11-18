@@ -8,11 +8,11 @@ use std::cmp::Ordering;
 
 use cockpit_daemon::PROGRAM;
 use cockpit_protocol::{AgentId, AgentStatus, PROTOCOL_VERSION};
-use dioxus::dioxus_core::spawn_forever;
 use dioxus::prelude::*;
 
 use crate::connection::Cockpit;
 use crate::daemon_label::DaemonPlace;
+use crate::format;
 use crate::machine::MachineId;
 use crate::state::daemon_probe::{
     APP_BIN_FOLDER, DaemonOwner, DaemonProbe, PackageFormat, USER_BIN_FOLDER,
@@ -29,7 +29,6 @@ use crate::ui::icons::{Icon, IconKind};
 use crate::ui::machines::machine_icon;
 use crate::ui::no_daemon::{EveryTimeTick, IN_APP_DETAIL};
 use crate::ui::presence::use_presence;
-use crate::{browser, format};
 
 const TITLE_ID: &str = "no-daemon-title";
 
@@ -233,13 +232,7 @@ fn ReleasePageButton() -> Element {
     rsx! {
         button {
             class: "button",
-            onclick: move |_| {
-                spawn_forever(async move {
-                    if let Err(error) = browser::open(RELEASES_URL).await {
-                        cockpit.update(|state| state.ui.report(format!("Cannot open {RELEASES_URL}: {error}")));
-                    }
-                });
-            },
+            onclick: move |_| cockpit.open_in_browser(RELEASES_URL.to_owned()),
             "Open the release page"
         }
     }
