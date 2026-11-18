@@ -149,7 +149,8 @@ pub struct FileUpdate {
     pub lines: BTreeSet<u32>,
 }
 
-/// How long a request's card stays once answered, shrinking: the stylesheet's `--motion-out`.
+/// How long a request's card stays once answered, shrinking: at least the stylesheet's
+/// `--motion-out`.
 pub const CARD_EXIT: Duration = Duration::from_millis(120);
 
 #[derive(Debug, Clone, PartialEq)]

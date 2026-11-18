@@ -191,6 +191,7 @@ pub fn Presence(open: bool, children: Element) -> Element {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::state::CARD_EXIT;
 
     /// The app draws agent 1, whose element is closed, then switches to agent 2, whose element
     /// is open: that element draws at once while it stays open. Closed and opened again on the
@@ -268,9 +269,11 @@ mod tests {
             .and_then(|value| value.trim().strip_suffix("ms;"))
             .and_then(|millis| millis.parse::<u64>().ok());
 
-        assert!(
-            declared.is_some_and(|millis| Duration::from_millis(millis) <= EXIT),
-            "`{TOKEN}` is {declared:?} ms, over the {EXIT:?} the element stays"
-        );
+        for exit in [EXIT, CARD_EXIT] {
+            assert!(
+                declared.is_some_and(|millis| Duration::from_millis(millis) <= exit),
+                "`{TOKEN}` is {declared:?} ms, over the {exit:?} the element stays"
+            );
+        }
     }
 }
