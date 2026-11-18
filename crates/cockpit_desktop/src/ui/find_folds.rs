@@ -841,6 +841,12 @@ mod tests {
             new_text: "b".to_owned(),
             texts: EditTexts::Kept,
         });
+        let read = call(
+            "Read",
+            "/work/billing/src/totals.rs",
+            json!({"file_path": "/work/billing/src/totals.rs"}),
+            "1\tfn total() {}",
+        );
         let items = [
             item(
                 1,
@@ -850,6 +856,7 @@ mod tests {
             item(2, Some(1), ItemBody::ToolCall(bash)),
             item(3, Some(1), ItemBody::ToolCall(mcp)),
             item(4, Some(1), ItemBody::ToolCall(edit)),
+            item(5, Some(1), ItemBody::ToolCall(read)),
         ];
         let subagent = |query: &str| {
             matches(&items, query)
@@ -857,14 +864,18 @@ mod tests {
                 .copied()
         };
 
-        // A command shows its description, an MCP call its server and tool, an edit its path
-        // from the agent's folder.
+        // A command shows its description, an MCP call its server and tool, a call on a file
+        // its name, then its folder from the agent's folder.
         assert_eq!(subagent("rg -c"), None);
         assert_eq!(subagent("count the places"), Some(1));
         assert_eq!(subagent("mcp__"), None);
         assert_eq!(subagent("[list_tickets]"), Some(1));
         assert_eq!(subagent("/work/app"), None);
-        assert_eq!(subagent("src/lexer.rs"), Some(1));
+        assert_eq!(subagent("lexer.rs"), Some(1));
+        assert_eq!(subagent("src/lexer.rs"), None);
+        assert_eq!(subagent("totals.rs"), Some(1));
+        assert_eq!(subagent("../billing/src"), Some(1));
+        assert_eq!(subagent("billing/src/totals.rs"), None);
     }
 
     #[test]

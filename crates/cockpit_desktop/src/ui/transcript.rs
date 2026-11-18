@@ -43,7 +43,7 @@ use crate::ui::presence::{Shown, use_presence};
 use crate::ui::question_card::{CardPlace, QuestionCard};
 use crate::ui::tool_rows::{self, ExploredView, Row, SkillView};
 use crate::ui::work_runs::{self, Unit, WorkSummary};
-use crate::{bridge, format};
+use crate::{bridge, format, path_style};
 
 /// What a call's line says while it runs, before its time or its count of calls.
 const RUNNING_WORD: &str = "running";
@@ -2094,7 +2094,7 @@ fn call_folder(folder: &str, path: &Path) -> Element {
     if folder.is_empty() {
         return rsx! {};
     }
-    let whole = path.display().to_string();
+    let whole = path_style::shown(path);
     rsx! {
         span { class: "call-folder mono", title: "{whole}", "{folder}" }
     }
@@ -2754,11 +2754,12 @@ pub(super) const THINKING_LABEL: &str = "Thinking";
 /// name and its description, file or summary, then its result in a word. The find counts them
 /// while the fold above hides them.
 pub(super) fn compact_line(folder: &Path, call: &ToolCall, stage: CallStage) -> Vec<String> {
+    let file_words = |path: &Path| {
+        let shown = file_edits::call_path(folder, path);
+        vec![call.tool.clone(), shown.name, shown.folder]
+    };
     let mut words = match &call.edit {
-        Some(edit) => vec![
-            call.tool.clone(),
-            file_edits::shown_path(folder, &edit.path),
-        ],
+        Some(edit) => file_words(&edit.path),
         None => match ToolShape::new(call) {
             ToolShape::Command {
                 description: Some(description),
@@ -2766,6 +2767,7 @@ pub(super) fn compact_line(folder: &Path, call: &ToolCall, stage: CallStage) -> 
             } => vec![call.tool.clone(), description],
             ToolShape::Mcp { server, tool, .. } if tool.is_empty() => vec![server],
             ToolShape::Mcp { server, tool, .. } => vec![server, format!("[{tool}]")],
+            ToolShape::File { path, .. } if !call.summary.is_empty() => file_words(&path),
             ToolShape::Command { .. } | ToolShape::File { .. } | ToolShape::Other => {
                 vec![call.tool.clone(), call.summary.clone()]
             }
