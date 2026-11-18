@@ -43,7 +43,7 @@ use crate::ui::presence::{Shown, use_presence};
 use crate::ui::question_card::{CardPlace, QuestionCard};
 use crate::ui::tool_rows::{self, ExploredView, Row, SkillView};
 use crate::ui::work_runs::{self, Unit, WorkSummary};
-use crate::{bridge, format};
+use crate::{bridge, format, path_style};
 
 /// What a call's line says while it runs, before its time or its count of calls.
 const RUNNING_WORD: &str = "running";
@@ -1638,7 +1638,7 @@ pub fn ItemView(
             EditView { agent, id, folder, stage: CallStage::new(&call, awaits_approval), call }
         },
         ItemBody::ToolCall(call) => rsx! {
-            ToolView { agent, id, stage: CallStage::new(&call, awaits_approval), call }
+            ToolView { agent, id, folder, stage: CallStage::new(&call, awaits_approval), call }
         },
         ItemBody::Subagent(call) => rsx! {
             SubagentView { agent, folder, id, call, nested }
@@ -2043,8 +2043,14 @@ enum TitleLayout {
     Compact,
 }
 
-/// The tool's name in bold, then the description or the summary.
-fn tool_title(agent: AgentId, call: &ToolCall, shape: &ToolShape, layout: TitleLayout) -> Element {
+/// The tool's name in bold, then the description, the summary, or the file's name and folder.
+fn tool_title(
+    agent: AgentId,
+    folder: &Path,
+    call: &ToolCall,
+    shape: &ToolShape,
+    layout: TitleLayout,
+) -> Element {
     match shape {
         ToolShape::Command {
             description: Some(description),
@@ -2065,10 +2071,11 @@ fn tool_title(agent: AgentId, call: &ToolCall, shape: &ToolShape, layout: TitleL
             }
         },
         ToolShape::File { path, line } if !call.summary.is_empty() => {
-            let (path, line) = (path.clone(), *line);
+            let shown = file_edits::call_path(folder, path);
             rsx! {
                 span { class: "tool-name", "{call.tool}" }
-                FileLink { agent, path, line, text: call.summary.clone() }
+                FileLink { agent, path: path.clone(), line: *line, text: shown.name }
+                {call_folder(&shown.folder, path)}
             }
         }
         ToolShape::Command { .. } | ToolShape::File { .. } | ToolShape::Other => rsx! {
@@ -2080,7 +2087,19 @@ fn tool_title(agent: AgentId, call: &ToolCall, shape: &ToolShape, layout: TitleL
     }
 }
 
-/// A tool call's summary that opens its file in the file view.
+/// Where a call's file is, dim after its name, and its whole path on hover. Nothing for a file at
+/// the top of the agent's folder.
+fn call_folder(folder: &str, path: &Path) -> Element {
+    if folder.is_empty() {
+        return rsx! {};
+    }
+    let whole = path_style::shown(path);
+    rsx! {
+        span { class: "call-folder mono", title: "{whole}", "{folder}" }
+    }
+}
+
+/// A tool call's file name that opens the file in the file view.
 #[component]
 fn FileLink(agent: AgentId, path: PathBuf, line: Option<u32>, text: String) -> Element {
     let cockpit: Cockpit = use_context();
@@ -2479,7 +2498,13 @@ fn CallFold(open: bool, decided: KeptFold) -> Element {
 }
 
 #[component]
-fn ToolView(agent: AgentId, id: ItemId, call: ToolCall, stage: CallStage) -> Element {
+fn ToolView(
+    agent: AgentId,
+    id: ItemId,
+    folder: PathBuf,
+    call: ToolCall,
+    stage: CallStage,
+) -> Element {
     let (open, decided) = use_call_fold(agent, id);
     let shape = ToolShape::new(&call);
     let meta = tool_meta(&call, stage);
@@ -2510,7 +2535,7 @@ fn ToolView(agent: AgentId, id: ItemId, call: ToolCall, stage: CallStage) -> Ele
                         decided.set(!open);
                     }
                 },
-                {tool_title(agent, &call, &shape, layout)}
+                {tool_title(agent, &folder, &call, &shape, layout)}
                 if stage == CallStage::Running {
                     RunningMeta { agent, item: id }
                 } else if !meta.is_empty() {
@@ -2569,7 +2594,7 @@ fn EditView(
     } else {
         LineNumbers::Hidden
     };
-    let shown_path = file_edits::shown_path(&folder, &edit.path);
+    let shown = file_edits::call_path(&folder, &edit.path);
     let path = edit.path.clone();
     // A click on the path opens the file and leaves the call's fold as it is.
     let open_file = move |event: MouseEvent| {
@@ -2604,7 +2629,8 @@ fn EditView(
                     }
                 },
                 span { class: "tool-name", "{call.tool}" }
-                button { class: "path-link mono", onclick: open_file, "{shown_path}" }
+                button { class: "path-link mono", onclick: open_file, "{shown.name}" }
+                {call_folder(&shown.folder, &edit.path)}
                 match meta {
                     EditMeta::Stage(words) => rsx! {
                         span { class: "tool-meta", "{words}" }
@@ -2727,11 +2753,12 @@ pub(super) const THINKING_LABEL: &str = "Thinking";
 /// name and its description, file or summary, then its result in a word. The find counts them
 /// while the fold above hides them.
 pub(super) fn compact_line(folder: &Path, call: &ToolCall, stage: CallStage) -> Vec<String> {
+    let file_words = |path: &Path| {
+        let shown = file_edits::call_path(folder, path);
+        vec![call.tool.clone(), shown.name, shown.folder]
+    };
     let mut words = match &call.edit {
-        Some(edit) => vec![
-            call.tool.clone(),
-            file_edits::shown_path(folder, &edit.path),
-        ],
+        Some(edit) => file_words(&edit.path),
         None => match ToolShape::new(call) {
             ToolShape::Command {
                 description: Some(description),
@@ -2739,6 +2766,7 @@ pub(super) fn compact_line(folder: &Path, call: &ToolCall, stage: CallStage) -> 
             } => vec![call.tool.clone(), description],
             ToolShape::Mcp { server, tool, .. } if tool.is_empty() => vec![server],
             ToolShape::Mcp { server, tool, .. } => vec![server, format!("[{tool}]")],
+            ToolShape::File { path, .. } if !call.summary.is_empty() => file_words(&path),
             ToolShape::Command { .. } | ToolShape::File { .. } | ToolShape::Other => {
                 vec![call.tool.clone(), call.summary.clone()]
             }
@@ -2772,7 +2800,13 @@ pub(crate) fn CompactItem(
                 .filter(|output| !output.is_empty() && call.tool.parse::<SearchTool>().is_ok());
             if let Some(output) = found {
                 let open = decided.decided().unwrap_or(false);
-                let title = tool_title(agent, call, &ToolShape::new(call), TitleLayout::Compact);
+                let title = tool_title(
+                    agent,
+                    &folder,
+                    call,
+                    &ToolShape::new(call),
+                    TitleLayout::Compact,
+                );
                 return rsx! {
                     div { class: "compact-search",
                         button {
@@ -2799,13 +2833,20 @@ pub(crate) fn CompactItem(
             }
             let title = match &call.edit {
                 Some(edit) => {
-                    let path = file_edits::shown_path(&folder, &edit.path);
+                    let shown = file_edits::call_path(&folder, &edit.path);
                     rsx! {
                         span { class: "tool-name", "{call.tool}" }
-                        code { class: "tool-summary", "{path}" }
+                        code { class: "tool-summary", "{shown.name}" }
+                        {call_folder(&shown.folder, &edit.path)}
                     }
                 }
-                None => tool_title(agent, call, &ToolShape::new(call), TitleLayout::Compact),
+                None => tool_title(
+                    agent,
+                    &folder,
+                    call,
+                    &ToolShape::new(call),
+                    TitleLayout::Compact,
+                ),
             };
             rsx! {
                 div { class: "compact-tool {stage.class()}",

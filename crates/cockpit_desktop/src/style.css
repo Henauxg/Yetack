@@ -3486,6 +3486,17 @@ html.reordering * {
   color: var(--muted);
 }
 
+/* Where a call's file is, after its name: dim, and cut at its end when the line is narrow. */
+.call-folder {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  font-size: 11px;
+  color: var(--faint);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 /* 6 px between calls and notice lines in a row, in place of the column's 14 px gap: the entry's
    top margin is already -6 px. A "New" divider or an older-step note above the call keeps the
    full gap. */
