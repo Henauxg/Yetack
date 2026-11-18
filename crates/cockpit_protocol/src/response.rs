@@ -181,6 +181,11 @@ pub struct HistoryPage {
     /// Oldest first.
     pub items: Vec<TranscriptItem>,
     pub older_items: OlderItems,
+    /// The subagent calls the items run under that are older than the page, oldest first, so a
+    /// subagent's work shows under its call. Older items between them and the page stay out, and
+    /// so does a call past the page's byte budget.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub ancestors: Vec<TranscriptItem>,
 }
 
 /// Whether a transcript holds items older than a history page's first one.

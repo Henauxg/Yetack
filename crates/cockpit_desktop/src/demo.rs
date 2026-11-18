@@ -1721,6 +1721,7 @@ pub fn state(daemon: DaemonLabel) -> AppState {
             entry.transcript.merge_page(HistoryPage {
                 items: sample.items,
                 older_items: OlderItems::None,
+                ancestors: Vec::new(),
             });
         }
         entry.details = Loadable::Loaded(sample.details);
@@ -1848,6 +1849,7 @@ fn insert_server<const N: usize>(
         entry.transcript.merge_page(HistoryPage {
             items,
             older_items: OlderItems::None,
+            ancestors: Vec::new(),
         });
         entry.details = Loadable::Loaded(details());
         entry.commands = commands();
@@ -2311,12 +2313,14 @@ pub fn answer(state: &AppState, request: &Request) -> Result<ResponseBody, Reque
                 None => HistoryPage {
                     items: live_page(),
                     older_items: OlderItems::Exist,
+                    ancestors: Vec::new(),
                 },
                 Some(before) => HistoryPage {
                     items: (LIVE_OLDER_FIRST_ID..before.get())
                         .map(|id| item(id, None, live_entry(id)))
                         .collect(),
                     older_items: OlderItems::None,
+                    ancestors: Vec::new(),
                 },
             };
             Ok(ResponseBody::History(page))
@@ -2324,6 +2328,7 @@ pub fn answer(state: &AppState, request: &Request) -> Result<ResponseBody, Reque
         Request::AgentHistory(_) => Ok(ResponseBody::History(HistoryPage {
             items: Vec::new(),
             older_items: OlderItems::None,
+            ancestors: Vec::new(),
         })),
         Request::SessionsList => Ok(ResponseBody::Sessions {
             sessions: sessions(SystemTime::now()),

@@ -7,10 +7,17 @@
 //! not, so the script does it. It tells the app only when the chat reaches or leaves its bottom,
 //! and when another entry comes to the top of the view.
 //!
-//! Within [`NEAR_TOP_SCREENS`] of the top, while the chat has [`LOADS_OLDER_ATTRIBUTE`], it asks
-//! for older messages, once per first entry: the chat draws more of the rows it holds, or loads
-//! the page before them. Either changes the first entry, so the next ask follows if the view is
-//! still near the top.
+//! Within [`NEAR_TOP_SCREENS`] of where older messages arrive, while the chat has
+//! [`LOADS_OLDER_ATTRIBUTE`], it asks for them, once per first entry and first entry past the
+//! subagent calls held before the loaded messages ([`EARLY_ATTRIBUTE`]). The chat then draws more
+//! of the rows it holds, which changes the first entry, or loads the page before them, which
+//! arrives below those calls and changes the second. The next ask follows if the view is still
+//! near.
+//!
+//! Older messages arrive at the top of the column, or below those calls when it has some. At the
+//! top, the view holds the first entry past them while it shows, so it moves down as a page comes.
+//! A view that holds one of those calls, as after a reveal of one, asks for nothing until the first
+//! entry past them shows: a page would arrive below the view and leave it where it is.
 
 use cockpit_protocol::{AgentId, ItemId};
 use dioxus::prelude::*;
@@ -44,11 +51,15 @@ pub const REVEALED_CLASS: &str = "chat-revealed";
 /// chat's view writes it out, since an attribute name in `rsx!` takes no constant.
 pub const LOADS_OLDER_ATTRIBUTE: &str = "data-loads-older";
 
+/// Marks the subagent calls the chat holds before its first loaded message, which older messages
+/// arrive below. The chat's view writes it out.
+pub const EARLY_ATTRIBUTE: &str = "data-early";
+
 /// How close to the bottom, in pixels, the chat still follows new entries.
 const BOTTOM_THRESHOLD_PX: u16 = 40;
 
-/// How near the top, in heights of the view, the chat asks for older messages, so that they usually
-/// come before the user reaches the top.
+/// How near the place older messages arrive, in heights of the view, the chat asks for them, so
+/// that they usually come before the user reaches it.
 const NEAR_TOP_SCREENS: u8 = 2;
 
 /// The room, in pixels, above an entry the chat scrolls to.
@@ -159,6 +170,17 @@ const firstInView = (below = 0) => {
   const element = entry === undefined ? null : shown(entry);
   return element === null ? null : { id: entry.id, top: element.getBoundingClientRect().top - top };
 };
+// The subagent calls held before the first loaded message, which older messages arrive below.
+const isEarly = (entry) => entry.closest(`[${settings.early_attribute}]`) !== null;
+// The first entry past those calls.
+const firstLate = (entries) => {
+  for (const entry of entries) {
+    if (!isEarly(entry)) {
+      return entry;
+    }
+  }
+  return null;
+};
 // The entry the view keeps in place: the first one whose top is below the view's top, even past
 // its bottom when one row fills the view. The chat keeps its distance from the bottom, so a row
 // that changes height moves only the rows above it. A row cut by the view's top folds as it comes
@@ -170,7 +192,13 @@ const anchorInView = () => {
     const element = shown(entry);
     return element === null || element.getBoundingClientRect().top >= top;
   });
-  const entry = entries[low];
+  // At the very top, the held subagent calls come first. Older messages arrive below them, so the
+  // first entry past them stays in place while it shows: the view then moves down as they come.
+  const late = entries[low] !== undefined && isEarly(entries[low]) ? firstLate(entries) : null;
+  const lateElement = late === null ? null : shown(late);
+  const entry = lateElement !== null && lateElement.getBoundingClientRect().top < box.getBoundingClientRect().bottom
+    ? late
+    : entries[low];
   const element = entry === undefined ? null : shown(entry);
   return element === null ? firstInView() : { id: entry.id, top: element.getBoundingClientRect().top - top };
 };
@@ -183,6 +211,19 @@ const lastInView = () => {
     return element === null || element.getBoundingClientRect().top >= bottom;
   });
   return low === 0 ? null : entries[low - 1];
+};
+// The view holds one of the subagent calls held before the first loaded message, as after a
+// reveal of one. Older messages would arrive below the view and leave it near the top, so the chat
+// asks for none while it does.
+const holdsEarly = () => {
+  const entry = following || anchor === null ? null : document.getElementById(anchor.id);
+  return entry !== null && isEarly(entry);
+};
+// Where older messages arrive: below the subagent calls held before the first loaded message, or
+// at the column's top.
+const olderTop = () => {
+  const held = column.querySelector(`[${settings.early_attribute}]`)?.lastElementChild ?? null;
+  return held === null ? column.getBoundingClientRect().top : held.getBoundingClientRect().bottom;
 };
 // An entry's id ends with its item's: see `entry_id`.
 const itemOf = (entry) => entry === null ? null : Number(entry.id.slice(entry.id.lastIndexOf("-") + 1));
@@ -205,12 +246,13 @@ const report = () => {
   }
   // Without the mark, as while a page is on its way, the app refuses the ask: it waits for the mark.
   if (!box.hasAttribute(settings.loads_older_attribute)
-    || boxTop() - column.getBoundingClientRect().top >= settings.near_top_screens * box.clientHeight) {
+    || boxTop() - olderTop() >= settings.near_top_screens * box.clientHeight
+    || holdsEarly()) {
     reportedNearTop = "";
     return;
   }
-  const first = itemOf(column.querySelector(`.${settings.entry_class}`));
-  const nearTop = `${agent} ${first}`;
+  const entries = column.getElementsByClassName(settings.entry_class);
+  const nearTop = `${agent} ${itemOf(entries[0] ?? null)} ${itemOf(firstLate(entries))}`;
   if (nearTop !== reportedNearTop) {
     reportedNearTop = nearTop;
     dioxus.send({ type: "near_top", agent: Number(agent) });
@@ -492,6 +534,7 @@ struct Settings {
     records_keys_attribute: &'static str,
     revealed_class: &'static str,
     loads_older_attribute: &'static str,
+    early_attribute: &'static str,
     /// The event by which the find scrolls the chat to a match.
     find_reveal_event: &'static str,
     bottom_threshold_px: u16,
@@ -618,6 +661,7 @@ pub fn use_chat_scroll(
             records_keys_attribute: RECORDS_KEYS_ATTRIBUTE,
             revealed_class: REVEALED_CLASS,
             loads_older_attribute: LOADS_OLDER_ATTRIBUTE,
+            early_attribute: EARLY_ATTRIBUTE,
             find_reveal_event: REVEAL_EVENT,
             bottom_threshold_px: BOTTOM_THRESHOLD_PX,
             reveal_top_px: REVEAL_TOP_PX,
@@ -718,6 +762,7 @@ mod tests {
             records_keys_attribute: RECORDS_KEYS_ATTRIBUTE,
             revealed_class: REVEALED_CLASS,
             loads_older_attribute: LOADS_OLDER_ATTRIBUTE,
+            early_attribute: EARLY_ATTRIBUTE,
             find_reveal_event: REVEAL_EVENT,
             bottom_threshold_px: BOTTOM_THRESHOLD_PX,
             reveal_top_px: REVEAL_TOP_PX,
@@ -740,6 +785,7 @@ mod tests {
                 "records_keys_attribute": "data-records-keys",
                 "revealed_class": "chat-revealed",
                 "loads_older_attribute": "data-loads-older",
+                "early_attribute": "data-early",
                 "find_reveal_event": "yetack-find-reveal",
                 "bottom_threshold_px": 40,
                 "reveal_top_px": 12,

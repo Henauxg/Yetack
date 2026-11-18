@@ -53,6 +53,9 @@ pub struct Transcript {
     items: BTreeMap<ItemId, TranscriptItem>,
     history: HistoryState,
     revision: Revision,
+    /// The first item from which the app holds every item. The items before it are subagent
+    /// calls that held items run under. `None` until a history page comes or a trim drops items.
+    loaded_from: Option<ItemId>,
 }
 
 /// Names the state of a transcript's items, so that what the app works out from them is kept
@@ -138,6 +141,12 @@ impl Transcript {
         self.items.keys().next().copied()
     }
 
+    /// The item an older page must end before: the first one from which the app holds every
+    /// item, past the subagent calls kept before it.
+    pub fn loaded_from(&self) -> Option<ItemId> {
+        self.loaded_from.or_else(|| self.first_id())
+    }
+
     pub fn last_id(&self) -> Option<ItemId> {
         self.items.keys().next_back().copied()
     }
@@ -158,8 +167,9 @@ impl Transcript {
     }
 
     /// Drops the oldest items past `kept`, and marks that older items exist, so that scrolling up
-    /// loads them again through history. While a history page is on its way, nothing is dropped:
-    /// the page would come back with a gap before it.
+    /// loads them again through history. The subagent calls the kept items run under stay, so
+    /// their work shows under them. While a history page is on its way, nothing is dropped: the
+    /// page would come back with a gap before it.
     pub fn trim(&mut self, kept: usize) {
         if matches!(
             self.history,
@@ -167,12 +177,26 @@ impl Transcript {
         ) {
             return;
         }
-        let mut dropped = false;
-        while self.items.len() > kept {
-            self.items.pop_first();
-            dropped = true;
+        if self.items.len() <= kept {
+            return;
         }
+        let newest: Vec<ItemId> = self.items.keys().rev().take(kept).copied().collect();
+        let keep_from = newest.last().copied();
+        let mut held: BTreeSet<ItemId> = newest.iter().copied().collect();
+        let mut next: Vec<ItemId> = newest
+            .iter()
+            .filter_map(|id| self.items.get(id).and_then(|item| item.parent))
+            .collect();
+        while let Some(id) = next.pop() {
+            if held.insert(id) {
+                next.extend(self.items.get(&id).and_then(|item| item.parent));
+            }
+        }
+        let before = self.items.len();
+        self.items.retain(|id, _| held.contains(id));
+        let dropped = self.items.len() < before;
         if dropped {
+            self.loaded_from = keep_from;
             self.changed();
         }
         if let (true, HistoryState::Loaded { has_older }) = (dropped, &mut self.history) {
@@ -192,7 +216,11 @@ impl Transcript {
     /// Adds a history page. An item already held came from a live event, which is at least as
     /// recent as the page, so it stays.
     pub fn merge_page(&mut self, page: HistoryPage) {
-        for item in page.items {
+        if let Some(first) = page.items.first() {
+            self.loaded_from = Some(self.loaded_from.map_or(first.id, |from| from.min(first.id)));
+        }
+        let items = page.items.into_iter().chain(page.ancestors);
+        for item in items {
             self.items.entry(item.id).or_insert(item);
         }
         self.changed();
@@ -390,6 +418,83 @@ mod tests {
         }
     }
 
+    #[test]
+    fn a_page_keeps_its_subagent_calls_and_older_pages_start_from_the_page() {
+        let mut transcript = Transcript::default();
+        let under = |id: u32, parent: u32| TranscriptItem {
+            parent: Some(ItemId::new(parent)),
+            ..text(id, "work")
+        };
+        let page = HistoryPage {
+            items: vec![under(40, 2), under(41, 3), text(42, "done")],
+            older_items: OlderItems::Exist,
+            ancestors: vec![text(2, "subagent"), text(3, "subagent")],
+        };
+
+        transcript.merge_page(page);
+
+        let held: Vec<u32> = transcript.items().map(|item| item.id.get()).collect();
+        assert_eq!(held, [2, 3, 40, 41, 42]);
+        assert_eq!(transcript.loaded_from(), Some(ItemId::new(40)));
+    }
+
+    #[test]
+    fn older_pages_start_from_live_items_then_from_each_page() {
+        let mut transcript = Transcript::default();
+        assert_eq!(transcript.loaded_from(), None);
+        for id in 50..=60 {
+            transcript.append(text(id, "live"));
+        }
+        assert_eq!(
+            transcript.loaded_from(),
+            Some(ItemId::new(50)),
+            "live items"
+        );
+
+        transcript.merge_page(HistoryPage {
+            items: (45..=60).map(|id| text(id, "page")).collect(),
+            older_items: OlderItems::Exist,
+            ancestors: vec![text(2, "subagent")],
+        });
+        assert_eq!(transcript.loaded_from(), Some(ItemId::new(45)), "a page");
+        transcript.merge_page(HistoryPage {
+            items: Vec::new(),
+            older_items: OlderItems::None,
+            ancestors: Vec::new(),
+        });
+
+        assert_eq!(
+            transcript.loaded_from(),
+            Some(ItemId::new(45)),
+            "an empty page"
+        );
+        assert_eq!(transcript.first_id(), Some(ItemId::new(2)));
+    }
+
+    #[test]
+    fn trimming_keeps_the_subagent_calls_of_the_items_it_keeps() {
+        let mut transcript = Transcript::default();
+        let mut items: Vec<TranscriptItem> = (1..=310).map(|id| text(id, "item")).collect();
+        for item in items.iter_mut().skip(10) {
+            item.parent = Some(ItemId::new(if item.id.get() % 2 == 0 { 2 } else { 3 }));
+        }
+        transcript.merge_page(HistoryPage {
+            items,
+            older_items: OlderItems::None,
+            ancestors: Vec::new(),
+        });
+
+        transcript.trim(KEPT_ITEMS_AWAY);
+
+        assert_eq!(transcript.items().count(), KEPT_ITEMS_AWAY + 2);
+        assert_eq!(transcript.first_id(), Some(ItemId::new(2)));
+        assert_eq!(transcript.loaded_from(), Some(ItemId::new(11)));
+        assert_eq!(
+            transcript.history(),
+            &HistoryState::Loaded { has_older: true }
+        );
+    }
+
     fn text(id: u32, markdown: &str) -> TranscriptItem {
         TranscriptItem {
             id: ItemId::new(id),
@@ -431,6 +536,7 @@ mod tests {
         transcript.merge_page(HistoryPage {
             items: vec![text(3, "three"), text(4, "four"), text(5, "stale five")],
             older_items: OlderItems::Exist,
+            ancestors: Vec::new(),
         });
 
         assert_eq!(
@@ -450,6 +556,7 @@ mod tests {
         transcript.merge_page(HistoryPage {
             items: (1..=305).map(|id| text(id, "item")).collect(),
             older_items: OlderItems::None,
+            ancestors: Vec::new(),
         });
 
         transcript.trim(KEPT_ITEMS_AWAY);
@@ -511,6 +618,7 @@ mod tests {
         transcript.merge_page(HistoryPage {
             items: vec![text(0, "older")],
             older_items: OlderItems::None,
+            ancestors: Vec::new(),
         });
         assert!(moved(&transcript), "a page");
         transcript.trim(5);

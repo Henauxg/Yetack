@@ -864,6 +864,7 @@ fn response_bodies() -> Vec<ResponseBody> {
         ResponseBody::History(HistoryPage {
             items: items(),
             older_items: OlderItems::Exist,
+            ancestors: Vec::new(),
         }),
         ResponseBody::Details {
             details: details(),
@@ -2705,6 +2706,7 @@ fn transcript_pages_and_mcp_toggles_on_the_wire() {
             }),
         }],
         older_items: OlderItems::None,
+        ancestors: Vec::new(),
     });
     let toggle = Request::AgentMcpToggle(McpToggleParams {
         agent: agent(),
@@ -3117,4 +3119,32 @@ fn a_default_title_comes_from_the_first_message_or_the_folder() {
     );
     assert_eq!(long.chars().count(), DEFAULT_TITLE_MAX_CHARS);
     assert!(long.ends_with('…'));
+}
+
+#[test]
+fn a_page_with_the_subagent_calls_its_items_run_under() {
+    let call = |id: u32, parent: Option<u32>| TranscriptItem {
+        id: ItemId::new(id),
+        parent: parent.map(ItemId::new),
+        body: ItemBody::Notice {
+            text: "work".to_owned(),
+            detail: None,
+            kind: NoticeKind::Plain,
+        },
+    };
+    let page = ResponseBody::History(HistoryPage {
+        items: vec![call(40, Some(2))],
+        older_items: OlderItems::Exist,
+        ancestors: vec![call(2, None)],
+    });
+
+    assert_wire(
+        &page,
+        json!({
+            "type": "history",
+            "items": [{"id": 40, "parent": 2, "body": {"type": "notice", "text": "work", "detail": null}}],
+            "older_items": "exist",
+            "ancestors": [{"id": 2, "parent": null, "body": {"type": "notice", "text": "work", "detail": null}}],
+        }),
+    );
 }

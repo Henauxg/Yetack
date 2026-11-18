@@ -524,6 +524,9 @@ struct ChatView {
     shown: ShownRows,
     /// The ids of all the rows, drawn or not, oldest first: a run of work is one row.
     row_ids: Vec<ItemId>,
+    /// The subagent calls held before the first loaded message, whose work runs under them.
+    /// Older messages arrive below them, where the history note stands.
+    early: Vec<TopUnit>,
     top: Vec<TopUnit>,
     history: HistoryState,
     started: Option<String>,
@@ -588,8 +591,14 @@ impl ChatView {
             })
             .collect();
         let is_step: Vec<bool> = states.iter().map(Option::is_some).collect();
-        let links = step_links(&is_step, working);
-        let working_linked = is_step.last().copied().unwrap_or(false);
+        let loaded_from = entry.transcript.loaded_from();
+        // The subagent calls kept before the first loaded item, which the history note follows.
+        let held = top_rows
+            .iter()
+            .take_while(|row| loaded_from.is_some_and(|from| row.first().id < from))
+            .count();
+        let links = step_links(&is_step, held, working);
+        let working_linked = held < is_step.len() && is_step.last().copied().unwrap_or(false);
         let firsts: Vec<&TranscriptItem> = top_rows.iter().map(Row::first).collect();
         let notes = older_step_notes(&firsts, &loaded);
         let scrolled_up = state.ui.chat_scrolled_up.get(&agent).copied();
@@ -681,6 +690,11 @@ impl ChatView {
                 actions::new_entries(entry, last_seen).first,
             )
         });
+        let early_count = top
+            .iter()
+            .take_while(|unit| loaded_from.is_some_and(|from| unit.id() < from))
+            .count();
+        let early: Vec<TopUnit> = top.drain(..early_count).collect();
         Self {
             agent,
             folder: entry.summary.folder.clone(),
@@ -690,6 +704,7 @@ impl ChatView {
             working_linked,
             shown,
             row_ids,
+            early,
             top,
             history,
             started,
@@ -882,12 +897,13 @@ pub fn TranscriptView(in_view: Signal<Option<InView>>) -> Element {
         };
         let (agent, opened) = *timed.peek();
         let rows = view.row_ids.len();
+        let drawn = view.early.len() + view.top.len();
         if agent != Some(view.agent) {
             timed.set((Some(view.agent), view.named));
-            perf::chat_drawn(view.top.len(), rows, ChatStage::First);
+            perf::chat_drawn(drawn, rows, ChatStage::First);
         } else if view.named && !opened {
             timed.set((Some(view.agent), true));
-            perf::chat_drawn(view.top.len(), rows, ChatStage::Opened);
+            perf::chat_drawn(drawn, rows, ChatStage::Opened);
         }
     });
     let new_agent_keys = use_memo(move || {
@@ -917,6 +933,7 @@ pub fn TranscriptView(in_view: Signal<Option<InView>>) -> Element {
         quiet_since,
         working_linked,
         shown,
+        early,
         top,
         history,
         started,
@@ -937,6 +954,12 @@ pub fn TranscriptView(in_view: Signal<Option<InView>>) -> Element {
             // `chat_scroll::LOADS_OLDER_ATTRIBUTE`, written out: an attribute name takes no constant.
             "data-loads-older": loads_older.then_some("true"),
             div { class: "chat-column",
+                // `chat_scroll::EARLY_ATTRIBUTE`, written out: an attribute name takes no constant.
+                div { class: "early-rows", "data-early": "true",
+                    for unit in early {
+                        {top_unit(unit, agent, &folder)}
+                    }
+                }
                 if shown == ShownRows::Skeleton {
                     TranscriptSkeleton {}
                 } else if shown == ShownRows::All {
@@ -944,20 +967,8 @@ pub fn TranscriptView(in_view: Signal<Option<InView>>) -> Element {
                 } else if named {
                     OlderSkeleton { loading: false }
                 }
-                // Item ids repeat across agents: with the agent in the key, another agent's item
-                // never takes over the state of this one's (a fold, a typed answer).
                 for unit in top {
-                    match unit {
-                        TopUnit::Row(row) => {
-                            let TopRow { id, hides_time, new_above, view, step, older_step } = *row;
-                            rsx! {
-                                TranscriptRow { key: "{agent.get()}-{id.get()}", agent, folder: folder.clone(), new_above, id, hides_time, view, step, older_step }
-                            }
-                        }
-                        TopUnit::Run(run) => rsx! {
-                            WorkRunView { key: "{agent.get()}-run-{run.id.get()}", agent, folder: folder.clone(), run }
-                        },
-                    }
+                    {top_unit(unit, agent, &folder)}
                 }
                 if shown != ShownRows::Skeleton {
                     for prompt in sending {
@@ -985,6 +996,30 @@ pub fn TranscriptView(in_view: Signal<Option<InView>>) -> Element {
         }
         LastInstruction { in_view }
         JumpToLatest { shown: scrolled_up, count: waiting }
+    }
+}
+
+/// A row or a run of the main conversation. Item ids repeat across agents: with the agent in the
+/// key, another agent's item never takes over the state of this one's (a fold, a typed answer).
+fn top_unit(unit: TopUnit, agent: AgentId, folder: &Path) -> Element {
+    let folder = folder.to_path_buf();
+    match unit {
+        TopUnit::Row(row) => {
+            let TopRow {
+                id,
+                hides_time,
+                new_above,
+                view,
+                step,
+                older_step,
+            } = *row;
+            rsx! {
+                TranscriptRow { key: "{agent.get()}-{id.get()}", agent, folder, new_above, id, hides_time, view, step, older_step }
+            }
+        }
+        TopUnit::Run(run) => rsx! {
+            WorkRunView { key: "{agent.get()}-run-{run.id.get()}", agent, folder, run }
+        },
     }
 }
 
@@ -1044,6 +1079,16 @@ fn history_note(
 enum TopUnit {
     Row(Box<TopRow>),
     Run(TopRun),
+}
+
+impl TopUnit {
+    /// The first item of the row or run, which names its entry.
+    fn id(&self) -> ItemId {
+        match self {
+            Self::Row(row) => row.id,
+            Self::Run(run) => run.id,
+        }
+    }
 }
 
 /// A run of the agent's work, as `WorkRunView` takes it.
@@ -1294,16 +1339,18 @@ fn row_kind(row: &Row<'_>) -> Option<&'static str> {
 }
 
 /// The links of each item, given which items are steps: a user message, a notice or a turn's end
-/// breaks the line. With `working`, the last step links down to the working line.
-fn step_links(is_step: &[bool], working: bool) -> Vec<StepLinks> {
+/// breaks the line, and so does the history note after the first `held` items. With `working`,
+/// the last step links down to the working line.
+fn step_links(is_step: &[bool], held: usize, working: bool) -> Vec<StepLinks> {
     let mut links = Vec::with_capacity(is_step.len());
     for (index, &step) in is_step.iter().enumerate() {
         let previous = index
             .checked_sub(1)
+            .filter(|before| before + 1 != held)
             .and_then(|before| is_step.get(before))
             .copied()
             .unwrap_or(false);
-        let next = is_step.get(index + 1).copied().unwrap_or(working);
+        let next = index + 1 != held && is_step.get(index + 1).copied().unwrap_or(working);
         links.push(StepLinks {
             above: step && previous,
             below: step && next,
@@ -1466,7 +1513,7 @@ pub(crate) fn subtree(children: &Children<'_>, root: ItemId) -> Vec<TranscriptIt
 }
 
 /// The note above an item whose step sits in older messages the window has not loaded.
-const OLDER_STEP_NOTE: &str = "Part of a step in older messages: load them to see it.";
+const OLDER_STEP_NOTE: &str = "Part of a step in older messages: scroll up to see it.";
 
 /// A row of the main conversation, on the steps' line when it is a step of a turn.
 #[component]
@@ -3140,7 +3187,7 @@ mod tests {
         let links = |above, below| StepLinks { above, below };
 
         assert_eq!(
-            step_links(&[false, true, true, true, false, true], false),
+            step_links(&[false, true, true, true, false, true], 0, false),
             [
                 none,
                 links(false, true),
@@ -3150,8 +3197,34 @@ mod tests {
                 none
             ]
         );
-        assert_eq!(step_links(&[false, true], true), [none, links(false, true)]);
-        assert_eq!(step_links(&[true, false], true), [none, none]);
+        assert_eq!(
+            step_links(&[false, true], 0, true),
+            [none, links(false, true)]
+        );
+        assert_eq!(step_links(&[true, false], 0, true), [none, none]);
+    }
+
+    /// Subagent calls 21 and 22 are kept before the first loaded item, 273: the grey rows of
+    /// older messages stand between 22 and 273, and the working line comes after them.
+    #[test]
+    fn the_history_note_breaks_the_line() {
+        let none = StepLinks::default();
+        let links = |above, below| StepLinks { above, below };
+
+        assert_eq!(
+            step_links(&[true, true, true, true], 2, false),
+            [
+                links(false, true),
+                links(true, false),
+                links(false, true),
+                links(true, false)
+            ]
+        );
+        assert_eq!(
+            step_links(&[true, true], 2, true),
+            [links(false, true), links(true, false)]
+        );
+        assert_eq!(step_links(&[true], 1, true), [none]);
     }
 
     #[test]

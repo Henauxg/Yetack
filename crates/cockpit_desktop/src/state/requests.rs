@@ -1365,6 +1365,7 @@ mod tests {
                 },
             }],
             older_items: OlderItems::Exist,
+            ancestors: Vec::new(),
         };
         let answer = |state: &mut AppState, older: bool, result| {
             apply_response(
@@ -1414,6 +1415,7 @@ mod tests {
                 },
             }],
             older_items: OlderItems::None,
+            ancestors: Vec::new(),
         };
 
         apply_response(
