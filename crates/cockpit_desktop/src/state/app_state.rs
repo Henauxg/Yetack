@@ -149,6 +149,9 @@ pub struct FileUpdate {
     pub lines: BTreeSet<u32>,
 }
 
+/// How long a request's card stays once answered, shrinking: the stylesheet's `--motion-out`.
+pub const CARD_EXIT: Duration = Duration::from_millis(120);
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct AgentEntry {
     pub summary: AgentSummary,
@@ -183,6 +186,9 @@ pub struct AgentEntry {
     /// The cards whose answer the app sent, until the daemon refuses it or its update closes the
     /// card: a second Enter, key or click meanwhile sends nothing, and the card shows that it went.
     pub answers_sent: BTreeSet<PendingId>,
+    /// The requests answered while the app showed them, and when: their card stays for its exit
+    /// animation (`CARD_EXIT`), so the chat does not jump.
+    pub cards_leaving: BTreeMap<ItemId, Instant>,
     /// The finish the app announces later, unless a turn starts before. Set when the last
     /// background task of an idle agent ends.
     pub held_finish: Option<HeldFinish>,
@@ -326,6 +332,7 @@ impl AgentEntry {
             turn_started: None,
             sent_again: None,
             answers_sent: BTreeSet::new(),
+            cards_leaving: BTreeMap::new(),
             held_finish: None,
             images: VecDeque::new(),
             tree: FileTree::default(),
@@ -371,6 +378,11 @@ impl AgentEntry {
     }
 
     /// The daemon's start of the running turn, else the app's own record of it.
+    /// The requests whose card is leaving.
+    pub fn cards_leaving_ids(&self) -> BTreeSet<ItemId> {
+        self.cards_leaving.keys().copied().collect()
+    }
+
     pub fn turn_start(&self) -> Option<TurnStart> {
         self.summary
             .turn_started_at

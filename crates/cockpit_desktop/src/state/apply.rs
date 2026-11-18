@@ -8,13 +8,14 @@ use std::time::{Duration, Instant};
 use cockpit_client::{SessionUpdate, Welcome};
 use cockpit_protocol::{
     AgentId, AgentStatus, AgentSummary, AnswerState, Catchup, Event, EventRecord, ItemBody,
-    PendingId, SignInWait, Snapshot,
+    PendingId, SignInWait, Snapshot, TranscriptItem,
 };
 
 use super::accounts::{self, SignIns};
-use super::app_state::{AgentEntry, AppState, Arrival, ConnectionState, HeldFinish};
+use super::app_state::{AgentEntry, AppState, Arrival, CARD_EXIT, ConnectionState, HeldFinish};
 use super::drafts::Drafts;
 use super::sending::Sending;
+use super::transcript::Transcript;
 use super::{
     actions, daemon_start, daemon_update, details_updates, file_reread, file_tree, grouping,
     notification_levels, project_menu, projects, resume, sending, terminals,
@@ -41,6 +42,15 @@ pub enum AlertKind {
 }
 
 /// Applies an update from `machine`'s daemon, whose agent ids are already the app's.
+/// Whether `item` answers a request the transcript holds as waiting: its card leaves.
+fn answers_a_waiting_request(transcript: &Transcript, item: &TranscriptItem) -> bool {
+    let waited = transcript.get(item.id).is_some_and(|held| {
+        matches!(&held.body, ItemBody::Approval(approval) if approval.answer == AnswerState::Waiting)
+    });
+    waited
+        && matches!(&item.body, ItemBody::Approval(approval) if approval.answer != AnswerState::Waiting)
+}
+
 pub fn apply_update(
     state: &mut AppState,
     drafts: &mut Drafts,
@@ -371,6 +381,13 @@ pub fn apply(
             if let Some(entry) = state.agents.get_mut(&agent) {
                 if let Some(pending) = closed_card(&item.body) {
                     entry.answers_sent.remove(pending);
+                }
+                let now = Instant::now();
+                entry
+                    .cards_leaving
+                    .retain(|_, answered| now.duration_since(*answered) < CARD_EXIT);
+                if answers_a_waiting_request(&entry.transcript, &item) {
+                    entry.cards_leaving.insert(item.id, now);
                 }
                 entry.note_call(&item, Instant::now());
                 entry.transcript.change(item);
@@ -1383,6 +1400,63 @@ mod tests {
         let second = send_allow(&mut state);
 
         assert_eq!((first, second), (1, 1));
+    }
+
+    #[test]
+    fn a_request_answered_while_shown_keeps_its_card_for_its_exit() {
+        let mut state = state_with(vec![summary(1, AgentStatus::NeedsYou)]);
+        let request = |answer| TranscriptItem {
+            id: ItemId::new(2),
+            parent: None,
+            body: ItemBody::Approval(Approval {
+                pending: PendingId::new("request-2".to_owned()),
+                tool: "Bash".to_owned(),
+                summary: "cargo test".to_owned(),
+                input: serde_json::Value::Null,
+                edit: None,
+                reason: None,
+                answer,
+                tool_call: Some(ItemId::new(1)),
+            }),
+        };
+        let allowed = || {
+            AnswerState::Answered(ApprovalAnswer {
+                decision: ApprovalDecision::Allow,
+                message: None,
+            })
+        };
+        if let Some(entry) = state.agents.get_mut(&AgentId::new(1)) {
+            entry.transcript.append(request(AnswerState::Waiting));
+        }
+        let change = |state: &mut AppState, answer| {
+            apply(
+                state,
+                &mut Drafts::default(),
+                record(Event::TranscriptChanged {
+                    agent: AgentId::new(1),
+                    item: request(answer),
+                }),
+                MachineId::THIS,
+            );
+            state.agents[&AgentId::new(1)].cards_leaving_ids()
+        };
+
+        let answered = change(&mut state, allowed());
+        let again = {
+            state
+                .agents
+                .get_mut(&AgentId::new(1))
+                .unwrap()
+                .cards_leaving
+                .clear();
+            change(&mut state, allowed())
+        };
+
+        assert_eq!(answered, BTreeSet::from([ItemId::new(2)]));
+        assert!(
+            again.is_empty(),
+            "an answer to a request already answered leaves no card"
+        );
     }
 
     #[test]

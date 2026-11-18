@@ -5,7 +5,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::{Duration, SystemTime};
+use std::time::{Duration, Instant, SystemTime};
 
 use chrono::NaiveDate;
 use cockpit_protocol::{
@@ -24,8 +24,8 @@ use crate::prefs::ToolCallDetail;
 use crate::render::{self, Diff, Found, Language, OutputPart, SearchTool, diff_lines};
 use crate::state::sending::{SendingPlace, SendingPrompt};
 use crate::state::{
-    self, AgentEntry, AppState, ChatReveal, HistoryState, Revision, TurnStart, accounts, actions,
-    chat_images, file_edits,
+    self, AgentEntry, AppState, CARD_EXIT, ChatReveal, HistoryState, Revision, TurnStart, accounts,
+    actions, chat_images, file_edits,
 };
 use crate::ui::accounts::SignInCard;
 use crate::ui::cards::{self, ApprovalCard, PlanCard};
@@ -486,6 +486,8 @@ struct ChatInputs {
     scrolled_up: Option<ScrolledUp>,
     new_from: Option<ItemId>,
     sending: Vec<SendingPrompt>,
+    /// The requests answered while the chat showed them, whose card is leaving.
+    leaving: BTreeSet<ItemId>,
 }
 
 impl ChatInputs {
@@ -508,6 +510,7 @@ impl ChatInputs {
                 .in_place(SendingPlace::Chat)
                 .cloned()
                 .collect(),
+            leaving: entry.cards_leaving.keys().copied().collect(),
         })
     }
 }
@@ -559,10 +562,11 @@ impl ChatView {
         let sign_in_notice = sign_in.as_ref().and_then(|turn| turn.notice);
         let sign_in_end = sign_in.as_ref().map(|turn| turn.turn_end);
         let waits_for_sign_in = entry.summary.sign_in_wait == SignInWait::Waiting;
+        let leaving = entry.cards_leaving_ids();
         let TopItems {
             items: top_items,
             allowed,
-        } = TopItems::of(&items, &loaded, sign_in_notice);
+        } = TopItems::of(&items, &loaded, sign_in_notice, &leaving);
         let divider = actions::new_divider(state, agent);
         let top_rows = tool_rows::rows(&top_items, &awaiting, divider);
         let started: Option<String> = top_items
@@ -614,7 +618,7 @@ impl ChatView {
                 hides_time: grouped.contains(&row.first().id),
                 new_above: divider
                     .is_some_and(|divider| row.items().iter().any(|item| item.id == divider)),
-                view: RowView::of(row, &children, &awaiting, &allowed, sign_in_end),
+                view: RowView::of(row, &children, &awaiting, &allowed, &leaving, sign_in_end),
                 step: states
                     .get(index)
                     .copied()
@@ -804,6 +808,23 @@ pub fn TranscriptView(in_view: Signal<Option<InView>>) -> Element {
         }
     });
     let inputs = use_memo(move || ChatInputs::of(&cockpit.state.read()));
+    // A request answered a moment ago keeps its card while it shrinks, then the chat drops it.
+    let cards_leave = use_memo(move || inputs().is_some_and(|inputs| !inputs.leaving.is_empty()));
+    use_effect(move || {
+        if cards_leave() {
+            spawn(async move {
+                tokio::time::sleep(CARD_EXIT).await;
+                cockpit.update(|state| {
+                    let now = Instant::now();
+                    for entry in state.agents.values_mut() {
+                        entry
+                            .cards_leaving
+                            .retain(|_, answered| now.duration_since(*answered) < CARD_EXIT);
+                    }
+                });
+            });
+        }
+    });
     let view = use_memo(move || {
         let inputs = inputs()?;
         let _timer = perf::Timer::start(Timed::ChatBuild);
@@ -1102,6 +1123,8 @@ enum RowView {
         awaits_approval: bool,
         /// The item is a call you allowed when Claude Code asked: its line says so.
         allowed: bool,
+        /// The item is a request answered a moment ago, whose card is leaving.
+        leaving: bool,
         /// The item is the end of a turn that found no login: it shows as the sign-in card.
         sign_in_card: bool,
     },
@@ -1120,6 +1143,7 @@ impl RowView {
         children: &Children<'_>,
         awaiting: &BTreeSet<ItemId>,
         allowed: &BTreeSet<ItemId>,
+        leaving: &BTreeSet<ItemId>,
         sign_in_end: Option<ItemId>,
     ) -> Self {
         match row {
@@ -1128,6 +1152,7 @@ impl RowView {
                 nested: subtree(children, item.id),
                 awaits_approval: awaiting.contains(&item.id),
                 allowed: allowed.contains(&item.id),
+                leaving: leaving.contains(&item.id),
                 sign_in_card: Some(item.id) == sign_in_end,
             },
             Row::Skill { call, instructions } => Self::Skill {
@@ -1361,7 +1386,7 @@ pub(super) fn top_items<'item>(
     loaded: &BTreeSet<ItemId>,
     sign_in_notice: Option<ItemId>,
 ) -> Vec<&'item TranscriptItem> {
-    TopItems::of(items, loaded, sign_in_notice).items
+    TopItems::of(items, loaded, sign_in_notice, &BTreeSet::new()).items
 }
 
 /// The items the chat shows at its top level. A request you allowed shows on its call's line, not
@@ -1374,10 +1399,12 @@ struct TopItems<'item> {
 }
 
 impl<'item> TopItems<'item> {
+    /// `leaving` holds the requests whose card is leaving: they keep their row until it left.
     fn of(
         items: &[&'item TranscriptItem],
         loaded: &BTreeSet<ItemId>,
         sign_in_notice: Option<ItemId>,
+        leaving: &BTreeSet<ItemId>,
     ) -> Self {
         let mut top: Vec<&TranscriptItem> = items
             .iter()
@@ -1385,7 +1412,7 @@ impl<'item> TopItems<'item> {
             .filter(|item| shows_at_top(item, loaded) && Some(item.id) != sign_in_notice)
             .collect();
         let allowed = allowed_calls(&top);
-        top.retain(|item| !answered_on_its_call(item, &allowed));
+        top.retain(|item| leaving.contains(&item.id) || !answered_on_its_call(item, &allowed));
         Self {
             items: top,
             allowed,
@@ -1532,9 +1559,10 @@ fn TranscriptRow(
             nested,
             awaits_approval,
             allowed,
+            leaving,
             ..
         } => rsx! {
-            ItemView { agent, folder, item, nested, awaits_approval, allowed, hides_time }
+            ItemView { agent, folder, item, nested, awaits_approval, allowed, leaving, hides_time }
         },
         RowView::Skill {
             item:
@@ -1656,6 +1684,9 @@ pub fn ItemView(
     /// Whether the item is a call you allowed when Claude Code asked.
     #[props(default)]
     allowed: bool,
+    /// Whether the item is a request answered a moment ago, whose card is leaving.
+    #[props(default)]
+    leaving: bool,
     /// A message whose time the next one, sent at the same minute, shows.
     #[props(default)]
     hides_time: bool,
@@ -1684,6 +1715,14 @@ pub fn ItemView(
         },
         ItemBody::Approval(approval) if approval.answer == AnswerState::Waiting => rsx! {
             ApprovalCard { agent, folder, approval }
+        },
+        // The card shrinks away, so the rows around it do not jump.
+        ItemBody::Approval(approval) if leaving => rsx! {
+            div { class: "card-leaving",
+                div { class: "card-leaving-body",
+                    ApprovalCard { agent, folder, approval }
+                }
+            }
         },
         ItemBody::Approval(approval) => rsx! {
             ApprovalLine { agent, id, folder, approval }
@@ -3821,7 +3860,14 @@ mod tests {
             instructions: None,
         };
 
-        let view = RowView::of(&row, &Children::new(), &awaiting, &BTreeSet::new(), None);
+        let view = RowView::of(
+            &row,
+            &Children::new(),
+            &awaiting,
+            &BTreeSet::new(),
+            &BTreeSet::new(),
+            None,
+        );
 
         assert!(matches!(
             view,

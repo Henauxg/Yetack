@@ -3486,6 +3486,26 @@ html.reordering * {
   color: var(--muted);
 }
 
+/* A request answered a moment ago: its card shrinks away, closing the column's gap above it. */
+.card-leaving {
+  --fold-gap: 14px;
+  display: grid;
+  grid-template-rows: 1fr;
+  animation: line-fold-out var(--motion-out) var(--ease-in) forwards;
+  pointer-events: none;
+}
+
+.card-leaving-body {
+  min-height: 0;
+  overflow: hidden;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .card-leaving {
+    animation: none;
+  }
+}
+
 /* What you answered when Claude Code asked, on the call's line. */
 .answer-tag {
   flex: none;
