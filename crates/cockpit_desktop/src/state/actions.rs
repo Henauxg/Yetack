@@ -5259,6 +5259,42 @@ mod tests {
     }
 
     #[test]
+    fn undo_on_a_server_leaves_this_computers_agent_with_the_session_alone() {
+        let (mut state, devbox) = two_machines();
+        let mut drafts = Drafts::default();
+        let session = ClaudeSessionId::new("shared".to_owned());
+        let local = AgentId::new(1);
+        let closed = devbox.app_agent(AgentId::new(2));
+        for agent in [local, closed] {
+            if let Some(entry) = state.agents.get_mut(&agent) {
+                entry.summary.session = Some(session.clone());
+            }
+        }
+        let work = ProjectKey::Kept(projects::create(&mut state, "Work"));
+        projects::move_agent(&mut state, closed, &work);
+        let project = |state: &AppState| projects::project_of(state, &state.agents[&local]);
+        let local_project = project(&state);
+        request_close(&mut state, &mut drafts, closed);
+        crate::state::apply::apply(
+            &mut state,
+            &mut drafts,
+            event(cockpit_protocol::Event::AgentRemoved {
+                agent: AgentId::new(2),
+            }),
+            devbox,
+        );
+
+        undo_close(&mut state);
+        let waits = state.ui.reopening.is_some();
+        let moves = needed_requests(&mut state);
+
+        assert!(waits, "the local agent cannot answer for the server");
+        assert_eq!(sent_move(&moves), None);
+        assert_eq!(project(&state), local_project);
+        assert!(state.ui.reopening.is_some());
+    }
+
+    #[test]
     fn the_sidebar_heads_each_machine_with_its_own_rows_in_order() {
         let (state, devbox) = two_machines();
         let ids = |rows: &[&AgentEntry]| -> Vec<AgentId> {

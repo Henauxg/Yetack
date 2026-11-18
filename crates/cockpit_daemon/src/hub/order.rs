@@ -58,7 +58,7 @@ impl Hub {
 #[cfg(unix)]
 mod tests {
     use std::path::Path;
-    use std::time::Instant;
+    use std::time::{Duration, Instant};
 
     use cockpit_protocol::{
         AccountId, ClaudeSessionId, Effort, ErrorCode, Mark, PastSession, PermissionMode, Position,
@@ -67,6 +67,7 @@ mod tests {
     use tokio::sync::{mpsc, oneshot};
 
     use super::*;
+    use crate::hub::closed_choices::KEPT_FOR;
     use crate::sessions::{FoundSession, SessionPast};
     use crate::store::{AgentRecord, AgentsFile, PastFile, ResumeAs, StateDir};
     use crate::test_script;
@@ -260,6 +261,29 @@ mod tests {
                 },
             },
         }
+    }
+
+    /// The choices wait from the close to the resume request, not to the end of the session
+    /// file's reading.
+    #[tokio::test]
+    async fn a_resume_asked_too_late_starts_without_the_choices() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut hub = hub(temp.path());
+        let first = start(&mut hub, temp.path(), "First");
+        if let Some(agent) = hub.agents.get_mut(&first) {
+            agent.record.session = Some(ClaudeSessionId::new(SESSION.to_owned()));
+            agent.record.mode = Some(PermissionMode::Auto);
+        }
+        hub.close(first).unwrap();
+        let now = Instant::now();
+        let late = now
+            .checked_add(KEPT_FOR + Duration::from_secs(1))
+            .unwrap_or(now);
+
+        hub.resume_session(past_session(temp.path()), late, oneshot::channel().0);
+        let back = hub.agents.values().next().map(|agent| agent.record.mode);
+
+        assert_eq!(back, Some(None));
     }
 
     /// An agent closed a moment ago comes back from its session with its choices, even after a

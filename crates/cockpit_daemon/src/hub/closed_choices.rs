@@ -10,7 +10,7 @@ use crate::store::AgentRecord;
 
 /// How long after its close an agent's choices wait for a resume. The app's undo lasts 8 s. A
 /// later resume, from the past sessions, starts with Claude Code's defaults as before.
-const KEPT_FOR: Duration = Duration::from_secs(30);
+pub(super) const KEPT_FOR: Duration = Duration::from_secs(30);
 
 /// The most closed agents whose choices the daemon keeps. The oldest goes first.
 const MAX_KEPT: usize = 32;
