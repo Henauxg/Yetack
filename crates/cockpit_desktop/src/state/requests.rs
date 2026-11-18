@@ -243,7 +243,11 @@ pub fn needed_requests(state: &mut AppState) -> Vec<Outgoing> {
             .map(AgentEntry::id);
         if let Some(agent) = back {
             let before = reopening.before;
+            let project = reopening.project.clone();
             state.ui.reopening = None;
+            if let Some(project) = project {
+                projects::move_agent(state, agent, &project);
+            }
             requests.extend(actions::move_agent(state, agent, before));
         }
     }

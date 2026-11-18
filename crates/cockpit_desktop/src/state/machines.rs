@@ -567,7 +567,7 @@ mod tests {
     use crate::state::update_offer::{GapKind, ProgramBuild, VersionGap};
     use crate::state::update_plan::{CarriedDaemons, ServerPlan, UpdatePlan};
     use crate::state::{AgentEntry, MachineState};
-    use cockpit_protocol::{AccountId, AgentStatus, BuildCommit, PROTOCOL_VERSION, ReleaseVersion};
+    use cockpit_protocol::{AgentStatus, BuildCommit, PROTOCOL_VERSION, ReleaseVersion};
 
     fn typed(state: &mut AppState, name: &str, host: &str, remote_command: &str) {
         open_machines(state);
@@ -1029,13 +1029,9 @@ mod tests {
             .insert(remote.id, AgentEntry::new(remote.clone()));
         state.ui.selected = Some(remote.id);
         state.ui.unread.insert(remote.id);
-        state.ui.note_closed(
-            devbox.app_agent(AgentId::new(2)),
-            "Closed on devbox".to_owned(),
-            None,
-            AccountId::DEFAULT,
-            None,
-        );
+        let mut closed = summary(2, AgentStatus::Idle);
+        closed.id = devbox.app_agent(AgentId::new(2));
+        state.ui.note_closed(&closed, None, None);
         let mut drafts = Drafts::default();
         drafts.draft_mut(remote.id).text = "Half a message".to_owned();
 

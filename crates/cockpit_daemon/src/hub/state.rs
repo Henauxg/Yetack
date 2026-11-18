@@ -14,6 +14,7 @@ use tokio::sync::mpsc;
 use tokio::time::MissedTickBehavior;
 
 use crate::daemon_config::DaemonConfig;
+use crate::hub::closed_choices::ClosedChoices;
 use crate::hub::folders::PendingMove;
 use crate::hub::input::{ControlPurpose, HubInput, Joined, Registration};
 use crate::hub::restore::Restored;
@@ -61,6 +62,9 @@ pub(crate) struct Hub {
     /// A periodic check of the accounts' folders runs.
     pub(super) checking_sign_ins: bool,
     pub(super) terminals: Terminals,
+    /// What the agents closed during this run were given, which a resume of their session gives
+    /// back.
+    pub(super) closed_choices: ClosedChoices,
 }
 
 pub(super) struct Agent {
@@ -225,6 +229,7 @@ impl Hub {
             sign_ins: BTreeMap::new(),
             checking_sign_ins: false,
             terminals: Terminals::default(),
+            closed_choices: ClosedChoices::default(),
         }
     }
 

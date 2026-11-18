@@ -3,6 +3,7 @@
 
 mod accounts;
 mod agents;
+mod closed_choices;
 mod control;
 mod errors;
 mod folders;

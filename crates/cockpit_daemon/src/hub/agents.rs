@@ -564,9 +564,11 @@ impl Hub {
 
     /// Removes the agent whatever its process does, interrupting a working agent's turn first.
     /// The process handle leaves with the agent, which closes `claude`'s stdin: `claude` ends its
-    /// session file and exits, or is killed after a delay.
+    /// session file and exits, or is killed after a delay. The agent's choices stay, for a resume
+    /// of its session.
     pub(super) fn close(&mut self, id: AgentId) -> Result<ResponseBody, ErrorBody> {
         let agent = self.agents.get(&id).ok_or(errors::agent_not_found(id))?;
+        self.closed_choices.keep(&agent.record);
         if agent.process.is_some() && agent.view.is_busy() {
             self.control(id, ControlRequest::Interrupt, ControlPurpose::Closing);
         }
@@ -652,7 +654,8 @@ impl Hub {
         }
     }
 
-    /// A past session becomes an agent, or the agent that has it resumes.
+    /// A past session becomes an agent, with the choices of the agent closed with it during this
+    /// run, or the agent that has it resumes.
     pub(super) fn resume_session(&mut self, found: FoundSession, reply: Reply) {
         respond(reply, self.agent_for_session(found));
     }
@@ -670,14 +673,16 @@ impl Hub {
             }
             return Ok(ResponseBody::AgentStarted { agent });
         }
+        let folder = agent_folder(&session.folder)?;
+        let choices = self.closed_choices.take(&session.id, account.id);
         let record = AgentRecord {
             id: self.next_agent,
             title: session.title,
-            folder: agent_folder(&session.folder)?,
+            folder,
             session: Some(session.id),
-            model: None,
-            effort: None,
-            mode: None,
+            model: choices.model,
+            effort: choices.effort,
+            mode: choices.mode,
             running: true,
             started_at: state::now(),
             past: Some(past.file),
