@@ -4,6 +4,7 @@
 use std::collections::VecDeque;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::time::Instant;
 
 use claude_protocol::{ControlRequest, InputLine, OutputLine};
 use cockpit_protocol::{
@@ -564,11 +565,11 @@ impl Hub {
 
     /// Removes the agent whatever its process does, interrupting a working agent's turn first.
     /// The process handle leaves with the agent, which closes `claude`'s stdin: `claude` ends its
-    /// session file and exits, or is killed after a delay. The agent's choices stay, for a resume
-    /// of its session.
+    /// session file and exits, or is killed after a delay. The agent's choices stay a moment, for
+    /// an undo that resumes its session.
     pub(super) fn close(&mut self, id: AgentId) -> Result<ResponseBody, ErrorBody> {
         let agent = self.agents.get(&id).ok_or(errors::agent_not_found(id))?;
-        self.closed_choices.keep(&agent.record);
+        self.closed_choices.keep(&agent.record, Instant::now());
         if agent.process.is_some() && agent.view.is_busy() {
             self.control(id, ControlRequest::Interrupt, ControlPurpose::Closing);
         }
@@ -654,8 +655,8 @@ impl Hub {
         }
     }
 
-    /// A past session becomes an agent, with the choices of the agent closed with it during this
-    /// run, or the agent that has it resumes.
+    /// A past session becomes an agent, with the choices of an agent closed with it a moment ago,
+    /// or the agent that has it resumes.
     pub(super) fn resume_session(&mut self, found: FoundSession, reply: Reply) {
         respond(reply, self.agent_for_session(found));
     }
@@ -674,12 +675,14 @@ impl Hub {
             return Ok(ResponseBody::AgentStarted { agent });
         }
         let folder = agent_folder(&session.folder)?;
-        let choices = self.closed_choices.take(&session.id, account.id);
+        let choices = self
+            .closed_choices
+            .find(&session.id, account.id, Instant::now());
         let record = AgentRecord {
             id: self.next_agent,
             title: session.title,
             folder,
-            session: Some(session.id),
+            session: Some(session.id.clone()),
             model: choices.model,
             effort: choices.effort,
             mode: choices.mode,
@@ -693,6 +696,7 @@ impl Hub {
             resume_as: ResumeAs::Same,
         };
         let agent = self.add_agent(record, None, Some(past.items))?;
+        self.closed_choices.forget(&session.id, account.id);
         Ok(ResponseBody::AgentStarted { agent })
     }
 

@@ -2161,11 +2161,20 @@ pub fn undo_close(state: &mut AppState) -> Vec<Outgoing> {
     let Some(session) = closed.session else {
         return Vec::new();
     };
-    state.ui.reopening = Some(Reopening {
-        session: session.clone(),
-        before: closed.before,
-        project: closed.project,
+    // A fork keeps its source's session until its first turn: the daemon answers with the agent
+    // that has the session, which keeps its own place and project.
+    let shared = state.agents.values().any(|entry| {
+        MachineId::of(entry.id()) == MachineId::of(closed.agent)
+            && entry.summary.session.as_ref() == Some(&session)
+            && entry.summary.account == closed.account
     });
+    if !shared {
+        state.ui.reopening = Some(Reopening {
+            session: session.clone(),
+            before: closed.before,
+            project: closed.project,
+        });
+    }
     vec![Outgoing {
         request: Request::SessionsResume(SessionResumeParams {
             session,
@@ -3573,44 +3582,90 @@ mod tests {
 
     #[test]
     fn undo_brings_the_session_back_to_its_row_in_the_apps_order() {
+        let undone = |group_by| {
+            let mut state = idle_ordered();
+            let mut drafts = Drafts::default();
+            state.prefs.sidebar.group_by = group_by;
+            move_agent(&mut state, AgentId::new(2), None);
+            let before_close = sidebar(&state);
+            let mut back = state.agents[&AgentId::new(1)].summary.clone();
+            request_close(&mut state, &mut drafts, AgentId::new(1));
+            crate::state::apply::apply(
+                &mut state,
+                &mut drafts,
+                event(cockpit_protocol::Event::AgentRemoved {
+                    agent: AgentId::new(1),
+                }),
+                MachineId::THIS,
+            );
+
+            undo_close(&mut state);
+            back.id = AgentId::new(4);
+            crate::state::apply::apply(
+                &mut state,
+                &mut drafts,
+                event(cockpit_protocol::Event::AgentAdded(back)),
+                MachineId::THIS,
+            );
+            apply_response(
+                &mut state,
+                &mut drafts,
+                Method::SessionsResume,
+                Purpose::Reopen,
+                Ok(ResponseBody::AgentStarted {
+                    agent: AgentId::new(4),
+                }),
+                MachineId::THIS,
+            );
+            needed_requests(&mut state);
+            (before_close, sidebar(&state))
+        };
+
+        for group_by in [GroupBy::None, GroupBy::Project] {
+            let (before_close, after_undo) = undone(group_by);
+
+            assert_eq!(before_close, [3, 1, 2], "{group_by:?}");
+            assert_eq!(after_undo, [3, 4, 2], "{group_by:?}");
+        }
+    }
+
+    #[test]
+    fn undo_of_a_fork_without_a_turn_leaves_its_source_in_place() {
         let mut state = idle_ordered();
         let mut drafts = Drafts::default();
-        state.prefs.sidebar.group_by = GroupBy::None;
-        move_agent(&mut state, AgentId::new(2), None);
-        let before_close = sidebar(&state);
-        let mut back = state.agents[&AgentId::new(1)].summary.clone();
-        request_close(&mut state, &mut drafts, AgentId::new(1));
+        let fork = AgentId::new(3);
+        if let Some(entry) = state.agents.get_mut(&fork) {
+            entry.summary.session = Some(ClaudeSessionId::new("session-1".to_owned()));
+        }
+        let work = ProjectKey::Kept(projects::create(&mut state, "Work"));
+        projects::move_agent(&mut state, fork, &work);
+        let source =
+            |state: &AppState| projects::project_of(state, &state.agents[&AgentId::new(1)]);
+        let source_project = source(&state);
+        request_close(&mut state, &mut drafts, fork);
         crate::state::apply::apply(
             &mut state,
             &mut drafts,
-            event(cockpit_protocol::Event::AgentRemoved {
-                agent: AgentId::new(1),
-            }),
+            event(cockpit_protocol::Event::AgentRemoved { agent: fork }),
             MachineId::THIS,
         );
 
         undo_close(&mut state);
-        back.id = AgentId::new(4);
-        crate::state::apply::apply(
-            &mut state,
-            &mut drafts,
-            event(cockpit_protocol::Event::AgentAdded(back)),
-            MachineId::THIS,
-        );
+        // The daemon answers with the agent that has the session.
         apply_response(
             &mut state,
             &mut drafts,
             Method::SessionsResume,
             Purpose::Reopen,
             Ok(ResponseBody::AgentStarted {
-                agent: AgentId::new(4),
+                agent: AgentId::new(1),
             }),
             MachineId::THIS,
         );
-        needed_requests(&mut state);
+        let moves = needed_requests(&mut state);
 
-        assert_eq!(before_close, [3, 1, 2]);
-        assert_eq!(sidebar(&state), [3, 4, 2]);
+        assert_eq!(source(&state), source_project);
+        assert_eq!(sent_move(&moves), None);
     }
 
     #[test]

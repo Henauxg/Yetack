@@ -1,11 +1,16 @@
-//! The model, effort and permission mode the agents closed during this run were given. A client's
-//! undo of a close resumes the session as a new agent, which gets them back.
+//! The model, effort and permission mode of the agents closed a moment ago. A client's undo of a
+//! close resumes the session as a new agent, which gets them back.
 
 use std::collections::VecDeque;
+use std::time::{Duration, Instant};
 
 use cockpit_protocol::{AccountId, ClaudeSessionId, Effort, PermissionMode};
 
 use crate::store::AgentRecord;
+
+/// How long after its close an agent's choices wait for a resume. The app's undo lasts 8 s. A
+/// later resume, from the past sessions, starts with Claude Code's defaults as before.
+const KEPT_FOR: Duration = Duration::from_secs(30);
 
 /// The most closed agents whose choices the daemon keeps. The oldest goes first.
 const MAX_KEPT: usize = 32;
@@ -18,45 +23,69 @@ pub(super) struct Choices {
     pub(super) mode: Option<PermissionMode>,
 }
 
+#[derive(Debug)]
+struct Kept {
+    session: ClaudeSessionId,
+    account: AccountId,
+    choices: Choices,
+    closed_at: Instant,
+}
+
 /// The choices of the agents closed last, by their session and account.
 #[derive(Debug, Default)]
 pub(crate) struct ClosedChoices {
-    kept: VecDeque<(ClaudeSessionId, AccountId, Choices)>,
+    kept: VecDeque<Kept>,
 }
 
 impl ClosedChoices {
-    /// Keeps the choices of an agent that closes. An agent with no session cannot come back.
-    pub(super) fn keep(&mut self, record: &AgentRecord) {
+    /// Keeps the choices of an agent that closes at `now`. An agent with no session cannot come
+    /// back.
+    pub(super) fn keep(&mut self, record: &AgentRecord, now: Instant) {
         let Some(session) = &record.session else {
             return;
         };
-        self.kept
-            .retain(|(kept, account, _)| (kept, *account) != (session, record.account));
+        self.kept.retain(|kept| {
+            (&kept.session, kept.account) != (session, record.account)
+                && now.duration_since(kept.closed_at) <= KEPT_FOR
+        });
         if self.kept.len() == MAX_KEPT {
             self.kept.pop_front();
         }
-        self.kept.push_back((
-            session.clone(),
-            record.account,
-            Choices {
+        self.kept.push_back(Kept {
+            session: session.clone(),
+            account: record.account,
+            choices: Choices {
                 model: record.model.clone(),
                 effort: record.effort,
                 mode: record.mode,
             },
-        ));
+            closed_at: now,
+        });
     }
 
-    /// The choices of the closed agent that had the session, which a new agent takes. None for a
-    /// session no agent closed with during this run.
-    pub(super) fn take(&mut self, session: &ClaudeSessionId, account: AccountId) -> Choices {
-        let found = self
-            .kept
+    /// The choices of the agent closed with the session less than [`KEPT_FOR`] before `now`.
+    /// None otherwise.
+    pub(super) fn find(
+        &self,
+        session: &ClaudeSessionId,
+        account: AccountId,
+        now: Instant,
+    ) -> Choices {
+        self.kept
             .iter()
-            .position(|(kept, kept_account, _)| kept == session && *kept_account == account);
-        found
-            .and_then(|index| self.kept.remove(index))
-            .map(|(_, _, choices)| choices)
+            .find(|kept| {
+                &kept.session == session
+                    && kept.account == account
+                    && now.duration_since(kept.closed_at) <= KEPT_FOR
+            })
+            .map(|kept| kept.choices.clone())
             .unwrap_or_default()
+    }
+
+    /// Drops the session's choices, once a new agent took them.
+    pub(super) fn forget(&mut self, session: &ClaudeSessionId, account: AccountId) {
+        self.kept
+            .retain(|kept| (&kept.session, kept.account) != (session, account));
     }
 }
 
@@ -69,7 +98,7 @@ mod tests {
     use super::*;
     use crate::store::ResumeAs;
 
-    fn record(session: &str) -> AgentRecord {
+    fn record(session: &str, account: AccountId, mode: PermissionMode) -> AgentRecord {
         AgentRecord {
             id: AgentId::new(1),
             title: "Fix the cart".to_owned(),
@@ -77,29 +106,37 @@ mod tests {
             session: Some(ClaudeSessionId::new(session.to_owned())),
             model: Some("opus[1m]".to_owned()),
             effort: Some(Effort::High),
-            mode: Some(PermissionMode::Auto),
+            mode: Some(mode),
             running: true,
             started_at: Timestamp::from_unix_millis(0),
             past: None,
             position: Position::default(),
             process: None,
-            account: AccountId::DEFAULT,
+            account,
             mark: Mark::Unmarked,
             resume_as: ResumeAs::Same,
         }
     }
 
-    #[test]
-    fn a_closed_agents_choices_come_back_once_for_its_session() {
-        let mut closed = ClosedChoices::default();
-        closed.keep(&record("session-1"));
-        let session = ClaudeSessionId::new("session-1".to_owned());
+    fn session(name: &str) -> ClaudeSessionId {
+        ClaudeSessionId::new(name.to_owned())
+    }
 
-        let back = closed.take(&session, AccountId::DEFAULT);
-        let again = closed.take(&session, AccountId::DEFAULT);
+    #[test]
+    fn a_closed_agents_choices_come_back_until_forgotten() {
+        let mut closed = ClosedChoices::default();
+        let now = Instant::now();
+        closed.keep(
+            &record("session-1", AccountId::DEFAULT, PermissionMode::Auto),
+            now,
+        );
+
+        let found = closed.find(&session("session-1"), AccountId::DEFAULT, now);
+        closed.forget(&session("session-1"), AccountId::DEFAULT);
+        let again = closed.find(&session("session-1"), AccountId::DEFAULT, now);
 
         assert_eq!(
-            back,
+            found,
             Choices {
                 model: Some("opus[1m]".to_owned()),
                 effort: Some(Effort::High),
@@ -110,19 +147,62 @@ mod tests {
     }
 
     #[test]
+    fn the_choices_wait_for_a_resume_a_short_time_only() {
+        let mut closed = ClosedChoices::default();
+        let now = Instant::now();
+        closed.keep(
+            &record("session-1", AccountId::DEFAULT, PermissionMode::Auto),
+            now,
+        );
+        let soon = now.checked_add(KEPT_FOR).unwrap_or(now);
+        let late = soon.checked_add(Duration::from_secs(1)).unwrap_or(soon);
+
+        let in_time = closed.find(&session("session-1"), AccountId::DEFAULT, soon);
+        let too_late = closed.find(&session("session-1"), AccountId::DEFAULT, late);
+
+        assert_eq!(in_time.mode, Some(PermissionMode::Auto));
+        assert_eq!(too_late, Choices::default());
+    }
+
+    #[test]
+    fn each_account_and_the_latest_close_of_a_session_count() {
+        let mut closed = ClosedChoices::default();
+        let now = Instant::now();
+        let other = AccountId::new(2);
+        closed.keep(
+            &record("session-1", AccountId::DEFAULT, PermissionMode::Auto),
+            now,
+        );
+        closed.keep(&record("session-1", other, PermissionMode::Plan), now);
+        closed.keep(
+            &record("session-1", AccountId::DEFAULT, PermissionMode::AcceptEdits),
+            now,
+        );
+
+        let default_account = closed.find(&session("session-1"), AccountId::DEFAULT, now);
+        let other_account = closed.find(&session("session-1"), other, now);
+
+        assert_eq!(default_account.mode, Some(PermissionMode::AcceptEdits));
+        assert_eq!(other_account.mode, Some(PermissionMode::Plan));
+    }
+
+    #[test]
     fn the_oldest_choices_go_past_the_limit() {
         let mut closed = ClosedChoices::default();
+        let now = Instant::now();
         for index in 0..=MAX_KEPT {
-            closed.keep(&record(&format!("session-{index}")));
+            let name = format!("session-{index}");
+            closed.keep(
+                &record(&name, AccountId::DEFAULT, PermissionMode::Auto),
+                now,
+            );
         }
 
-        let oldest = closed.take(
-            &ClaudeSessionId::new("session-0".to_owned()),
+        let oldest = closed.find(&session("session-0"), AccountId::DEFAULT, now);
+        let newest = closed.find(
+            &session(&format!("session-{MAX_KEPT}")),
             AccountId::DEFAULT,
-        );
-        let newest = closed.take(
-            &ClaudeSessionId::new(format!("session-{MAX_KEPT}")),
-            AccountId::DEFAULT,
+            now,
         );
 
         assert_eq!(oldest, Choices::default());

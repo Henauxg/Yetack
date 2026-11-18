@@ -62,8 +62,7 @@ pub(crate) struct Hub {
     /// A periodic check of the accounts' folders runs.
     pub(super) checking_sign_ins: bool,
     pub(super) terminals: Terminals,
-    /// What the agents closed during this run were given, which a resume of their session gives
-    /// back.
+    /// What the agents closed a moment ago were given, for an undo that resumes their session.
     pub(super) closed_choices: ClosedChoices,
 }
 

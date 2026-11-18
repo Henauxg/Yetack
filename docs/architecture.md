@@ -267,7 +267,7 @@ Before the stop, the app asks which agents may hold a scheduled job, which ends 
 
 ### Past sessions
 
-`sessions.list` lists the newest 100 sessions of all accounts. `sessions.resume` makes an agent that runs with the session's account. When an agent with the session was closed during the daemon's run, the new agent gets the model, effort and permission mode chosen for it (the latest 32 closes are kept, in memory).
+`sessions.list` lists the newest 100 sessions of all accounts. `sessions.resume` makes an agent that runs with the session's account. When an agent with the session was closed in the last 30 seconds, for the app's undo, the new agent gets the model, effort and permission mode chosen for it (kept in memory).
 It reads the session file before the agent exists, through the same conversion as `claude`'s stdout (`PastTranscript`).
 The newest 2,000 items show, with ids up to 2,001. The agent numbers its own items from 2,002, so the ids never clash.
 The past items go in no event: `agent.history` serves them. A restarted daemon reads the same bytes again, since Claude Code only appends to the file.
