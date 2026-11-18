@@ -1466,7 +1466,7 @@ pub(crate) fn subtree(children: &Children<'_>, root: ItemId) -> Vec<TranscriptIt
 }
 
 /// The note above an item whose step sits in older messages the window has not loaded.
-const OLDER_STEP_NOTE: &str = "Part of a step in older messages: load them to see it.";
+const OLDER_STEP_NOTE: &str = "Part of a step in older messages: scroll up to see it.";
 
 /// A row of the main conversation, on the steps' line when it is a step of a turn.
 #[component]

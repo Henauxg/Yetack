@@ -1786,6 +1786,7 @@ mod tests {
                 transcript_item(2, failed_turn(TurnOutcome::NotSignedIn)),
             ],
             older_items: OlderItems::None,
+            ancestors: Vec::new(),
         });
 
         let card = sign_in_turn(state.agents.get(&AgentId::new(1)).unwrap());
@@ -1813,6 +1814,7 @@ mod tests {
                 transcript_item(3, failed_turn(TurnOutcome::NotSignedIn)),
             ],
             older_items: OlderItems::None,
+            ancestors: Vec::new(),
         });
 
         let card = sign_in_turn(state.agents.get(&AgentId::new(1)).unwrap());
@@ -1873,6 +1875,7 @@ mod tests {
                 transcript_item(2, failed_turn(TurnOutcome::NotSignedIn)),
             ],
             older_items: OlderItems::None,
+            ancestors: Vec::new(),
         });
         let mut drafts = Drafts::default();
 
@@ -1910,6 +1913,7 @@ mod tests {
                 transcript_item(2, failed_turn(TurnOutcome::NotSignedIn)),
             ],
             older_items: OlderItems::None,
+            ancestors: Vec::new(),
         });
 
         signed(&mut state, work(), SignIn::NotSignedIn);
@@ -1943,6 +1947,7 @@ mod tests {
                 transcript_item(2, failed_turn(TurnOutcome::NotSignedIn)),
             ],
             older_items: OlderItems::None,
+            ancestors: Vec::new(),
         });
 
         signed(&mut state, work(), SignIn::SignedIn);
@@ -1972,6 +1977,7 @@ mod tests {
                 transcript_item(2, failed_turn(TurnOutcome::NotSignedIn)),
             ],
             older_items: OlderItems::None,
+            ancestors: Vec::new(),
         });
 
         let shown = sends_again(&state, agent);
@@ -2017,6 +2023,7 @@ mod tests {
                 transcript_item(4, failed_turn(TurnOutcome::Failed)),
             ],
             older_items: OlderItems::None,
+            ancestors: Vec::new(),
         });
 
         assert_eq!(

@@ -315,9 +315,11 @@ mod tests {
                 body,
             })
             .collect();
-        entry
-            .transcript
-            .merge_page(HistoryPage { items, older_items });
+        entry.transcript.merge_page(HistoryPage {
+            items,
+            older_items,
+            ancestors: Vec::new(),
+        });
         entry
     }
 

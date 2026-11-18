@@ -1,5 +1,7 @@
 //! Pages of an agent's transcript, newest first, bounded by count and by bytes.
 
+use std::collections::BTreeMap;
+
 use cockpit_protocol::{
     HistoryPage, ItemBody, ItemId, MAX_LINE_BYTES, NoticeKind, OlderItems, TranscriptItem,
 };
@@ -63,6 +65,18 @@ fn page_within(
         page.push(stand_in.unwrap_or_else(|| item.clone()));
     }
     page.reverse();
+    let older = items.get(..start).unwrap_or_default();
+    let mut ancestors = Vec::new();
+    for ancestor in ancestors_of(older, &page) {
+        let encoded = encoded_size(ancestor);
+        let stand_in = (encoded > limits.item_bytes).then(|| placeholder(ancestor, encoded));
+        let size = stand_in.as_ref().map_or(encoded, encoded_size);
+        if bytes.saturating_add(size) > limits.page_bytes {
+            break;
+        }
+        bytes = bytes.saturating_add(size);
+        ancestors.push(stand_in.unwrap_or_else(|| ancestor.clone()));
+    }
     HistoryPage {
         items: page,
         older_items: if start > 0 {
@@ -70,7 +84,36 @@ fn page_within(
         } else {
             OlderItems::None
         },
+        ancestors,
     }
+}
+
+/// The items of `older` that the page's items run under, at any depth, oldest first. `older`
+/// is in id order, as the transcript is.
+fn ancestors_of<'items>(
+    older: &'items [TranscriptItem],
+    page: &[TranscriptItem],
+) -> Vec<&'items TranscriptItem> {
+    let find = |id: ItemId| {
+        older
+            .binary_search_by_key(&id, |item| item.id)
+            .ok()
+            .and_then(|index| older.get(index))
+    };
+    let mut found: BTreeMap<ItemId, &TranscriptItem> = BTreeMap::new();
+    let mut next: Vec<ItemId> = page.iter().filter_map(|item| item.parent).collect();
+    while let Some(id) = next.pop() {
+        if found.contains_key(&id) {
+            continue;
+        }
+        // A parent in the page itself is not older: its own parent is in `next` already.
+        let Some(item) = find(id) else {
+            continue;
+        };
+        found.insert(id, item);
+        next.extend(item.parent);
+    }
+    found.into_values().collect()
 }
 
 /// `usize::MAX` for an item that does not encode, which no page can hold.
@@ -117,6 +160,27 @@ mod tests {
 
     fn ids(page: &HistoryPage) -> Vec<u32> {
         page.items.iter().map(|item| item.id.get()).collect()
+    }
+
+    #[test]
+    fn a_page_brings_the_subagent_calls_its_items_run_under() {
+        // Two subagents started early, at 2 and 3; 4 runs under 3, and 10 to 12 under 4 and 2.
+        let mut items = items(12);
+        for (id, parent) in [(4, 3), (10, 4), (11, 2), (12, 4)] {
+            if let Some(item) = items.get_mut(id - 1) {
+                item.parent = Some(ItemId::new(parent));
+            }
+        }
+
+        let page = page(&items, None, 3);
+        let older = super::page(&items, Some(ItemId::new(10)), 3);
+
+        assert_eq!(ids(&page), [10, 11, 12]);
+        let ancestors: Vec<u32> = page.ancestors.iter().map(|item| item.id.get()).collect();
+        assert_eq!(ancestors, [2, 3, 4], "every level, oldest first");
+        assert_eq!(page.older_items, OlderItems::Exist);
+        assert_eq!(ids(&older), [7, 8, 9]);
+        assert!(older.ancestors.is_empty());
     }
 
     #[test]

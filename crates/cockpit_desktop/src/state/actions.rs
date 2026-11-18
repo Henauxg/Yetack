@@ -1884,7 +1884,7 @@ pub fn load_older(state: &mut AppState, agent: AgentId) -> Vec<Outgoing> {
         return Vec::new();
     }
     entry.transcript.set_history(HistoryState::LoadingOlder);
-    vec![history_request(agent, entry.transcript.first_id())]
+    vec![history_request(agent, entry.transcript.loaded_from())]
 }
 
 /// After a failed history request: `needed_requests` asks again.
@@ -3950,6 +3950,7 @@ mod tests {
                         },
                     }],
                     older_items,
+                    ancestors: Vec::new(),
                 });
             }
             open_menu(&mut state, &mut drafts, "export");
@@ -4098,6 +4099,7 @@ mod tests {
                 })
                 .collect(),
             older_items: OlderItems::None,
+            ancestors: Vec::new(),
         };
         state
             .agents
@@ -6238,6 +6240,7 @@ mod tests {
                     },
                 }],
                 older_items: OlderItems::Exist,
+                ancestors: Vec::new(),
             });
         }
 

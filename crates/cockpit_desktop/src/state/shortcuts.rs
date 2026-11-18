@@ -1431,6 +1431,7 @@ mod tests {
         entry.transcript.merge_page(HistoryPage {
             items: items.collect(),
             older_items: OlderItems::None,
+            ancestors: Vec::new(),
         });
         state
     }
