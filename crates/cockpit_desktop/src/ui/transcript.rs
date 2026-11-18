@@ -591,8 +591,14 @@ impl ChatView {
             })
             .collect();
         let is_step: Vec<bool> = states.iter().map(Option::is_some).collect();
-        let links = step_links(&is_step, working);
-        let working_linked = is_step.last().copied().unwrap_or(false);
+        let loaded_from = entry.transcript.loaded_from();
+        // The subagent calls kept before the first loaded item, which the history note follows.
+        let held = top_rows
+            .iter()
+            .take_while(|row| loaded_from.is_some_and(|from| row.first().id < from))
+            .count();
+        let links = step_links(&is_step, held, working);
+        let working_linked = held < is_step.len() && is_step.last().copied().unwrap_or(false);
         let firsts: Vec<&TranscriptItem> = top_rows.iter().map(Row::first).collect();
         let notes = older_step_notes(&firsts, &loaded);
         let scrolled_up = state.ui.chat_scrolled_up.get(&agent).copied();
@@ -684,7 +690,6 @@ impl ChatView {
                 actions::new_entries(entry, last_seen).first,
             )
         });
-        let loaded_from = entry.transcript.loaded_from();
         let early_count = top
             .iter()
             .take_while(|unit| loaded_from.is_some_and(|from| unit.id() < from))
@@ -1334,16 +1339,18 @@ fn row_kind(row: &Row<'_>) -> Option<&'static str> {
 }
 
 /// The links of each item, given which items are steps: a user message, a notice or a turn's end
-/// breaks the line. With `working`, the last step links down to the working line.
-fn step_links(is_step: &[bool], working: bool) -> Vec<StepLinks> {
+/// breaks the line, and so does the history note after the first `held` items. With `working`,
+/// the last step links down to the working line.
+fn step_links(is_step: &[bool], held: usize, working: bool) -> Vec<StepLinks> {
     let mut links = Vec::with_capacity(is_step.len());
     for (index, &step) in is_step.iter().enumerate() {
         let previous = index
             .checked_sub(1)
+            .filter(|before| before + 1 != held)
             .and_then(|before| is_step.get(before))
             .copied()
             .unwrap_or(false);
-        let next = is_step.get(index + 1).copied().unwrap_or(working);
+        let next = index + 1 != held && is_step.get(index + 1).copied().unwrap_or(working);
         links.push(StepLinks {
             above: step && previous,
             below: step && next,
@@ -3180,7 +3187,7 @@ mod tests {
         let links = |above, below| StepLinks { above, below };
 
         assert_eq!(
-            step_links(&[false, true, true, true, false, true], false),
+            step_links(&[false, true, true, true, false, true], 0, false),
             [
                 none,
                 links(false, true),
@@ -3190,8 +3197,34 @@ mod tests {
                 none
             ]
         );
-        assert_eq!(step_links(&[false, true], true), [none, links(false, true)]);
-        assert_eq!(step_links(&[true, false], true), [none, none]);
+        assert_eq!(
+            step_links(&[false, true], 0, true),
+            [none, links(false, true)]
+        );
+        assert_eq!(step_links(&[true, false], 0, true), [none, none]);
+    }
+
+    /// Subagent calls 21 and 22 are kept before the first loaded item, 273: the grey rows of
+    /// older messages stand between 22 and 273, and the working line comes after them.
+    #[test]
+    fn the_history_note_breaks_the_line() {
+        let none = StepLinks::default();
+        let links = |above, below| StepLinks { above, below };
+
+        assert_eq!(
+            step_links(&[true, true, true, true], 2, false),
+            [
+                links(false, true),
+                links(true, false),
+                links(false, true),
+                links(true, false)
+            ]
+        );
+        assert_eq!(
+            step_links(&[true, true], 2, true),
+            [links(false, true), links(true, false)]
+        );
+        assert_eq!(step_links(&[true], 1, true), [none]);
     }
 
     #[test]
