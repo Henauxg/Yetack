@@ -1,5 +1,6 @@
 //! The file view's diff: the edits an agent made to a file, and the file's text before them.
 
+use std::borrow::Cow;
 use std::path::{Path, PathBuf};
 
 use cockpit_protocol::{EditTexts, FileEdit, ItemBody, ToolCallStatus};
@@ -65,6 +66,12 @@ const LEFT_OUT: &str = "…";
 pub fn call_path(agent_folder: &Path, path: &Path) -> CallPath {
     let style = PathStyle::of(agent_folder);
     let text = path.to_string_lossy();
+    // `/work/shop/src/../../etc/hosts` shows where it leads, `../etc`, not `src/…/../etc`.
+    let text = if style.is_absolute(&text) && style.goes_up(&text) {
+        Cow::Owned(style.resolve(&text, ""))
+    } else {
+        text
+    };
     let base = agent_folder.to_string_lossy();
     let name = style.file_name(&text).unwrap_or(&text).to_owned();
     let Some(parent) = style.parent(&text) else {
@@ -73,9 +80,6 @@ pub fn call_path(agent_folder: &Path, path: &Path) -> CallPath {
             folder: String::new(),
         };
     };
-    let up = style
-        .shown(&format!("{PARENT}{}", style.separator()))
-        .into_owned();
     let (start, names): (String, Vec<&str>) = match style.strip_prefix(parent, &base) {
         Some(inside) => (String::new(), style.names(inside).collect()),
         None => {
@@ -93,7 +97,7 @@ pub fn call_path(agent_folder: &Path, path: &Path) -> CallPath {
             let levels = base_names.len() - shared;
             if shared > 0 && levels <= MAX_LEVELS_UP {
                 (
-                    up.repeat(levels),
+                    vec![PARENT; levels].join(&style.separator().to_string()),
                     names.get(shared..).unwrap_or_default().to_vec(),
                 )
             } else {
@@ -105,13 +109,12 @@ pub fn call_path(agent_folder: &Path, path: &Path) -> CallPath {
             }
         }
     };
-    let folder = format!("{start}{}", shortened(&names, style.separator()));
-    let trimmed = folder.trim_end_matches(|character| style.is_separator(character));
+    let rest = shortened(&names, style.separator());
     // A root alone keeps its separator: `/`, `C:\`.
-    let folder = if trimmed.is_empty() {
-        folder.clone()
+    let folder = if rest.is_empty() {
+        start
     } else {
-        trimmed.to_owned()
+        style.join(&start, &rest)
     };
     CallPath { name, folder }
 }
@@ -272,6 +275,101 @@ mod tests {
         assert_eq!(
             shown(agent, r"D:\data\a\b\c\export.csv"),
             pair("export.csv", r"D:\data\…\b\c")
+        );
+    }
+
+    #[test]
+    fn a_call_shows_where_a_path_with_dots_leads() {
+        let agent = "/home/dev/projects/shop";
+
+        assert_eq!(
+            shown(agent, "/home/dev/projects/shop/src/../../../etc/hosts"),
+            pair("hosts", "../../etc")
+        );
+        assert_eq!(
+            shown(agent, "/home/dev/projects/shop/./src/./cart.rs"),
+            pair("cart.rs", "src")
+        );
+        assert_eq!(
+            shown(agent, "/home/dev/projects/shop/../billing/main.rs"),
+            pair("main.rs", "../billing")
+        );
+        assert_eq!(
+            shown(agent, "/home/dev/projects/shop/src/.."),
+            pair("shop", "..")
+        );
+    }
+
+    #[test]
+    fn a_file_whose_folder_is_a_root_shows_the_root_whole() {
+        assert_eq!(
+            shown(r"C:\work\shop", r"D:\export.csv"),
+            pair("export.csv", r"D:\")
+        );
+        assert_eq!(
+            shown(r"C:\work\shop", "c:/export.csv"),
+            pair("export.csv", r"c:\")
+        );
+        assert_eq!(
+            shown(r"C:\work\shop", r"\\files\team\notes.txt"),
+            pair("notes.txt", r"\\files\team\")
+        );
+        assert_eq!(
+            shown(r"C:\work\shop", r"\\files\team\a\b\c\d\notes.txt"),
+            pair("notes.txt", r"\\files\team\a\…\c\d")
+        );
+    }
+
+    #[test]
+    fn a_call_path_compares_windows_names_whatever_their_case_and_separators() {
+        let agent = r"C:\work\shop";
+
+        assert_eq!(
+            shown(agent, r"c:\WORK\Shop\src\cart.rs"),
+            pair("cart.rs", "src")
+        );
+        assert_eq!(
+            shown(agent, "c:/work/Billing/main.rs"),
+            pair("main.rs", r"..\Billing")
+        );
+        assert_eq!(
+            shown(agent, r"C:/work/shop/src\a/b\c/cart.rs"),
+            pair("cart.rs", r"src\…\b\c")
+        );
+    }
+
+    #[test]
+    fn a_call_path_from_a_root_folder_or_a_relative_path() {
+        assert_eq!(shown("/", "/etc/hosts"), pair("hosts", "etc"));
+        assert_eq!(shown("/", "/hosts"), pair("hosts", ""));
+        assert_eq!(shown(r"C:\", r"C:\data\a.csv"), pair("a.csv", "data"));
+        assert_eq!(
+            shown("/home/dev/projects/shop", "src/cart.rs"),
+            pair("cart.rs", "src")
+        );
+        assert_eq!(
+            shown("/home/dev/projects/shop", "/home/dev/projects/shop"),
+            pair("shop", "..")
+        );
+        assert_eq!(
+            shown("/home/dev/projects/shop/", "/home/dev/projects/shop/src/"),
+            pair("src", "")
+        );
+    }
+
+    #[test]
+    fn a_long_folder_name_is_cut_between_characters() {
+        let name = format!("{}{}", "é".repeat(20), "日".repeat(20));
+
+        assert_eq!(
+            shown(
+                "/home/dev/projects/shop",
+                &format!("/home/dev/projects/{name}/a.rs")
+            ),
+            pair(
+                "a.rs",
+                &format!("../{}…{}", "é".repeat(14), "日".repeat(13))
+            )
         );
     }
 
