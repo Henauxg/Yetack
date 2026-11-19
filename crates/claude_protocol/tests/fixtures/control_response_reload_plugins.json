@@ -1,0 +1,22 @@
+{
+  "type": "control_response",
+  "response": {
+    "subtype": "success",
+    "request_id": "cockpit-9",
+    "response": {
+      "commands": [
+        { "name": "compact", "description": "Summarize the conversation", "argumentHint": "<instructions>" },
+        { "name": "review-notes", "description": "Review the notes folder" },
+        { "name": "notes:search", "description": "Search the notes", "argumentHint": "<words>" }
+      ],
+      "agents": [{ "name": "notes-reader", "description": "Reads notes" }],
+      "plugins": [
+        { "name": "notes", "path": "/home/user/.claude/plugins/notes", "source": "notes@team-tools", "version": "1.4.0" },
+        { "name": "local-tools", "path": "/work/app/plugins/local-tools" }
+      ],
+      "mcpServers": [{ "name": "notes", "status": "pending" }],
+      "error_count": 1,
+      "held": false
+    }
+  }
+}

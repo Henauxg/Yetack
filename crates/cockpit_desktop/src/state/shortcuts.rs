@@ -235,15 +235,21 @@ fn composer_key(
             KEY_ENTER | KEY_TAB => {
                 sync_composer_text(state, drafts, agent, &press.composer_text);
                 let typed_open = state.ui.popover == Some(Popover::Palette(PaletteOrigin::Typed));
-                if typed_open && actions::palette_has_entries(state, drafts, agent) {
-                    return actions::palette_pick(state, drafts, agent, None).requests;
-                }
                 let loading = state
                     .agents
                     .get(&agent)
                     .is_some_and(AgentEntry::commands_loading);
+                // The commands on their way go before the reloads listed already.
                 if typed_open && loading {
                     return Vec::new();
+                }
+                if typed_open && actions::palette_has_entries(state, drafts, agent) {
+                    let picked = if press.key == KEY_TAB {
+                        actions::palette_complete(state, drafts, agent)
+                    } else {
+                        actions::palette_pick(state, drafts, agent, None)
+                    };
+                    return picked.requests;
                 }
                 // With no command to pick, Enter sends the message as typed.
                 if typed_open && press.key == KEY_ENTER {
@@ -916,6 +922,52 @@ mod tests {
         assert!(requests.is_empty());
         let draft = drafts.draft(agent).map(|draft| draft.text.as_str());
         assert_eq!(draft, Some("/rev"));
+    }
+
+    #[test]
+    fn enter_on_a_word_a_reload_matches_waits_while_the_commands_load() {
+        let agent = AgentId::new(1);
+        let mut drafts = Drafts::default();
+        let mut state = state(AgentStatus::Idle, None);
+
+        // Typed on the way to "/review": the reloads match it before the commands arrive.
+        typed(&mut state, &mut drafts, agent, "/re");
+        let requests = handle_key(&mut state, &mut drafts, &enter("/re"));
+
+        assert!(requests.is_empty());
+        let draft = drafts.draft(agent).map(|draft| draft.text.as_str());
+        assert_eq!(draft, Some("/re"));
+    }
+
+    #[test]
+    fn tab_completes_a_reload_and_enter_runs_it() {
+        let agent = AgentId::new(1);
+        let press_on = |key: &str| {
+            let mut drafts = Drafts::default();
+            let mut state = state(AgentStatus::Idle, None);
+            with_review_commands(&mut state);
+            typed(&mut state, &mut drafts, agent, "/reload-s");
+            let key_press = KeyPress {
+                composer_text: "/reload-s".to_owned(),
+                ..press(key, KeyTarget::Composer)
+            };
+            let requests = handle_key(&mut state, &mut drafts, &key_press);
+            let methods: Vec<Method> = requests
+                .iter()
+                .map(|outgoing| outgoing.request.method())
+                .collect();
+            let draft = drafts.draft(agent).map(|draft| draft.text.clone());
+            (methods, draft)
+        };
+
+        let tab = press_on(KEY_TAB);
+        let enter = press_on(KEY_ENTER);
+
+        assert_eq!(tab, (Vec::new(), Some("/reload-skills ".to_owned())));
+        assert_eq!(
+            enter,
+            (vec![Method::AgentReloadSkills], Some(String::new()))
+        );
     }
 
     #[test]

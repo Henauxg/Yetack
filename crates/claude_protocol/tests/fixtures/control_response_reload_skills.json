@@ -1,0 +1,14 @@
+{
+  "type": "control_response",
+  "response": {
+    "subtype": "success",
+    "request_id": "cockpit-8",
+    "response": {
+      "skills": [
+        { "name": "review-notes", "description": "Review the notes folder", "argumentHint": "", "source": "userSettings" },
+        { "name": "ship-check", "description": "Check the branch before it ships", "argumentHint": "[branch]" },
+        { "name": "plain" }
+      ]
+    }
+  }
+}

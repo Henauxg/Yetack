@@ -7013,6 +7013,10 @@ html.reordering * {
   background: var(--selected);
 }
 
+.palette-item:disabled {
+  color: var(--faint);
+}
+
 .palette-item-head {
   display: flex;
   align-items: baseline;

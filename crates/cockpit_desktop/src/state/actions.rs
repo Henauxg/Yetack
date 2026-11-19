@@ -23,6 +23,7 @@ use super::app_state::{AgentEntry, AppState, FileFreshness, FileRead, Loadable, 
 use super::apply::forget_agent;
 use super::drafts::{Drafts, NewAgentDraft, Palette, QuestionDraft, SlashWord, SwitcherDraft};
 use super::projects::ProjectKey;
+use super::reload::{self, Reload};
 use super::requests::{Outgoing, Purpose, Shift, history_request};
 use super::transcript::HistoryState;
 use super::ui_state::{
@@ -285,6 +286,14 @@ pub(super) fn with_command_at(
     Some((written, caret_units))
 }
 
+/// `text` without `word` and the space after it, and the caret where the word was.
+fn without_word(text: &str, word: SlashWord) -> Option<(String, Utf16Offset)> {
+    let before = text.get(..word.start)?;
+    let after = text.get(word.end..)?;
+    let after = after.strip_prefix(' ').unwrap_or(after);
+    Some((format!("{before}{after}"), Utf16Offset::end_of(before)))
+}
+
 /// Opens or closes the palette as the composer's text asks.
 pub fn change_palette(
     state: &mut AppState,
@@ -379,8 +388,15 @@ fn from_a_word_start(text: &str, query: &str) -> bool {
     false
 }
 
-fn command_rank(command: &SlashCommand, query: &str, how: CommandMatch) -> Option<CommandRank> {
-    let name = command.name.to_lowercase();
+/// How a command named `name` matches `query`, which `command_query` gave. A query inside a
+/// description's word, as "arch" in "search", is no match.
+fn command_rank(
+    name: &str,
+    description: &str,
+    query: &str,
+    how: CommandMatch,
+) -> Option<CommandRank> {
+    let name = name.to_lowercase();
     if name.starts_with(query) {
         return Some(CommandRank::NameStart);
     }
@@ -393,27 +409,29 @@ fn command_rank(command: &SlashCommand, query: &str, how: CommandMatch) -> Optio
     if name.contains(query) {
         return Some(CommandRank::InName);
     }
-    from_a_word_start(&command.description.to_lowercase(), query)
+    from_a_word_start(&description.to_lowercase(), query)
         .then_some(CommandRank::DescriptionWordStart)
 }
 
-/// The commands that match the query, the best matches first, each rank in the list's order. A
-/// query inside a description's word, as "arch" in "search", is no match.
-pub fn filtered_commands<'command>(
+/// The palette's query as the names match it: without its "/", in lowercase.
+fn command_query(query: &str) -> String {
+    query
+        .trim_start_matches(COMMAND_PREFIX)
+        .trim()
+        .to_lowercase()
+}
+
+/// The commands that match `query`, which `command_query` gave, with their rank, in the list's
+/// order.
+fn ranked_commands<'command>(
     commands: &'command [SlashCommand],
     query: &str,
     how: CommandMatch,
-) -> Vec<&'command SlashCommand> {
-    let query = query
-        .trim_start_matches(COMMAND_PREFIX)
-        .trim()
-        .to_lowercase();
-    let mut matching: Vec<(CommandRank, &SlashCommand)> = commands
-        .iter()
-        .filter_map(|command| Some((command_rank(command, &query, how)?, command)))
-        .collect();
-    matching.sort_by_key(|(rank, _)| *rank);
-    matching.into_iter().map(|(_, command)| command).collect()
+) -> impl Iterator<Item = (CommandRank, &'command SlashCommand)> {
+    commands.iter().filter_map(move |command| {
+        let rank = command_rank(&command.name, &command.description, query, how)?;
+        Some((rank, command))
+    })
 }
 
 fn agent_commands(state: &AppState, agent: AgentId) -> &[SlashCommand] {
@@ -552,19 +570,22 @@ impl MenuAction {
 pub enum PaletteEntry<'command> {
     Action(MenuAction),
     Command(&'command SlashCommand),
+    /// Listed among the commands, whether Claude Code lists it or not.
+    Reload(Reload),
 }
 
 impl PaletteEntry<'_> {
     pub fn section(self) -> MenuSection {
         match self {
             Self::Action(action) => action.section(),
-            Self::Command(_) => MenuSection::Commands,
+            Self::Command(_) | Self::Reload(_) => MenuSection::Commands,
         }
     }
 }
 
 /// The palette's entries, in order. Opened by typing `/`, it lists the matching commands alone;
-/// opened by the slash button, the matching actions first.
+/// opened by the slash button, the matching actions first. The commands come best match first,
+/// each rank in the list's order, and the reloads last in their rank.
 pub fn palette_entries<'command>(
     commands: &'command [SlashCommand],
     query: &str,
@@ -580,8 +601,20 @@ pub fn palette_entries<'command>(
             .filter(|action| action.matches(&query));
         entries.extend(actions.map(PaletteEntry::Action));
     }
-    let commands = filtered_commands(commands, query, how);
-    entries.extend(commands.into_iter().map(PaletteEntry::Command));
+    let query = command_query(query);
+    // A command of Claude Code's named as a reload would only send a prompt it ignores.
+    let mut ranked: Vec<(CommandRank, PaletteEntry)> = ranked_commands(commands, &query, how)
+        .filter(|(_, command)| command.name.parse::<Reload>().is_err())
+        .map(|(rank, command)| (rank, PaletteEntry::Command(command)))
+        .collect();
+    let reloads = Reload::VARIANTS.iter().filter_map(|&reload| {
+        // By its name alone: its description would match most queries.
+        let rank = command_rank(reload.name(), "", &query, how)?;
+        Some((rank, PaletteEntry::Reload(reload)))
+    });
+    ranked.extend(reloads);
+    ranked.sort_by_key(|(rank, _)| *rank);
+    entries.extend(ranked.into_iter().map(|(_, entry)| entry));
     entries
 }
 
@@ -665,28 +698,24 @@ pub fn palette_pick(
     {
         None => return Picked::default(),
         Some(PaletteEntry::Action(action)) => action,
-        Some(PaletteEntry::Command(command)) => {
-            let name = command.name.clone();
-            let word = drafts.palette.word;
+        Some(PaletteEntry::Reload(reload)) => {
+            let requests: Vec<Outgoing> = reload::start(state, agent, reload).into_iter().collect();
+            // The request stands in for the "/" word typed; the rest of the message stays.
+            let word = drafts.palette.word.filter(|_| !requests.is_empty());
             let draft = drafts.draft_mut(agent);
-            // A command picked while typing replaces its "/" word; one from the slash button's
-            // menu goes at the start.
-            let typed = word.and_then(|word| with_command_at(&draft.text, word, &name));
-            match typed {
-                Some((text, caret)) => {
-                    draft.text = text;
-                    drafts.draft_written_at(agent, caret);
-                }
-                None => {
-                    draft.text = with_command(&draft.text, &name);
-                    drafts.draft_written(agent);
-                }
+            if let Some((text, caret)) = word.and_then(|word| without_word(&draft.text, word)) {
+                draft.text = text;
+                drafts.draft_written_at(agent, caret);
             }
             state.ui.popover = None;
             return Picked {
-                requests: Vec::new(),
+                requests,
                 window: Some(WindowAction::FocusComposer),
             };
+        }
+        Some(PaletteEntry::Command(command)) => {
+            let name = command.name.clone();
+            return insert_command(state, drafts, agent, &name);
         }
     };
     let Some(entry) = state.agents.get(&agent) else {
@@ -754,6 +783,40 @@ pub fn palette_pick(
     };
     state.ui.popover = None;
     picked
+}
+
+/// Tab in a palette opened by typing: as `palette_pick`, but a reload is written into the draft
+/// as a command, for Enter to send.
+pub fn palette_complete(state: &mut AppState, drafts: &mut Drafts, agent: AgentId) -> Picked {
+    let highlighted = open_palette_entries(state, drafts, agent)
+        .get(drafts.palette.highlighted)
+        .copied();
+    match highlighted {
+        Some(PaletteEntry::Reload(reload)) => insert_command(state, drafts, agent, reload.name()),
+        _ => palette_pick(state, drafts, agent, None),
+    }
+}
+
+/// Writes the command `name` into the draft and closes the palette. A command picked while typing
+/// replaces its "/" word; one from the slash button's menu goes at the start.
+fn insert_command(state: &mut AppState, drafts: &mut Drafts, agent: AgentId, name: &str) -> Picked {
+    let word = drafts.palette.word;
+    let draft = drafts.draft_mut(agent);
+    match word.and_then(|word| with_command_at(&draft.text, word, name)) {
+        Some((text, caret)) => {
+            draft.text = text;
+            drafts.draft_written_at(agent, caret);
+        }
+        None => {
+            draft.text = with_command(&draft.text, name);
+            drafts.draft_written(agent);
+        }
+    }
+    state.ui.popover = None;
+    Picked {
+        requests: Vec::new(),
+        window: Some(WindowAction::FocusComposer),
+    }
 }
 
 /// Starts the agent's title with `emoji`, in place of the emoji it starts with, or removes that
@@ -1120,7 +1183,8 @@ pub fn remove_image(drafts: &mut Drafts, agent: AgentId, index: usize) {
 
 /// Sends the draft. `typed` is the composer's text as the key event saw it, which may hold a last
 /// keystroke the draft has not received yet. A working agent reads the prompt at its next step,
-/// or after its turn with `PromptDelivery::Queue`.
+/// or after its turn with `PromptDelivery::Queue`. A text of `/reload-skills` or
+/// `/reload-plugins` alone sends the reload instead, and the draft keeps its images and quotes.
 pub fn send_prompt(
     state: &mut AppState,
     drafts: &mut Drafts,
@@ -1128,6 +1192,18 @@ pub fn send_prompt(
     typed: Option<String>,
     delivery: PromptDelivery,
 ) -> Vec<Outgoing> {
+    let text = typed
+        .as_deref()
+        .or_else(|| drafts.draft(agent).map(|draft| draft.text.as_str()));
+    if let Some(reload) = text.and_then(reload::typed) {
+        let Some(request) = reload::start(state, agent, reload) else {
+            return Vec::new();
+        };
+        drafts.draft_mut(agent).text.clear();
+        drafts.draft_written(agent);
+        state.ui.popover = None;
+        return vec![request];
+    }
     let exited = state
         .agents
         .get(&agent)
@@ -3363,8 +3439,23 @@ mod tests {
         let names = entries.into_iter().map(|entry| match entry {
             PaletteEntry::Action(action) => action.label().to_owned(),
             PaletteEntry::Command(command) => format!("/{}", command.name),
+            PaletteEntry::Reload(reload) => format!("/{}", reload.name()),
         });
         names.collect()
+    }
+
+    /// Claude Code's commands the typed palette lists, the best matches first.
+    fn filtered_commands<'command>(
+        commands: &'command [SlashCommand],
+        query: &str,
+        how: CommandMatch,
+    ) -> Vec<&'command SlashCommand> {
+        let entries = palette_entries(commands, query, how, PaletteOrigin::Typed);
+        let commands = entries.into_iter().filter_map(|entry| match entry {
+            PaletteEntry::Command(command) => Some(command),
+            PaletteEntry::Action(_) | PaletteEntry::Reload(_) => None,
+        });
+        commands.collect()
     }
 
     fn sent(requests: &[Outgoing]) -> Vec<&Request> {
@@ -3791,6 +3882,8 @@ mod tests {
                 "/compact",
                 "/context",
                 "/review",
+                "/reload-skills",
+                "/reload-plugins",
             ]
         );
         assert_eq!(
@@ -3810,7 +3903,13 @@ mod tests {
         assert_eq!(menu("REVIEW"), ["/review"]);
         assert_eq!(
             entry_names(&commands, "", PaletteOrigin::Typed),
-            ["/compact", "/context", "/review"]
+            [
+                "/compact",
+                "/context",
+                "/review",
+                "/reload-skills",
+                "/reload-plugins"
+            ]
         );
     }
 
@@ -3873,7 +3972,7 @@ mod tests {
         let up_at_the_top = press(Direction::Up, 1);
         let on_the_first_command = press(Direction::Down, 12);
         let at_the_bottom = press(Direction::Down, 5);
-        let back_on_the_settings = press(Direction::Up, 3);
+        let back_on_the_settings = press(Direction::Up, 5);
 
         assert_eq!(
             (
@@ -3882,7 +3981,7 @@ mod tests {
                 at_the_bottom,
                 back_on_the_settings
             ),
-            (0, 12, 13, 10)
+            (0, 12, 15, 10)
         );
     }
 
@@ -3917,6 +4016,147 @@ mod tests {
         assert_eq!(
             drafts.draft(agent()).map(|draft| draft.text.as_str()),
             Some("half-written message")
+        );
+    }
+
+    fn reload_skills() -> Request {
+        Request::AgentReloadSkills(AgentParams { agent: agent() })
+    }
+
+    fn reload_plugins() -> Request {
+        Request::AgentReloadPlugins(AgentParams { agent: agent() })
+    }
+
+    #[test]
+    fn a_reload_typed_alone_sends_its_request_and_keeps_the_images() {
+        let mut state = state(AgentStatus::Working);
+        let mut drafts = Drafts::default();
+        let image = Image {
+            media_type: ImageMediaType::Png,
+            data: "aGVsbG8=".to_owned(),
+        };
+        drafts.draft_mut(agent()).images.push(image.clone());
+        let writes = drafts.composer_writes(agent());
+
+        let requests = send_prompt(
+            &mut state,
+            &mut drafts,
+            agent(),
+            Some(" /reload-skills\n".to_owned()),
+            PromptDelivery::Steer,
+        );
+
+        assert_eq!(sent(&requests), [&reload_skills()]);
+        let draft = drafts.draft(agent()).cloned().unwrap_or_default();
+        assert_eq!((draft.text.as_str(), draft.images), ("", vec![image]));
+        assert_eq!(drafts.composer_writes(agent()), writes + 1);
+    }
+
+    #[test]
+    fn a_reload_with_more_text_goes_to_claude_as_a_message() {
+        let mut state = state(AgentStatus::Idle);
+        let mut drafts = Drafts::default();
+
+        let requests = send_prompt(
+            &mut state,
+            &mut drafts,
+            agent(),
+            Some("/reload-skills please".to_owned()),
+            PromptDelivery::Steer,
+        );
+
+        assert!(matches!(
+            sent(&requests).as_slice(),
+            [Request::AgentPrompt(_)]
+        ));
+    }
+
+    #[test]
+    fn a_reload_picked_while_typing_sends_its_request_and_drops_its_word() {
+        let mut state = state(AgentStatus::Idle);
+        with_commands(
+            &mut state,
+            vec![command("review", ""), command("compact", "")],
+        );
+        let mut drafts = Drafts::default();
+        type_text(&mut state, &mut drafts, "check this /reload-pl");
+
+        let picked = palette_pick(&mut state, &mut drafts, agent(), None);
+
+        assert_eq!(sent(&picked.requests), [&reload_plugins()]);
+        assert_eq!(
+            drafts.draft(agent()).map(|draft| draft.text.as_str()),
+            Some("check this ")
+        );
+        assert_eq!(picked.window, Some(WindowAction::FocusComposer));
+        assert_eq!(state.ui.popover, None);
+    }
+
+    #[test]
+    fn the_menu_offers_both_reloads_once_whatever_claude_code_lists() {
+        let mut state = state(AgentStatus::Idle);
+        with_commands(
+            &mut state,
+            vec![
+                command("reload-skills", "Claude Code's own"),
+                command("review", ""),
+            ],
+        );
+        let mut drafts = Drafts::default();
+        let commands = state
+            .agents
+            .get(&agent())
+            .map(|entry| entry.commands.clone())
+            .unwrap_or_default();
+        open_menu(&mut state, &mut drafts, "reload");
+
+        let picked = palette_pick(&mut state, &mut drafts, agent(), None);
+
+        assert_eq!(
+            entry_names(&commands, "/re", PaletteOrigin::Typed),
+            ["/review", "/reload-skills", "/reload-plugins"]
+        );
+        assert_eq!(
+            entry_names(&[], "plugins", PaletteOrigin::Typed),
+            ["/reload-plugins"]
+        );
+        assert_eq!(sent(&picked.requests), [&reload_skills()]);
+        assert_eq!(state.ui.popover, None);
+    }
+
+    #[test]
+    fn an_exited_agent_says_why_it_cannot_reload_and_keeps_the_draft() {
+        let mut state = state(AgentStatus::Exited);
+        let mut drafts = Drafts::default();
+        drafts.draft_mut(agent()).text = "/reload-skills".to_owned();
+        open_menu(&mut state, &mut drafts, "reload-plugins");
+
+        let picked = palette_pick(&mut state, &mut drafts, agent(), None);
+        let typed = send_prompt(
+            &mut state,
+            &mut drafts,
+            agent(),
+            None,
+            PromptDelivery::Steer,
+        );
+
+        assert!(picked.requests.is_empty() && typed.is_empty());
+        let notes: Vec<&str> = state
+            .ui
+            .errors
+            .iter()
+            .map(|note| note.text.as_str())
+            .collect();
+        assert_eq!(
+            notes,
+            [
+                "Reload plugins needs the agent's Claude Code to run: resume the agent first.",
+                "Reload skills needs the agent's Claude Code to run: resume the agent first.",
+            ]
+        );
+        assert_eq!(
+            drafts.draft(agent()).map(|draft| draft.text.as_str()),
+            Some("/reload-skills")
         );
     }
 

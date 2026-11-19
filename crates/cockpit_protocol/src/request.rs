@@ -90,6 +90,12 @@ pub enum Request {
     AgentMcpToggle(McpToggleParams),
     /// The slash commands and skills, for the palette. Answered by `Commands`.
     AgentCommands(AgentParams),
+    /// Has Claude Code read its skill folders again. Answered by `SkillsReloaded`, and a
+    /// `CommandsChanged` event when the commands changed. Needs a running `claude`.
+    AgentReloadSkills(AgentParams),
+    /// Has Claude Code read its plugins again. Answered by `PluginsReloaded`, and a
+    /// `CommandsChanged` event when the commands changed. Needs a running `claude`.
+    AgentReloadPlugins(AgentParams),
     /// Answered by `File`, or by `FileMatches` when the path is relative, names no file in the
     /// agent's folder, and several files elsewhere end with it.
     AgentReadFile(ReadFileParams),
@@ -197,6 +203,10 @@ pub enum Method {
     AgentMcpToggle,
     #[strum(serialize = "agent.commands")]
     AgentCommands,
+    #[strum(serialize = "agent.reload_skills")]
+    AgentReloadSkills,
+    #[strum(serialize = "agent.reload_plugins")]
+    AgentReloadPlugins,
     #[strum(serialize = "agent.read_file")]
     AgentReadFile,
     #[strum(serialize = "agent.list_dir")]
@@ -573,6 +583,8 @@ impl Request {
             Self::AgentMcpReconnect(_) => Method::AgentMcpReconnect,
             Self::AgentMcpToggle(_) => Method::AgentMcpToggle,
             Self::AgentCommands(_) => Method::AgentCommands,
+            Self::AgentReloadSkills(_) => Method::AgentReloadSkills,
+            Self::AgentReloadPlugins(_) => Method::AgentReloadPlugins,
             Self::AgentReadFile(_) => Method::AgentReadFile,
             Self::AgentListDir(_) => Method::AgentListDir,
             Self::AgentFindFiles(_) => Method::AgentFindFiles,
@@ -639,7 +651,9 @@ impl Serialize for Request {
             Self::AgentMcpStatus(params) => tagged(method, params, serializer),
             Self::AgentMcpReconnect(params) => tagged(method, params, serializer),
             Self::AgentMcpToggle(params) => tagged(method, params, serializer),
-            Self::AgentCommands(params) => tagged(method, params, serializer),
+            Self::AgentCommands(params)
+            | Self::AgentReloadSkills(params)
+            | Self::AgentReloadPlugins(params) => tagged(method, params, serializer),
             Self::AgentReadFile(params) => tagged(method, params, serializer),
             Self::AgentListDir(params) => tagged(method, params, serializer),
             Self::AgentFindFiles(params) => tagged(method, params, serializer),
@@ -705,6 +719,8 @@ impl<'de> Deserialize<'de> for Request {
             Method::AgentMcpReconnect => Self::AgentMcpReconnect(params(raw)?),
             Method::AgentMcpToggle => Self::AgentMcpToggle(params(raw)?),
             Method::AgentCommands => Self::AgentCommands(params(raw)?),
+            Method::AgentReloadSkills => Self::AgentReloadSkills(params(raw)?),
+            Method::AgentReloadPlugins => Self::AgentReloadPlugins(params(raw)?),
             Method::AgentReadFile => Self::AgentReadFile(params(raw)?),
             Method::AgentListDir => Self::AgentListDir(params(raw)?),
             Method::AgentFindFiles => Self::AgentFindFiles(params(raw)?),

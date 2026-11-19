@@ -21,6 +21,11 @@
 //! Its `get_settings` answer applies the `--effort` it was given, or else a default that depends
 //! on the model, as Claude Code's does: `medium` for its own default model, `low` for any other.
 //!
+//! It has the command `review` and the skill `tidy`. A `reload_skills` finds the skill
+//! `ship-check` too, from then on: the first one sends a `commands_changed` line before its
+//! answer, as Claude Code does. A `reload_plugins` adds the plugin `notes`, with its command
+//! `notes:search`, to its answer alone, and counts one error.
+//!
 //! With `FAKE_CLAUDE_ARGS_FILE` set, it appends its command line to that file, one JSON array per
 //! line: `CLAUDE_CODE_RESUME_INTERRUPTED_TURN=<value>` first when that variable is set, as a shell
 //! writes it, then its arguments. With `FAKE_CLAUDE_ENV_FILE` set, it appends the variables that
@@ -29,11 +34,11 @@
 
 use std::collections::VecDeque;
 use std::fs::OpenOptions;
-use std::io;
 use std::io::Write;
 use std::path::PathBuf;
 use std::process::{Command, ExitCode, Stdio};
 use std::time::Duration;
+use std::{io, iter};
 
 use serde_json::{Map, Value, json};
 
@@ -90,6 +95,8 @@ struct Fake<W> {
     queued: VecDeque<String>,
     /// Set by `linger`: the fake no longer exits when its stdin closes.
     lingers: bool,
+    /// Set by `reload_skills`: the skill `ship-check` shows.
+    skills_reloaded: bool,
 }
 
 fn main() -> ExitCode {
@@ -143,6 +150,7 @@ fn run() -> io::Result<()> {
         turn: None,
         queued: VecDeque::new(),
         lingers: false,
+        skills_reloaded: false,
     };
     for line in io::stdin().lock().lines() {
         let line = line?;
@@ -188,10 +196,25 @@ impl<W: Write> Fake<W> {
         let body = match text(message, &["request", "subtype"]) {
             "initialize" => {
                 self.restate_session_name()?;
-                json!({"commands": [
-                {"name": "review", "description": "Review the changes", "argumentHint": ""},
-                {"name": "tidy", "description": "Tidy the code", "argumentHint": "[path]"}
-                ]})
+                json!({"commands": self.commands()})
+            }
+            "reload_skills" => {
+                if !self.skills_reloaded {
+                    self.skills_reloaded = true;
+                    self.emit(&json!({
+                        "type": "system", "subtype": "commands_changed",
+                        "commands": self.commands(), "session_id": self.session
+                    }))?;
+                }
+                json!({"skills": self.skills()})
+            }
+            "reload_plugins" => {
+                let mut commands = self.commands();
+                commands.push(json!({"name": "notes:search", "description": "Search the notes"}));
+                json!({
+                    "commands": commands, "agents": [], "mcpServers": [], "error_count": 1,
+                    "plugins": [{"name": "notes", "path": "/plugins/notes", "source": "notes@tools"}]
+                })
             }
             "get_context_usage" => json!({
                 "categories": [
@@ -243,12 +266,33 @@ impl<W: Write> Fake<W> {
         }}))
     }
 
+    /// The skills, as `reload_skills` and `initialize` describe them.
+    fn skills(&self) -> Vec<Value> {
+        let mut skills =
+            vec![json!({"name": "tidy", "description": "Tidy the code", "argumentHint": "[path]"})];
+        if self.skills_reloaded {
+            skills.push(json!({"name": "ship-check", "description": "Check the branch"}));
+        }
+        skills
+    }
+
+    fn commands(&self) -> Vec<Value> {
+        let review = json!({"name": "review", "description": "Review the changes"});
+        iter::once(review).chain(self.skills()).collect()
+    }
+
     fn start_turn(&mut self, prompt: &str) -> io::Result<()> {
+        let names = |commands: Vec<Value>| -> Vec<String> {
+            commands
+                .iter()
+                .map(|command| text(command, &["name"]).to_owned())
+                .collect()
+        };
         self.emit(&json!({
             "type": "system", "subtype": "init", "session_id": self.session,
             "model": self.model, "permissionMode": self.mode, "cwd": ".",
             "tools": ["Bash", "AskUserQuestion", "ExitPlanMode"],
-            "slash_commands": ["review", "tidy"], "skills": ["tidy"],
+            "slash_commands": names(self.commands()), "skills": names(self.skills()),
             "mcp_servers": [{"name": "notes", "status": "connected"}],
             "claude_code_version": "9.9.9"
         }))?;

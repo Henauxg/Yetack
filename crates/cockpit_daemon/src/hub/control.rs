@@ -2,7 +2,7 @@
 
 use claude_protocol::{
     ContextUsage as ClaudeContextUsage, ControlRequest, InitializeResponse, McpStatus, ParseError,
-    SettingsAnswer,
+    ReloadPluginsResponse, ReloadSkillsResponse, SettingsAnswer,
 };
 use cockpit_protocol::{
     AgentId, ErrorBody, ErrorCode, ResponseBody, SetModeParams, SetModelParams,
@@ -24,6 +24,8 @@ impl ControlPurpose {
             | Self::SetModel { reply, .. }
             | Self::ContextUsage(reply)
             | Self::McpChanged(reply)
+            | Self::ReloadSkills { reply, .. }
+            | Self::ReloadPlugins { reply, .. }
             | Self::SetMode {
                 reply: Some(reply), ..
             }
@@ -184,6 +186,26 @@ impl Hub {
                     .map_err(|failure| errors::control_failed(id, failure));
                 agents::respond(reply, result);
             }
+            ControlPurpose::ReloadSkills { reply, before } => {
+                let result = parse_for_client::<ReloadSkillsResponse>(id, result).map(|answer| {
+                    let changes = view.reload_skills(&answer, &before);
+                    ResponseBody::SkillsReloaded {
+                        skills: count(view.skill_count()),
+                        changes,
+                    }
+                });
+                agents::respond(reply, result);
+            }
+            ControlPurpose::ReloadPlugins { reply, before } => {
+                let result = parse_for_client::<ReloadPluginsResponse>(id, result).map(|answer| {
+                    ResponseBody::PluginsReloaded {
+                        plugins: count(answer.plugins.len()),
+                        errors: answer.error_count,
+                        changes: view.reload_plugins(&answer, &before),
+                    }
+                });
+                agents::respond(reply, result);
+            }
             // A closed agent leaves the hub at once: its answers go to `fail`.
             ControlPurpose::Closing => {}
         }
@@ -286,6 +308,10 @@ where
 {
     let body = result.map_err(|failure| format!("{failure:?}"))?;
     T::try_from(&body).map_err(|error| error.to_string())
+}
+
+fn count(len: usize) -> u32 {
+    u32::try_from(len).unwrap_or(u32::MAX)
 }
 
 fn parse_for_client<T>(id: AgentId, result: Result<Value, ControlFailure>) -> Result<T, ErrorBody>

@@ -63,6 +63,20 @@ pub enum ResponseBody {
     Commands {
         commands: Vec<SlashCommand>,
     },
+    /// For `agent.reload_skills`.
+    SkillsReloaded {
+        /// How many skills the agent has now.
+        skills: u32,
+        changes: CommandChanges,
+    },
+    /// For `agent.reload_plugins`.
+    PluginsReloaded {
+        /// How many plugins Claude Code loaded.
+        plugins: u32,
+        /// How many errors loading the plugins gave.
+        errors: u32,
+        changes: CommandChanges,
+    },
     TerminalOpened {
         terminal: TerminalId,
     },
@@ -115,6 +129,14 @@ pub enum ResponseBody {
     },
     /// The account added or changed.
     Account(AccountState),
+}
+
+/// The slash commands and skills a reload added or removed, by name, without the `/`, each list
+/// sorted.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct CommandChanges {
+    pub added: Vec<String>,
+    pub removed: Vec<String>,
 }
 
 /// A folder's entries: its folders first, then its other entries, each group by name.

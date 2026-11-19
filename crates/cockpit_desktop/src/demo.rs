@@ -11,14 +11,14 @@ use cockpit_protocol::{
     Account, AccountId, AccountState, AgentDetails, AgentHistory, AgentId, AgentLoad, AgentStatus,
     AgentSummary, Answer, AnswerState, Approval, ApprovalAnswer, ApprovalDecision, AskedQuestion,
     BackgroundTask, BackgroundTaskId, BackgroundTaskKind, BackgroundTaskStatus, BuildCommit,
-    ChangedFile, ClaudeCodeVersion, ClaudeRoute, ClaudeSessionId, CommandKind, CommandLoad,
-    Completeness, ContextCategory, ContextUsage, Cores, CostUsd, CredentialSource, DirEntry,
-    DirListing, EditTexts, Effort, EffortSource, EntryKind, EntryLink, EnvironmentCredentials,
-    ErrorBody, ErrorCode, FileEdit, GitIgnore, HistoryPage, Image, ImageMediaType, ItemBody,
-    ItemId, LoadAverage, LoadHistory, MachineLoad, Mark, McpScope, McpServer, McpServerStatus,
-    McpTool, McpTransport, NoticeKind, OlderItems, PROTOCOL_VERSION, PastSession, PendingId,
-    PermissionMode, Plan, PlanUsage, Position, ProcessId, Prompt, PromptId, Question,
-    QuestionAnswer, QuestionOption, RateLimitStatus, ReleaseVersion, Repository, Request,
+    ChangedFile, ClaudeCodeVersion, ClaudeRoute, ClaudeSessionId, CommandChanges, CommandKind,
+    CommandLoad, Completeness, ContextCategory, ContextUsage, Cores, CostUsd, CredentialSource,
+    DirEntry, DirListing, EditTexts, Effort, EffortSource, EntryKind, EntryLink,
+    EnvironmentCredentials, ErrorBody, ErrorCode, FileEdit, GitIgnore, HistoryPage, Image,
+    ImageMediaType, ItemBody, ItemId, LoadAverage, LoadHistory, MachineLoad, Mark, McpScope,
+    McpServer, McpServerStatus, McpTool, McpTransport, NoticeKind, OlderItems, PROTOCOL_VERSION,
+    PastSession, PendingId, PermissionMode, Plan, PlanUsage, Position, ProcessId, Prompt, PromptId,
+    Question, QuestionAnswer, QuestionOption, RateLimitStatus, ReleaseVersion, Repository, Request,
     ResourceUse, ResponseBody, Selection, ServerLoad, ServerPoint, SignIn, SignInWait,
     SlashCommand, Subagent, SubagentRun, SubagentStatus, SubagentToolCall, TaskListItem,
     TaskProgress, TaskStatus, Timestamp, TokenUsage, ToolCall, ToolCallStatus, TranscriptItem,
@@ -46,6 +46,7 @@ use crate::state::daemon_update::{
 use crate::state::file_tree::TreeFilter;
 use crate::state::no_daemon::{self, Absence};
 use crate::state::projects::ProjectKey;
+use crate::state::reload::Reload;
 use crate::state::server_setup::{
     self, InstallReport, InstallStep, ServerSetup, SetupRun, SetupStage,
 };
@@ -2080,6 +2081,10 @@ pub fn latency(request: &Request) -> Duration {
         Request::AgentPrompt(_) => Duration::from_millis(400),
         // Claude Code tries the server for a moment.
         Request::AgentMcpReconnect(_) => Duration::from_millis(600),
+        // Claude Code reads its folders again.
+        Request::AgentReloadSkills(_) | Request::AgentReloadPlugins(_) => {
+            Duration::from_millis(400)
+        }
         // `claude` starts.
         Request::AgentResume(_) => Duration::from_millis(500),
         _ => Duration::ZERO,
@@ -2154,6 +2159,12 @@ pub fn apply(state: &mut AppState, request: &Request) {
                 server.status = McpServerStatus::Connected;
                 server.error = None;
             }
+        }
+        Request::AgentReloadSkills(params) => {
+            add_found_command(state, params.agent, Reload::Skills)
+        }
+        Request::AgentReloadPlugins(params) => {
+            add_found_command(state, params.agent, Reload::Plugins);
         }
         Request::AgentPrompt(params) => {
             if let Some(entry) = state.agents.get_mut(&params.agent) {
@@ -2277,6 +2288,8 @@ pub fn answer(state: &AppState, request: &Request) -> Result<ResponseBody, Reque
                 commands: commands(),
             })
         }
+        Request::AgentReloadSkills(params) => reloaded(state, params.agent, Reload::Skills),
+        Request::AgentReloadPlugins(params) => reloaded(state, params.agent, Reload::Plugins),
         Request::AgentContextUsage(params) => agent_details(params.agent)?
             .context
             .map(ResponseBody::ContextUsage)
@@ -2570,6 +2583,94 @@ fn machine_load(now: SystemTime) -> MachineLoad {
             memory_bytes: memory_used - agents_memory,
         },
         history,
+    }
+}
+
+/// The command a demo reload finds, a skill or a plugin's command.
+fn found_command(reload: Reload) -> SlashCommand {
+    let (name, description, kind) = match reload {
+        Reload::Skills => (
+            "review-migrations",
+            "Check the new database migrations against the schema",
+            CommandKind::Skill,
+        ),
+        Reload::Plugins => (
+            "notes:search",
+            "Search the team notes",
+            CommandKind::Command,
+        ),
+    };
+    SlashCommand {
+        name: name.to_owned(),
+        description: description.to_owned(),
+        kind,
+    }
+}
+
+/// A reload's answer: the first one finds a new command.
+fn reloaded(
+    state: &AppState,
+    agent: AgentId,
+    reload: Reload,
+) -> Result<ResponseBody, RequestError> {
+    let Some(entry) = state.agents.get(&agent) else {
+        return Err(refused(ErrorCode::NotFound, "The demo has no such agent."));
+    };
+    if entry.summary.status == AgentStatus::Exited {
+        return Err(refused(ErrorCode::AgentExited, "The agent is not running."));
+    }
+    let mut commands = if entry.commands.is_empty() {
+        commands()
+    } else {
+        entry.commands.clone()
+    };
+    let found = found_command(reload);
+    let added = if commands.iter().any(|command| command.name == found.name) {
+        Vec::new()
+    } else {
+        let name = found.name.clone();
+        commands.push(found);
+        vec![name]
+    };
+    let changes = CommandChanges {
+        added,
+        removed: Vec::new(),
+    };
+    let body = match reload {
+        Reload::Skills => {
+            let skills = commands
+                .iter()
+                .filter(|command| command.kind == CommandKind::Skill)
+                .count();
+            ResponseBody::SkillsReloaded {
+                skills: u32::try_from(skills).unwrap_or(u32::MAX),
+                changes,
+            }
+        }
+        Reload::Plugins => ResponseBody::PluginsReloaded {
+            plugins: 3,
+            errors: 1,
+            changes,
+        },
+    };
+    Ok(body)
+}
+
+/// The daemon's `CommandsChanged` after a reload: the agent has the command the reload found.
+fn add_found_command(state: &mut AppState, agent: AgentId, reload: Reload) {
+    let Some(entry) = state.agents.get_mut(&agent) else {
+        return;
+    };
+    if entry.commands.is_empty() {
+        entry.commands = commands();
+    }
+    let found = found_command(reload);
+    if !entry
+        .commands
+        .iter()
+        .any(|command| command.name == found.name)
+    {
+        entry.commands.push(found);
     }
 }
 

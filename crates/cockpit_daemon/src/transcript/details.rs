@@ -5,13 +5,13 @@ use std::collections::{BTreeSet, HashMap};
 use std::path::Path;
 
 use claude_protocol::{
-    ContextUsage as ClaudeContextUsage, InitMcpServer, InitializeResponse,
-    McpServerStatus as ClaudeMcpServer, McpTransport as ClaudeMcpTransport, OpenWord, Todo,
+    ContextUsage as ClaudeContextUsage, InitMcpServer, McpServerStatus as ClaudeMcpServer,
+    McpTransport as ClaudeMcpTransport, OpenWord, SlashCommand as ClaudeSlashCommand, Todo,
 };
 use cockpit_protocol::{
-    BackgroundTask, BackgroundTaskKind, BackgroundTaskStatus, ChangedFile, CommandKind,
-    ContextCategory, ContextUsage, McpServer, McpServerStatus, McpTool, McpTransport, SlashCommand,
-    TaskListItem, TaskProgress, TaskStatus,
+    BackgroundTask, BackgroundTaskKind, BackgroundTaskStatus, ChangedFile, CommandChanges,
+    CommandKind, ContextCategory, ContextUsage, McpServer, McpServerStatus, McpTool, McpTransport,
+    SlashCommand, TaskListItem, TaskProgress, TaskStatus,
 };
 use strum::EnumString;
 
@@ -240,12 +240,13 @@ fn mcp_tool_name(server: &str, tool: &str) -> String {
     format!("{MCP_TOOL_PREFIX}{server}{MCP_TOOL_SEPARATOR}{tool}")
 }
 
+/// From an answer that describes the commands: `initialize`, `reload_skills` or
+/// `reload_plugins`.
 pub(crate) fn commands(
-    response: &InitializeResponse,
+    commands: &[ClaudeSlashCommand],
     skills: &BTreeSet<String>,
 ) -> Vec<SlashCommand> {
-    response
-        .commands
+    commands
         .iter()
         .map(|command| SlashCommand {
             name: command.name.clone(),
@@ -253,6 +254,28 @@ pub(crate) fn commands(
             kind: command_kind(&command.name, skills),
         })
         .collect()
+}
+
+/// The names `after` has and `before` lacks, and the other way round.
+pub(crate) fn command_changes(before: &[SlashCommand], after: &[SlashCommand]) -> CommandChanges {
+    fn names(commands: &[SlashCommand]) -> BTreeSet<&str> {
+        commands
+            .iter()
+            .map(|command| command.name.as_str())
+            .collect()
+    }
+    let before = names(before);
+    let after = names(after);
+    CommandChanges {
+        added: after
+            .difference(&before)
+            .map(|&name| name.to_owned())
+            .collect(),
+        removed: before
+            .difference(&after)
+            .map(|&name| name.to_owned())
+            .collect(),
+    }
 }
 
 /// From `system/init`, which names the commands without describing them.

@@ -114,6 +114,14 @@ fn control_requests() {
             },
             r#"{"subtype":"stop_task","task_id":"task-0001"}"#,
         ),
+        (
+            ControlRequest::ReloadSkills,
+            r#"{"subtype":"reload_skills"}"#,
+        ),
+        (
+            ControlRequest::ReloadPlugins,
+            r#"{"subtype":"reload_plugins"}"#,
+        ),
     ];
     for (request, expected_request) in cases {
         let expected = format!(

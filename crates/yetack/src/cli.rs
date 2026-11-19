@@ -102,6 +102,16 @@ pub(crate) enum Command {
         #[arg(value_parser = agent_id)]
         agent: AgentId,
     },
+    /// Have an agent's claude read its skill folders again, and print what changed as JSON
+    ReloadSkills {
+        #[arg(value_parser = agent_id)]
+        agent: AgentId,
+    },
+    /// Have an agent's claude read its plugins again, and print what changed as JSON
+    ReloadPlugins {
+        #[arg(value_parser = agent_id)]
+        agent: AgentId,
+    },
     /// End an agent's claude process
     Stop {
         #[arg(value_parser = agent_id)]

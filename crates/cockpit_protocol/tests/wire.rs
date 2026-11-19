@@ -19,25 +19,26 @@ use cockpit_protocol::{
     AgentSummary, Answer, AnswerParams, AnswerState, Approval, ApprovalAnswer, ApprovalDecision,
     AskedQuestion, BackgroundTask, BackgroundTaskId, BackgroundTaskKind, BackgroundTaskStatus,
     BuildCommit, Catchup, ChangedFile, ClaudeCodeVersion, ClaudeRoute, ClaudeSessionId,
-    ClientMessage, CommandKind, CommandLoad, Completeness, ContextCategory, ContextUsage, Cores,
-    CostUsd, CredentialSource, DEFAULT_TITLE_MAX_CHARS, DetailsChange, DirEntry, DirListing,
-    EditTexts, Effort, EffortSource, EntryKind, EntryLink, EnvironmentCredentials, ErrorBody,
-    ErrorCode, Event, EventRecord, FileEdit, FindFilesParams, FolderParams, FoldersListParams,
-    GitIgnore, HistoryPage, HistoryParams, Image, ImageMediaType, ItemBody, ItemId, ListDirParams,
-    LoadAverage, LoadHistory, MachineLoad, Mark, MarkParams, McpRemoveParams, McpScope, McpServer,
-    McpServerParams, McpServerStatus, McpToggleAction, McpToggleParams, McpTool, McpTransport,
-    Method, MoveParams, NoticeKind, OlderItems, PROTOCOL_VERSION, PastSession, PendingId,
-    PermissionMode, Plan, PlanAnswer, PlanDecision, PlanUsage, Position, ProcessId, Prompt,
-    PromptDelivery, PromptId, PromptParams, Question, QuestionAnswer, QuestionOption,
-    QueuedPromptParams, RateLimitStatus, ReadFileParams, ReleaseVersion, RenameParams, Request,
-    RequestId, ResourceUse, ResponseBody, ResponseResult, Selection, Seq, ServerLoad,
-    ServerMessage, ServerPoint, SessionResumeParams, SetEffortParams, SetModeParams,
-    SetModelParams, Settings, SignIn, SignInWait, SlashCommand, Snapshot, StartParams,
-    StopProcessParams, StopTaskParams, Subagent, SubagentRun, SubagentStatus, SubagentToolCall,
-    TaskListItem, TaskProgress, TaskStatus, TerminalChange, TerminalExit, TerminalId, TerminalInfo,
-    TerminalInputParams, TerminalOpenParams, TerminalParams, TerminalResizeParams, TerminalSize,
-    TerminalUpdate, Timestamp, TokenUsage, ToolCall, ToolCallStatus, TranscriptItem, TurnEnd,
-    TurnOutcome, UsageWindow, UserMessage, WaitingPrompt, WaitingState, WindowUsage,
+    ClientMessage, CommandChanges, CommandKind, CommandLoad, Completeness, ContextCategory,
+    ContextUsage, Cores, CostUsd, CredentialSource, DEFAULT_TITLE_MAX_CHARS, DetailsChange,
+    DirEntry, DirListing, EditTexts, Effort, EffortSource, EntryKind, EntryLink,
+    EnvironmentCredentials, ErrorBody, ErrorCode, Event, EventRecord, FileEdit, FindFilesParams,
+    FolderParams, FoldersListParams, GitIgnore, HistoryPage, HistoryParams, Image, ImageMediaType,
+    ItemBody, ItemId, ListDirParams, LoadAverage, LoadHistory, MachineLoad, Mark, MarkParams,
+    McpRemoveParams, McpScope, McpServer, McpServerParams, McpServerStatus, McpToggleAction,
+    McpToggleParams, McpTool, McpTransport, Method, MoveParams, NoticeKind, OlderItems,
+    PROTOCOL_VERSION, PastSession, PendingId, PermissionMode, Plan, PlanAnswer, PlanDecision,
+    PlanUsage, Position, ProcessId, Prompt, PromptDelivery, PromptId, PromptParams, Question,
+    QuestionAnswer, QuestionOption, QueuedPromptParams, RateLimitStatus, ReadFileParams,
+    ReleaseVersion, RenameParams, Request, RequestId, ResourceUse, ResponseBody, ResponseResult,
+    Selection, Seq, ServerLoad, ServerMessage, ServerPoint, SessionResumeParams, SetEffortParams,
+    SetModeParams, SetModelParams, Settings, SignIn, SignInWait, SlashCommand, Snapshot,
+    StartParams, StopProcessParams, StopTaskParams, Subagent, SubagentRun, SubagentStatus,
+    SubagentToolCall, TaskListItem, TaskProgress, TaskStatus, TerminalChange, TerminalExit,
+    TerminalId, TerminalInfo, TerminalInputParams, TerminalOpenParams, TerminalParams,
+    TerminalResizeParams, TerminalSize, TerminalUpdate, Timestamp, TokenUsage, ToolCall,
+    ToolCallStatus, TranscriptItem, TurnEnd, TurnOutcome, UsageWindow, UserMessage, WaitingPrompt,
+    WaitingState, WindowUsage,
 };
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -677,6 +678,8 @@ fn requests() -> Vec<Request> {
             action: McpToggleAction::Disable,
         }),
         Request::AgentCommands(AgentParams { agent }),
+        Request::AgentReloadSkills(AgentParams { agent }),
+        Request::AgentReloadPlugins(AgentParams { agent }),
         Request::AgentReadFile(ReadFileParams {
             agent,
             path: PathBuf::from("src/login.rs"),
@@ -880,6 +883,21 @@ fn response_bodies() -> Vec<ResponseBody> {
         },
         ResponseBody::Commands {
             commands: commands(),
+        },
+        ResponseBody::SkillsReloaded {
+            skills: 14,
+            changes: CommandChanges {
+                added: vec!["ship-check".to_owned()],
+                removed: Vec::new(),
+            },
+        },
+        ResponseBody::PluginsReloaded {
+            plugins: 3,
+            errors: 1,
+            changes: CommandChanges {
+                added: vec!["notes:search".to_owned()],
+                removed: vec!["notes:find".to_owned()],
+            },
         },
         ResponseBody::TerminalOpened {
             terminal: TerminalId::new(2),
@@ -1206,6 +1224,8 @@ fn method_names_are_pinned() {
             "agent.mcp_reconnect",
             "agent.mcp_toggle",
             "agent.commands",
+            "agent.reload_skills",
+            "agent.reload_plugins",
             "agent.read_file",
             "agent.list_dir",
             "agent.find_files",
@@ -1262,6 +1282,8 @@ fn message_and_body_tags_are_pinned() {
             "context_usage",
             "mcp_servers",
             "commands",
+            "skills_reloaded",
+            "plugins_reloaded",
             "terminal_opened",
             "terminals",
             "terminal_screen",
@@ -1764,6 +1786,50 @@ fn a_close_request_on_the_wire() {
             "type": "request",
             "id": 11,
             "request": {"method": "agent.close", "params": {"agent": 3}},
+        }),
+    );
+}
+
+#[test]
+fn reloads_and_their_answers_on_the_wire() {
+    let skills = Request::AgentReloadSkills(AgentParams { agent: agent() });
+    let plugins = Request::AgentReloadPlugins(AgentParams { agent: agent() });
+    let skills_reloaded = ResponseBody::SkillsReloaded {
+        skills: 14,
+        changes: CommandChanges {
+            added: vec!["ship-check".to_owned()],
+            removed: Vec::new(),
+        },
+    };
+    let plugins_reloaded = ResponseBody::PluginsReloaded {
+        plugins: 3,
+        errors: 1,
+        changes: CommandChanges::default(),
+    };
+
+    assert_wire(
+        &skills,
+        json!({"method": "agent.reload_skills", "params": {"agent": 3}}),
+    );
+    assert_wire(
+        &plugins,
+        json!({"method": "agent.reload_plugins", "params": {"agent": 3}}),
+    );
+    assert_wire(
+        &skills_reloaded,
+        json!({
+            "type": "skills_reloaded",
+            "skills": 14,
+            "changes": {"added": ["ship-check"], "removed": []},
+        }),
+    );
+    assert_wire(
+        &plugins_reloaded,
+        json!({
+            "type": "plugins_reloaded",
+            "plugins": 3,
+            "errors": 1,
+            "changes": {"added": [], "removed": []},
         }),
     );
 }

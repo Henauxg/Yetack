@@ -71,8 +71,8 @@ pub use request::{
     default_title,
 };
 pub use response::{
-    Completeness, DirEntry, DirListing, EntryKind, EntryLink, ErrorBody, ErrorCode, GitIgnore,
-    HistoryPage, OlderItems, PastSession, ResponseBody, ResponseResult,
+    CommandChanges, Completeness, DirEntry, DirListing, EntryKind, EntryLink, ErrorBody, ErrorCode,
+    GitIgnore, HistoryPage, OlderItems, PastSession, ResponseBody, ResponseResult,
 };
 pub use session::{
     BuildCommit, Catchup, ClientMessage, PROTOCOL_VERSION, ReleaseVersion, ServerMessage, Snapshot,

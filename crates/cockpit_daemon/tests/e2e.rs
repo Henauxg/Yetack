@@ -20,8 +20,8 @@ use cockpit_client::{Connection, RequestError, Transport};
 use cockpit_protocol::{
     Account, AccountAddParams, AccountId, AccountParams, AccountPlanUsage, AccountState, AgentId,
     AgentParams, AgentStatus, AgentSummary, Answer, AnswerParams, AnswerState, Approval,
-    ApprovalAnswer, ApprovalDecision, BackgroundTaskId, Catchup, ClaudeSessionId, CommandKind,
-    CostUsd, CredentialSource, DetailsChange, EditTexts, Effort, EffortSource,
+    ApprovalAnswer, ApprovalDecision, BackgroundTaskId, Catchup, ClaudeSessionId, CommandChanges,
+    CommandKind, CostUsd, CredentialSource, DetailsChange, EditTexts, Effort, EffortSource,
     EnvironmentCredentials, ErrorCode, Event, EventRecord, FileEdit, HistoryParams, Image,
     ImageMediaType, ItemBody, McpRemoveParams, McpScope, McpServerParams, McpServerStatus,
     McpToggleAction, McpToggleParams, MoveParams, PROTOCOL_VERSION, PendingId, PermissionMode,
@@ -615,6 +615,104 @@ async fn an_agent_answers_a_prompt_and_reports_its_state() {
             .values()
             .any(|window| window.utilization == Some(0.25))
     );
+}
+
+/// The names and kinds of the commands a `CommandsChanged` event of `agent` carries.
+fn changed_commands(event: &Event, agent: AgentId) -> Option<Vec<(String, CommandKind)>> {
+    let Event::CommandsChanged {
+        agent: changed,
+        commands,
+    } = event
+    else {
+        return None;
+    };
+    let named = commands
+        .iter()
+        .map(|command| (command.name.clone(), command.kind))
+        .collect();
+    (*changed == agent).then_some(named)
+}
+
+fn named(commands: &[(&str, CommandKind)]) -> Vec<(String, CommandKind)> {
+    commands
+        .iter()
+        .map(|&(name, kind)| (name.to_owned(), kind))
+        .collect()
+}
+
+#[tokio::test]
+async fn a_reload_updates_the_commands_every_client_sees() {
+    let setup = Setup::new();
+    let mut client = setup.connect().await;
+    let agent = client.start(&setup.work(), "hello").await;
+    client.idle(agent).await;
+
+    let skills = client
+        .ok(Request::AgentReloadSkills(AgentParams { agent }))
+        .await;
+    let after_skills = client
+        .wait_for(|event| {
+            changed_commands(event, agent).filter(|commands| {
+                commands.contains(&("ship-check".to_owned(), CommandKind::Skill))
+            })
+        })
+        .await;
+    let plugins = client
+        .ok(Request::AgentReloadPlugins(AgentParams { agent }))
+        .await;
+    let after_plugins = client
+        .wait_for(|event| {
+            changed_commands(event, agent)
+                .filter(|commands| commands.iter().any(|(name, _)| name == "notes:search"))
+        })
+        .await;
+    client.ok(Request::AgentStop(AgentParams { agent })).await;
+    client
+        .summary_with(agent, |summary| summary.status == AgentStatus::Exited)
+        .await;
+    let exited = client
+        .error_code(Request::AgentReloadSkills(AgentParams { agent }))
+        .await;
+
+    assert_eq!(
+        skills,
+        ResponseBody::SkillsReloaded {
+            skills: 2,
+            changes: CommandChanges {
+                added: vec!["ship-check".to_owned()],
+                removed: Vec::new(),
+            },
+        }
+    );
+    assert_eq!(
+        after_skills,
+        named(&[
+            ("review", CommandKind::Command),
+            ("tidy", CommandKind::Skill),
+            ("ship-check", CommandKind::Skill),
+        ])
+    );
+    assert_eq!(
+        plugins,
+        ResponseBody::PluginsReloaded {
+            plugins: 1,
+            errors: 1,
+            changes: CommandChanges {
+                added: vec!["notes:search".to_owned()],
+                removed: Vec::new(),
+            },
+        }
+    );
+    assert_eq!(
+        after_plugins,
+        named(&[
+            ("review", CommandKind::Command),
+            ("tidy", CommandKind::Skill),
+            ("ship-check", CommandKind::Skill),
+            ("notes:search", CommandKind::Command),
+        ])
+    );
+    assert_eq!(exited, ErrorCode::AgentExited);
 }
 
 #[tokio::test]

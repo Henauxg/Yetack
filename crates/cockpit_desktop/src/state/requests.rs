@@ -15,6 +15,7 @@ use super::chat_images::ImageKey;
 use super::drafts::{Draft, Drafts};
 use super::page_copy::CopyId;
 use super::projects::{self, ProjectKey};
+use super::reload::{self, Reload};
 use super::resume::{self, FolderState, Refusal};
 use super::sending::{self, SendingId};
 use super::transcript::HistoryState;
@@ -82,6 +83,10 @@ pub enum Purpose {
     },
     Commands {
         agent: AgentId,
+    },
+    /// `agent.reload_skills` or `agent.reload_plugins`: a note says what the reload found.
+    Reload {
+        reload: Reload,
     },
     Terminals {
         agent: AgentId,
@@ -631,6 +636,10 @@ pub fn apply_response(
                 }
                 other => report(state, method, other),
             }
+        }
+        Purpose::Reload { reload } => {
+            let answer = result.as_ref().map_err(|failure| failure.message.as_str());
+            reload::answered(state, reload, answer);
         }
         Purpose::ChatImage { agent, key } => {
             let answer = match result {

@@ -13,9 +13,9 @@ use claude_protocol::{
     IncomingRequest, InitializeResponse, McpScope, McpServerState, McpStatus, McpTransport,
     MessageOrigin, OpenWord, OriginKind, OutputLine, ParseError, PermissionBehavior,
     PermissionDestination, PermissionMode, PermissionUpdate, RateLimitStatus, RateLimitType,
-    ResetTrigger, ResultMessage, ResultSubtype, SessionId, SessionState, SettingsAnswer,
-    SystemEvent, TaskId, TaskNotificationText, TaskStatus, TerminalReason, ToolInput, ToolUseId,
-    Usage, UserMessage,
+    ReloadPluginsResponse, ReloadSkillsResponse, ResetTrigger, ResultMessage, ResultSubtype,
+    SessionId, SessionState, SettingsAnswer, SlashCommand, SystemEvent, TaskId,
+    TaskNotificationText, TaskStatus, TerminalReason, ToolInput, ToolUseId, Usage, UserMessage,
 };
 use serde_json::{Value, json};
 
@@ -917,6 +917,97 @@ fn control_response_mcp_status() {
             .and_then(|config| config.transport.clone()),
         None
     );
+}
+
+fn command_names(commands: &[SlashCommand]) -> Vec<(&str, &str)> {
+    commands
+        .iter()
+        .map(|command| (command.name.as_str(), command.description.as_str()))
+        .collect()
+}
+
+#[test]
+fn control_response_reload_skills() {
+    let body = success_body("control_response_reload_skills.json");
+
+    let reloaded = ReloadSkillsResponse::try_from(&body).unwrap();
+
+    assert_eq!(
+        command_names(&reloaded.skills),
+        [
+            ("review-notes", "Review the notes folder"),
+            ("ship-check", "Check the branch before it ships"),
+            ("plain", ""),
+        ]
+    );
+    assert_eq!(reloaded.skills[1].argument_hint, "[branch]");
+}
+
+#[test]
+fn control_response_reload_plugins() {
+    let body = success_body("control_response_reload_plugins.json");
+
+    let reloaded = ReloadPluginsResponse::try_from(&body).unwrap();
+
+    assert_eq!(
+        command_names(&reloaded.commands),
+        [
+            ("compact", "Summarize the conversation"),
+            ("review-notes", "Review the notes folder"),
+            ("notes:search", "Search the notes"),
+        ]
+    );
+    let plugins: Vec<(&str, Option<&str>, Option<&str>)> = reloaded
+        .plugins
+        .iter()
+        .map(|plugin| {
+            (
+                plugin.name.as_str(),
+                plugin.source.as_deref(),
+                plugin.version.as_deref(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        plugins,
+        [
+            ("notes", Some("notes@team-tools"), Some("1.4.0")),
+            ("local-tools", None, None),
+        ]
+    );
+    assert_eq!(
+        reloaded.plugins[1].path,
+        Path::new("/work/app/plugins/local-tools")
+    );
+    assert_eq!(reloaded.error_count, 1);
+}
+
+#[test]
+fn a_reload_answer_without_its_commands_is_an_error() {
+    let empty = json!({});
+    let commands_alone = json!({"commands": []});
+
+    let plugins = ReloadPluginsResponse::try_from(&commands_alone).unwrap();
+
+    assert!(ReloadSkillsResponse::try_from(&empty).is_err());
+    assert!(ReloadPluginsResponse::try_from(&empty).is_err());
+    assert!(plugins.plugins.is_empty());
+    assert_eq!(plugins.error_count, 0);
+}
+
+#[test]
+fn a_reload_answer_with_a_bad_list_is_an_error() {
+    let body = json!({"skills": "review-notes"});
+
+    let error = ReloadSkillsResponse::try_from(&body).unwrap_err();
+
+    assert!(matches!(
+        error,
+        ParseError::MalformedResponse {
+            body: "reload_skills",
+            ..
+        }
+    ));
 }
 
 #[test]

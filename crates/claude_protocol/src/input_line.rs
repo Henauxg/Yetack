@@ -77,6 +77,10 @@ pub enum ControlRequest {
     StopTask {
         task_id: TaskId,
     },
+    /// Reads the skill folders again. The answer lists the skills.
+    ReloadSkills,
+    /// Reads the plugins again. The answer lists the commands, the plugins and the errors.
+    ReloadPlugins,
 }
 
 /// Our answer to one of Claude Code's control requests.

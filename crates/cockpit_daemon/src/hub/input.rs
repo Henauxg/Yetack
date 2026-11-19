@@ -4,7 +4,7 @@ use std::time::Instant;
 
 use cockpit_protocol::{
     AccountId, AccountState, AgentId, CostUsd, Frame, PermissionMode, Request, ResponseResult, Seq,
-    SignIn, Snapshot, TerminalId, Timestamp,
+    SignIn, SlashCommand, Snapshot, TerminalId, Timestamp,
 };
 use tokio::sync::{mpsc, oneshot};
 
@@ -146,6 +146,17 @@ pub(crate) enum ControlPurpose {
     McpStatus(Option<Reply>),
     /// A reconnect or toggle, answered by `Done` and followed by a refresh.
     McpChanged(Reply),
+    /// `agent.reload_skills`, answered by `SkillsReloaded`. `before` holds the commands as the
+    /// request leaves: Claude Code sends the changed ones before it answers.
+    ReloadSkills {
+        reply: Reply,
+        before: Vec<SlashCommand>,
+    },
+    /// `agent.reload_plugins`, answered by `PluginsReloaded`, with `before` as for `ReloadSkills`.
+    ReloadPlugins {
+        reply: Reply,
+        before: Vec<SlashCommand>,
+    },
     /// The interrupt that ends a working agent's turn as it closes. The agent is gone when the
     /// answer comes.
     Closing,

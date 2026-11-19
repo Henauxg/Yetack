@@ -35,6 +35,7 @@ pub mod page_copy;
 pub mod project_menu;
 pub mod projects;
 pub mod quotes;
+pub mod reload;
 mod requests;
 pub mod resume;
 pub mod sending;

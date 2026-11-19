@@ -25,6 +25,8 @@ impl Request {
             | Self::AgentContextUsage(params)
             | Self::AgentMcpStatus(params)
             | Self::AgentCommands(params)
+            | Self::AgentReloadSkills(params)
+            | Self::AgentReloadPlugins(params)
             | Self::AgentTerminals(params) => &mut params.agent,
             Self::AgentTerminalOpen(params) => &mut params.agent,
             Self::TerminalAttach(params) | Self::TerminalClose(params) => &mut params.agent,
@@ -83,6 +85,8 @@ impl ResponseBody {
             | Self::ContextUsage(_)
             | Self::McpServers { .. }
             | Self::Commands { .. }
+            | Self::SkillsReloaded { .. }
+            | Self::PluginsReloaded { .. }
             | Self::TerminalOpened { .. }
             | Self::Terminals { .. }
             | Self::TerminalScreen { .. }

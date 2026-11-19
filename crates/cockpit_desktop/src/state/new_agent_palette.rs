@@ -147,7 +147,8 @@ pub fn entries<'state>(state: &'state AppState, drafts: &Drafts) -> Vec<&'state 
         .into_iter()
         .filter_map(|entry| match entry {
             PaletteEntry::Command(command) => Some(command),
-            PaletteEntry::Action(_) => None,
+            // The agent has not started: there is nothing to reload.
+            PaletteEntry::Action(_) | PaletteEntry::Reload(_) => None,
         })
         .collect()
 }

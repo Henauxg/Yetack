@@ -145,6 +145,10 @@ Removing the agent closes `claude`'s stdin. `claude` then ends its session file 
 
 A card sends its answer once. The daemon takes a repeat of an item's answer as done, and refuses a different one, since Claude Code has the first.
 
+`agent.reload_skills` and `agent.reload_plugins` have the agent's running `claude` read its skill folders or its plugins again (see "Reloading skills and plugins" under [Claude Code processes](#claude-code-processes)).
+Their answers, `SkillsReloaded` and `PluginsReloaded`, count the skills, or the plugins and the errors loading them, and name the commands the reload added or removed (`CommandChanges`).
+The new list of commands goes to every client in a `CommandsChanged` event.
+
 `agent.read_file`, `agent.list_dir` and `agent.find_files` reach any file the daemon's user can read, as an IDE does, since the agent's commands already can.
 A path with `..` is refused.
 A relative name is also searched for in each git checkout that holds a file the agent read or changed, unless that checkout is `/` or holds the home folder.
@@ -171,7 +175,7 @@ Titles and model names go into every snapshot, so the daemon refuses a title ove
 ### Events
 
 Every event carries its `Seq`.
-Slash commands and skills change only when `claude` starts or reloads, so they travel in `CommandsChanged`, apart from the details.
+Slash commands and skills change only when `claude` starts, when it reloads them (`agent.reload_skills`, `agent.reload_plugins`), or when its watch of the skill folders sees a change, so they travel in `CommandsChanged`, apart from the details.
 
 An agent's details go out whole (`DetailsChanged`) in a replay and as its first details event after the daemon starts, because a client may hold details the restarted daemon lost.
 After that, `DetailsUpdated` carries only what changed. With 200 subagents (the most the daemon keeps), a tool call sends about 470 bytes instead of 72 KB.
@@ -237,6 +241,12 @@ A client that reads too slowly is disconnected rather than buffered without boun
 - Approvals, `AskUserQuestion` and `ExitPlanMode` come as `can_use_tool` control requests.
   This control protocol is not documented. The open-source Python Agent SDK implements it, in [`_internal/query.py`](https://github.com/anthropics/claude-agent-sdk-python/blob/main/src/claude_agent_sdk/_internal/query.py) (`_handle_control_request`): it is the reference for its messages.
   Claude Code echoes control responses, so the daemon ignores one whose id it did not send.
+- Reloading skills and plugins: in JSON mode, `/reload-skills` and `/reload-plugins` sent as prompts change nothing the daemon sees, since it learns the commands from `system/init` and the `initialize` answer. So `agent.reload_skills` and `agent.reload_plugins` send the `reload_skills` and `reload_plugins` control requests, which the Agent SDK does not document either.
+  - `reload_skills` answers every skill. They become the agent's skill names. Among the commands, the skills the answer lists replace those it no longer lists, in their place, the new ones come last, and the other commands stay.
+  - `reload_plugins` answers every command, the plugins' included, and they replace the agent's commands. The skill names stay those of the latest `system/init` or `reload_skills`, so a plugin's new skill shows as a command until the next turn's `system/init`.
+  - Claude Code also sends a `system` line `commands_changed` with every command whenever its list changes: a skill file it watches (`~/.claude/skills`, the project's `.claude/skills`), or a reload. Its commands replace the agent's, marked as skills by the same names. So an edited skill reaches the "/" palette with no reload. Checked against Claude Code 2.1.316.
+    On a reload, this line comes before the answer. So the hub keeps the commands as they were when the request left, and the answer's `CommandChanges` compares the new commands with those.
+  - Claude Code also follows the skill folders it already knows by itself: a reload is for a new folder, and for the daemon's list.
 - After `--resume`, Claude Code's `total_cost_usd` includes the session's past cost. The daemon reads that cost from the session file's last `cost-state` line, so each turn shows its own cost.
   The agent's cost is the higher of Claude Code's total and its own count: a process killed with the daemon writes no `cost-state`, and a `/clear` starts a session whose cost leaves out the one before.
 
@@ -480,6 +490,8 @@ The daemon in the app has no socket to check (see [The daemon in the app](#the-d
 - **Agent order**: grouped by machine, the sidebar shows the daemon's order. A move sends `agent.move`, shows at once, and goes back when the daemon refuses it. A page script follows the drag (`ui/reorder.rs`), and Rust hears of it once, on release.
 - **Block order**: the floating blocks follow one order for every agent (`blocks.order` in the preferences). Alt+Up and Alt+Down on a focused head move its block: the page script leaves those keys to the head.
 - **MCP reconnect** (`state/mcp_reconnect.rs`): the daemon answers `agent.mcp_reconnect` once Claude Code has tried, without the outcome. So the app then asks `agent.mcp_status` and shows the server's status.
+- **Reloads** (`state/reload.rs`): the "/" palette lists `/reload-skills` and `/reload-plugins` among the commands, whether Claude Code lists them or not, and leaves out Claude Code's own entries of those names. They match by their name alone. A pick sends `agent.reload_skills` or `agent.reload_plugins` at once, and drops the "/" word typed for it. A message that is one of them alone sends the request too, in place of a prompt, and the draft keeps its images and quotes. An info note says what the reload found: "Reloaded plugins: 3 plugins, 1 error. New: /notes:search."
+  An exited agent lists them turned off, and a pick shows a note that asks to resume the agent. The new agent dialog's palette leaves them out, since the agent has not started.
 - **Sidebar rows**: an agent that finishes out of sight gets the unread dot, as does one marked unread, even the selected one.
   An idle or exited row's time changes at most once a minute. Only a small component per row reads the app's one-second `Clock`, so a tick renders those texts and nothing else. The times come from the daemon's clock, and read 0 s rather than below when it runs ahead of the laptop's.
 - **Status filter**: chips hide the other statuses' rows and never change the order. The chosen chip stays even at 0, so the last agent leaving it does not take the filter away. A hidden agent still raises its notifications. A move among the shown rows leaves the hidden agents in their places.

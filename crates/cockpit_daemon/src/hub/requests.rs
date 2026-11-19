@@ -8,7 +8,7 @@ use claude_protocol::{ControlRequest, TaskId};
 use cockpit_protocol::{
     AgentId, ErrorBody, ErrorCode, Event, FindFilesParams, FoldersListParams, HistoryParams,
     ListDirParams, MAX_LINE_BYTES, McpRemoveParams, McpToggleAction, ReadFileParams, Request,
-    ResponseBody, SessionResumeParams, Settings, StopProcessParams,
+    ResponseBody, SessionResumeParams, Settings, SlashCommand, StopProcessParams,
 };
 
 use crate::accounts::ClaudeEnv;
@@ -110,6 +110,22 @@ impl Hub {
                 },
                 ControlPurpose::McpChanged(reply),
             ),
+            Request::AgentReloadSkills(params) => {
+                let before = self.commands_of(params.agent);
+                self.control(
+                    params.agent,
+                    ControlRequest::ReloadSkills,
+                    ControlPurpose::ReloadSkills { reply, before },
+                );
+            }
+            Request::AgentReloadPlugins(params) => {
+                let before = self.commands_of(params.agent);
+                self.control(
+                    params.agent,
+                    ControlRequest::ReloadPlugins,
+                    ControlPurpose::ReloadPlugins { reply, before },
+                );
+            }
             Request::AgentTerminalOpen(params) => {
                 agents::respond(reply, self.open_terminal(params));
             }
@@ -151,6 +167,14 @@ impl Hub {
 
     pub(super) fn agent(&self, id: AgentId) -> Result<&Agent, ErrorBody> {
         self.agents.get(&id).ok_or(errors::agent_not_found(id))
+    }
+
+    /// The agent's commands, or none for an agent the hub lacks: its request fails anyway.
+    fn commands_of(&self, id: AgentId) -> Vec<SlashCommand> {
+        self.agents
+            .get(&id)
+            .map(|agent| agent.view.commands().to_vec())
+            .unwrap_or_default()
     }
 
     fn history(&self, params: HistoryParams) -> Result<ResponseBody, ErrorBody> {

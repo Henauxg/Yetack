@@ -19,6 +19,7 @@ use crate::state::actions::{
     WindowAction,
 };
 use crate::state::new_agent_palette::{self, SourcePlace, Written};
+use crate::state::reload::Reload;
 use crate::state::{AgentEntry, Drafts, PaletteOrigin};
 use crate::ui::dialogs::{PointerMoves, use_pointer_moves};
 use crate::ui::icons::{Icon, IconKind};
@@ -58,6 +59,11 @@ enum Row {
         index: usize,
         command: SlashCommand,
     },
+    Reload {
+        index: usize,
+        reload: Reload,
+        disabled: bool,
+    },
 }
 
 /// The palette's rows. The one the slash button opens puts a title over each section.
@@ -76,6 +82,11 @@ fn rows(entry: &AgentEntry, query: &str, how: CommandMatch, origin: PaletteOrigi
             PaletteEntry::Command(command) => Row::Command {
                 index,
                 command: command.clone(),
+            },
+            PaletteEntry::Reload(reload) => Row::Reload {
+                index,
+                reload,
+                disabled: exited,
             },
             PaletteEntry::Action(action) if action.is_setting() => Row::Setting {
                 index,
@@ -227,6 +238,9 @@ pub fn Palette(agent: AgentId, origin: PaletteOrigin) -> Element {
     };
     let highlighted = highlighted();
     let menu = origin == PaletteOrigin::Button;
+    let runs = rows
+        .iter()
+        .any(|row| matches!(row, Row::Reload { index, .. } if *index == highlighted));
     rsx! {
         div {
             class: if menu { "popover palette palette-menu" } else { "popover palette" },
@@ -265,12 +279,17 @@ pub fn Palette(agent: AgentId, origin: PaletteOrigin) -> Element {
                         Row::Command { index, command } => rsx! {
                             CommandRow { key: "{index}", host: PaletteHost::Agent(agent), index, command, highlighted: index == highlighted }
                         },
+                        Row::Reload { index, reload, disabled } => rsx! {
+                            ReloadRow { key: "{index}", agent, index, reload, disabled, highlighted: index == highlighted }
+                        },
                     }
                 }
             }
             span { class: "palette-foot",
                 if menu {
                     "Up and Down to move, Left and Right to change a setting, Enter to pick, Esc to close"
+                } else if runs {
+                    "Up and Down to move, Enter to run, Esc to close"
                 } else {
                     "Up and Down to move, Enter to insert, Esc to close"
                 }
@@ -423,6 +442,13 @@ fn CommandsLoading() -> Element {
     }
 }
 
+fn kind_label(kind: CommandKind) -> &'static str {
+    match kind {
+        CommandKind::Skill => "skill",
+        CommandKind::Command => "command",
+    }
+}
+
 #[component]
 fn CommandRow(
     host: PaletteHost,
@@ -440,16 +466,39 @@ fn CommandRow(
             onclick: move |_| pick(cockpit, host, Some(index)),
             span { class: "palette-item-head",
                 span { class: "mono palette-name", "/{command.name}" }
-                span { class: "palette-kind",
-                    match command.kind {
-                        CommandKind::Skill => "skill",
-                        CommandKind::Command => "command",
-                    }
-                }
+                span { class: "palette-kind", {kind_label(command.kind)} }
             }
             if !command.description.is_empty() {
                 span { class: "palette-description", "{command.description}" }
             }
+        }
+    }
+}
+
+/// A reload, which a pick sends at once, as a command row.
+#[component]
+fn ReloadRow(
+    agent: AgentId,
+    index: usize,
+    reload: Reload,
+    disabled: bool,
+    highlighted: bool,
+) -> Element {
+    let cockpit: Cockpit = use_context();
+    let pointer: PalettePointer = use_context();
+    rsx! {
+        button {
+            id: row_id(highlighted),
+            class: if highlighted { "palette-item {HIGHLIGHTED_CLASS}" } else { "palette-item" },
+            disabled,
+            title: if disabled { "The agent exited: resume it first" },
+            onmousemove: move |event: MouseEvent| pointer.point(cockpit, PaletteHost::Agent(agent), index, &event),
+            onclick: move |_| act(cockpit, agent, Some(index)),
+            span { class: "palette-item-head",
+                span { class: "mono palette-name", "/{reload.name()}" }
+                span { class: "palette-kind", {kind_label(CommandKind::Command)} }
+            }
+            span { class: "palette-description", "{reload.description()}" }
         }
     }
 }
@@ -588,7 +637,14 @@ mod tests {
         entry.commands_requested = true;
         let reloading = rows(&entry, "", CommandMatch::Anywhere, PaletteOrigin::Button);
 
-        assert!(matches!(typed.as_slice(), [Row::Command { index: 0, .. }]));
+        assert!(matches!(
+            typed.as_slice(),
+            [
+                Row::Command { index: 0, .. },
+                Row::Reload { index: 1, .. },
+                Row::Reload { index: 2, .. }
+            ]
+        ));
         assert_eq!(
             sections(&menu),
             [
@@ -597,7 +653,30 @@ mod tests {
                 MenuSection::Commands
             ]
         );
-        assert!(matches!(menu.last(), Some(Row::Command { .. })));
+        assert!(matches!(menu.last(), Some(Row::Reload { .. })));
         assert!(matches!(reloading.last(), Some(Row::CommandsLoading)));
+    }
+
+    #[test]
+    fn an_exited_agent_lists_the_reloads_turned_off() {
+        let running = AgentEntry::new(summary(1, AgentStatus::Idle));
+        let exited = AgentEntry::new(summary(2, AgentStatus::Exited));
+        let disabled = |entry: &AgentEntry| -> Vec<bool> {
+            rows(
+                entry,
+                "reload",
+                CommandMatch::Anywhere,
+                PaletteOrigin::Typed,
+            )
+            .iter()
+            .filter_map(|row| match row {
+                Row::Reload { disabled, .. } => Some(*disabled),
+                _ => None,
+            })
+            .collect()
+        };
+
+        assert_eq!(disabled(&running), [false, false]);
+        assert_eq!(disabled(&exited), [true, true]);
     }
 }

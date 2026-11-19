@@ -8,7 +8,8 @@ use claude_protocol::{
     AssistantMessage, CanUseTool, ContentBlock, ContextUsage as ClaudeContextUsage,
     ControlRequestId, ConversationReset, ImageBlock, ImageSource, IncomingControlRequest,
     IncomingRequest, InitializeResponse, InputLine, InterruptNotice, McpStatus, OpenWord,
-    OriginKind, OutputLine, RateLimitInfo, ResetTrigger, ResultMessage, SessionState, SystemEvent,
+    OriginKind, OutputLine, RateLimitInfo, ReloadPluginsResponse, ReloadSkillsResponse,
+    ResetTrigger, ResultMessage, SessionState, SlashCommand as ClaudeSlashCommand, SystemEvent,
     SystemInit, TaskNotification, TaskNotificationText, TaskProgress, TaskStarted, TaskUsage,
     TerminalReason, ToolInput, ToolName, ToolResultBlock, ToolUseBlock, ToolUseId, TypedCommand,
     Usage, UserMessage as ClaudeUserMessage,
@@ -16,10 +17,11 @@ use claude_protocol::{
 use cockpit_protocol::{
     AccountId, AgentDetails, AgentId, AgentStatus, AgentSummary, Answer, AnswerState, Approval,
     BackgroundTask, BackgroundTaskId, BackgroundTaskStatus, ClaudeCodeVersion, ClaudeSessionId,
-    ContextUsage, CostUsd, Effort, EffortSource, Event, Image, ItemBody, ItemId, Mark, McpServer,
-    NoticeKind, PendingId, PermissionMode, Plan, Position, Prompt, PromptId, Question, SignInWait,
-    SlashCommand, SubagentRun, SubagentStatus, SubagentToolCall, Timestamp, TokenUsage, ToolCall,
-    ToolCallStatus, TranscriptItem, TurnEnd, TurnOutcome, UserMessage, WaitingPrompt, WaitingState,
+    CommandChanges, ContextUsage, CostUsd, Effort, EffortSource, Event, Image, ItemBody, ItemId,
+    Mark, McpServer, NoticeKind, PendingId, PermissionMode, Plan, Position, Prompt, PromptId,
+    Question, SignInWait, SlashCommand, SubagentRun, SubagentStatus, SubagentToolCall, Timestamp,
+    TokenUsage, ToolCall, ToolCallStatus, TranscriptItem, TurnEnd, TurnOutcome, UserMessage,
+    WaitingPrompt, WaitingState,
 };
 use serde_json::{Map, Value};
 use strum::{EnumString, IntoStaticStr, VariantArray};
@@ -81,6 +83,9 @@ enum UntypedSystemSubtype {
     LocalCommand,
     /// Claude Code named the session, after `/rename`.
     SessionTitleChanged,
+    /// The session's commands changed: a skill file Claude Code watches, or a reload. The line
+    /// lists every command.
+    CommandsChanged,
 }
 
 const SUBTYPE_KEY: &str = "subtype";
@@ -88,6 +93,8 @@ const SUBTYPE_KEY: &str = "subtype";
 const CONTENT_KEY: &str = "content";
 /// The new name in a `session_title_changed` line.
 const TITLE_KEY: &str = "title";
+/// The commands of a `commands_changed` line.
+const COMMANDS_KEY: &str = "commands";
 /// The model of an assistant message Claude Code writes itself, such as a slash command's output
 /// or an API error.
 const SYNTHETIC_MODEL: &str = "<synthetic>";
@@ -211,6 +218,7 @@ pub(crate) struct AgentView {
     next_prompt: PromptId,
     /// Calls per tool name, for the MCP servers' tool counts.
     tool_counts: HashMap<String, u32>,
+    /// The skills' names, from the latest `system/init` or `reload_skills`.
     skills: BTreeSet<String>,
     prompt_cache_ttl: Duration,
 }
@@ -859,8 +867,63 @@ impl AgentView {
     }
 
     pub(crate) fn set_commands(&mut self, response: &InitializeResponse) {
-        self.commands = details::commands(response, &self.skills);
+        self.commands = details::commands(&response.commands, &self.skills);
         self.commands_changed = true;
+    }
+
+    /// The answer's skills become the agent's skills, in place of the skills among its commands.
+    /// Its other commands stay. A skill keeps its place in the list, and a new one comes last.
+    /// The changes are against `before`, the commands when the request left.
+    pub(crate) fn reload_skills(
+        &mut self,
+        response: &ReloadSkillsResponse,
+        before: &[SlashCommand],
+    ) -> CommandChanges {
+        let skills: BTreeSet<String> = response
+            .skills
+            .iter()
+            .map(|skill| skill.name.clone())
+            .collect();
+        let fresh = details::commands(&response.skills, &skills);
+        let mut commands = Vec::with_capacity(self.commands.len() + fresh.len());
+        for command in &self.commands {
+            match fresh.iter().find(|skill| skill.name == command.name) {
+                Some(skill) => commands.push(skill.clone()),
+                None if self.skills.contains(&command.name) => {}
+                None => commands.push(command.clone()),
+            }
+        }
+        let new_skills: Vec<SlashCommand> = fresh
+            .into_iter()
+            .filter(|skill| !commands.iter().any(|command| command.name == skill.name))
+            .collect();
+        commands.extend(new_skills);
+        self.skills = skills;
+        self.replace_commands(commands);
+        details::command_changes(before, &self.commands)
+    }
+
+    /// The answer lists every command, the plugins' included. The skills stay those of the latest
+    /// `system/init` or `reload_skills`. The changes are against `before`, as for a skills reload.
+    pub(crate) fn reload_plugins(
+        &mut self,
+        response: &ReloadPluginsResponse,
+        before: &[SlashCommand],
+    ) -> CommandChanges {
+        let commands = details::commands(&response.commands, &self.skills);
+        self.replace_commands(commands);
+        details::command_changes(before, &self.commands)
+    }
+
+    pub(crate) fn skill_count(&self) -> usize {
+        self.skills.len()
+    }
+
+    fn replace_commands(&mut self, commands: Vec<SlashCommand>) {
+        if commands != self.commands {
+            self.commands = commands;
+            self.commands_changed = true;
+        }
     }
 
     pub(crate) fn set_context(&mut self, usage: &ClaudeContextUsage) -> ContextUsage {
@@ -978,6 +1041,17 @@ impl AgentView {
                         } else {
                             self.restated_title = Some(title);
                         }
+                    }
+                }
+                Some(UntypedSystemSubtype::CommandsChanged) => {
+                    use serde::Deserialize;
+
+                    let commands: Option<Vec<ClaudeSlashCommand>> = value
+                        .get(COMMANDS_KEY)
+                        .and_then(|list| Vec::deserialize(list).ok());
+                    if let Some(commands) = commands {
+                        let commands = details::commands(&commands, &self.skills);
+                        self.replace_commands(commands);
                     }
                 }
                 Some(UntypedSystemSubtype::LocalCommand) | None => {}
@@ -2418,6 +2492,224 @@ mod tests {
         let details = view.details();
         assert_eq!(details.mcp_servers.len(), 1);
         assert_eq!(details.mcp_servers[0].status, McpServerStatus::Connected);
+    }
+
+    /// Claude Code watches the skill files and sends the whole new list: a removed skill goes, a
+    /// new command comes, and a skill stays one.
+    #[test]
+    fn a_commands_changed_line_replaces_the_commands() {
+        let mut view = view();
+        apply(&mut view, init());
+        view.take_events();
+
+        apply(
+            &mut view,
+            json!({"type": "system", "subtype": "commands_changed", "session_id": "session-1",
+            "commands": [
+                {"name": "tidy", "description": "Tidy the code", "argumentHint": ""},
+                {"name": "ship-check", "description": "Check before shipping", "argumentHint": ""}
+            ]}),
+        );
+        let changed = view
+            .take_events()
+            .iter()
+            .any(|event| matches!(event, Event::CommandsChanged { .. }));
+
+        assert!(changed);
+        assert_eq!(
+            command_kinds(&view),
+            [
+                ("tidy", "Tidy the code", CommandKind::Skill),
+                ("ship-check", "Check before shipping", CommandKind::Command),
+            ]
+        );
+    }
+
+    fn command_kinds(view: &AgentView) -> Vec<(&str, &str, CommandKind)> {
+        view.commands()
+            .iter()
+            .map(|command| {
+                (
+                    command.name.as_str(),
+                    command.description.as_str(),
+                    command.kind,
+                )
+            })
+            .collect()
+    }
+
+    fn commands_changed(view: &mut AgentView) -> bool {
+        view.take_events()
+            .iter()
+            .any(|event| matches!(event, Event::CommandsChanged { .. }))
+    }
+
+    /// The commands of `init()`, as `initialize` describes them, with one more.
+    fn initialized_view() -> AgentView {
+        let mut view = view();
+        apply(&mut view, init());
+        let initialize = json!({"commands": [
+            {"name": "review", "description": "Review the changes"},
+            {"name": "tidy", "description": "Tidy the code"},
+            {"name": "compact", "description": "Summarize the conversation"}
+        ]});
+        view.set_commands(&InitializeResponse::try_from(&initialize).unwrap());
+        view.take_events();
+        view
+    }
+
+    #[test]
+    fn a_skills_reload_replaces_the_skills_and_keeps_the_other_commands() {
+        let mut view = initialized_view();
+        let before = view.commands().to_vec();
+        let answer = json!({"skills": [
+            {"name": "ship-check", "description": "Check the branch before it ships"},
+            {"name": "lint-fix", "description": "Fix the lints"}
+        ]});
+
+        let changes =
+            view.reload_skills(&ReloadSkillsResponse::try_from(&answer).unwrap(), &before);
+
+        assert_eq!(
+            command_kinds(&view),
+            [
+                ("review", "Review the changes", CommandKind::Command),
+                (
+                    "compact",
+                    "Summarize the conversation",
+                    CommandKind::Command
+                ),
+                (
+                    "ship-check",
+                    "Check the branch before it ships",
+                    CommandKind::Skill
+                ),
+                ("lint-fix", "Fix the lints", CommandKind::Skill),
+            ]
+        );
+        assert_eq!(changes.added, ["lint-fix", "ship-check"]);
+        assert_eq!(changes.removed, ["tidy"]);
+        assert_eq!(view.skill_count(), 2);
+        assert!(commands_changed(&mut view));
+    }
+
+    #[test]
+    fn a_skills_reload_that_finds_the_same_skills_sends_no_commands() {
+        let mut view = initialized_view();
+        let before = view.commands().to_vec();
+        let answer = json!({"skills": [{"name": "tidy", "description": "Tidy the code"}]});
+
+        let changes =
+            view.reload_skills(&ReloadSkillsResponse::try_from(&answer).unwrap(), &before);
+
+        assert_eq!(changes, CommandChanges::default());
+        assert!(!commands_changed(&mut view));
+    }
+
+    /// Claude Code sends `commands_changed` before it answers the reload.
+    #[test]
+    fn a_skills_reload_reports_the_changes_since_it_was_sent() {
+        let mut view = initialized_view();
+        let before = view.commands().to_vec();
+        apply(
+            &mut view,
+            json!({"type": "system", "subtype": "commands_changed", "session_id": "session-1",
+            "commands": [
+                {"name": "review", "description": "Review the changes"},
+                {"name": "compact", "description": "Summarize the conversation"},
+                {"name": "ship-check", "description": "Check the branch"}
+            ]}),
+        );
+        let answer = json!({"skills": [{"name": "ship-check", "description": "Check the branch"}]});
+
+        let changes =
+            view.reload_skills(&ReloadSkillsResponse::try_from(&answer).unwrap(), &before);
+
+        assert_eq!(changes.added, ["ship-check"]);
+        assert_eq!(changes.removed, ["tidy"]);
+        assert_eq!(
+            command_kinds(&view)[2],
+            ("ship-check", "Check the branch", CommandKind::Skill)
+        );
+    }
+
+    #[test]
+    fn the_next_init_keeps_the_reloaded_skills_marked_by_its_own_list() {
+        let mut view = initialized_view();
+        let before = view.commands().to_vec();
+        let answer = json!({"skills": [{"name": "tidy"}, {"name": "ship-check"}]});
+        view.reload_skills(&ReloadSkillsResponse::try_from(&answer).unwrap(), &before);
+        let mut next_init = init();
+        next_init["skills"] = json!(["tidy", "ship-check"]);
+
+        apply(&mut view, next_init);
+
+        let kinds: Vec<(&str, CommandKind)> = command_kinds(&view)
+            .into_iter()
+            .map(|(name, _, kind)| (name, kind))
+            .collect();
+        assert_eq!(
+            kinds,
+            [
+                ("review", CommandKind::Command),
+                ("tidy", CommandKind::Skill),
+                ("compact", CommandKind::Command),
+                ("ship-check", CommandKind::Skill),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_plugins_reload_replaces_every_command_and_marks_the_known_skills() {
+        let mut view = initialized_view();
+        let before = view.commands().to_vec();
+        let answer = json!({
+            "commands": [
+                {"name": "review", "description": "Review the changes"},
+                {"name": "tidy", "description": "Tidy the code"},
+                {"name": "notes:search", "description": "Search the notes"}
+            ],
+            "plugins": [{"name": "notes", "path": "/plugins/notes"}],
+            "error_count": 2
+        });
+
+        let changes =
+            view.reload_plugins(&ReloadPluginsResponse::try_from(&answer).unwrap(), &before);
+
+        assert_eq!(
+            command_kinds(&view),
+            [
+                ("review", "Review the changes", CommandKind::Command),
+                ("tidy", "Tidy the code", CommandKind::Skill),
+                ("notes:search", "Search the notes", CommandKind::Command),
+            ]
+        );
+        assert_eq!(changes.added, ["notes:search"]);
+        assert_eq!(changes.removed, ["compact"]);
+        assert!(commands_changed(&mut view));
+    }
+
+    #[test]
+    fn a_plugins_reload_reports_the_changes_since_it_was_sent() {
+        let mut view = initialized_view();
+        let before = view.commands().to_vec();
+        let commands = json!([
+            {"name": "review", "description": "Review the changes"},
+            {"name": "tidy", "description": "Tidy the code"},
+            {"name": "notes:search", "description": "Search the notes"}
+        ]);
+        apply(
+            &mut view,
+            json!({"type": "system", "subtype": "commands_changed", "session_id": "session-1",
+            "commands": commands}),
+        );
+        let answer = json!({"commands": commands, "plugins": [], "error_count": 0});
+
+        let changes =
+            view.reload_plugins(&ReloadPluginsResponse::try_from(&answer).unwrap(), &before);
+
+        assert_eq!(changes.added, ["notes:search"]);
+        assert_eq!(changes.removed, ["compact"]);
     }
 
     #[test]
@@ -4181,7 +4473,12 @@ mod tests {
 
         assert_eq!(
             words,
-            ["compact_boundary", "local_command", "session_title_changed"]
+            [
+                "compact_boundary",
+                "local_command",
+                "session_title_changed",
+                "commands_changed",
+            ]
         );
     }
 
