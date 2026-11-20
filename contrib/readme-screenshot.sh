@@ -10,7 +10,7 @@
 set -eu
 
 app=${CARGO_TARGET_DIR:-target}/release/yetack-desktop
-scenes="machines projects"
+scenes="main machines update"
 [ -x "$app" ] || { echo "build $app first: cargo build --release -p cockpit_desktop" >&2; exit 1; }
 
 # Other sessions may take screenshots on this machine, so use the first free display from 160.

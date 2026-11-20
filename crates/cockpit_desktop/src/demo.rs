@@ -21,19 +21,19 @@ use cockpit_protocol::{
     Question, QuestionAnswer, QuestionOption, RateLimitStatus, ReleaseVersion, Repository, Request,
     ResourceUse, ResponseBody, Selection, ServerLoad, ServerPoint, SignIn, SignInWait,
     SlashCommand, Subagent, SubagentRun, SubagentStatus, SubagentToolCall, TaskListItem,
-    TaskProgress, TaskStatus, Timestamp, TokenUsage, ToolCall, ToolCallStatus, TranscriptItem,
-    TurnEnd, TurnOutcome, UsageWindow, UserMessage, WaitingPrompt, WaitingState, WindowUsage,
+    TaskProgress, TaskStatus, TerminalId, TerminalInfo, Timestamp, TokenUsage, ToolCall,
+    ToolCallStatus, TranscriptItem, TurnEnd, TurnOutcome, UsageWindow, UserMessage, WaitingPrompt,
+    WaitingState, WindowUsage,
 };
 use dioxus::prelude::{Signal, WritableExt};
 use serde_json::Value;
 use strum::{EnumString, IntoStaticStr, VariantArray};
 
-use crate::command_line;
 use crate::config::{DaemonConfig, MachineConfig};
 use crate::daemon_label::DaemonLabel;
 use crate::machine::MachineId;
 use crate::path_style::PathStyle;
-use crate::prefs::{CommentPlacement, GroupBy, ProjectRule};
+use crate::prefs::{CommentPlacement, GroupBy, ProjectRule, ProjectSplit, TerminalPlace};
 use crate::self_update::CheckFileError;
 use crate::state::app_update::{self, AppStep, InstallKind, Release, ReleaseAsset};
 use crate::state::daemon_probe::{
@@ -55,11 +55,12 @@ use crate::state::update_plan::{
     CarriedDaemons, DaemonSource, SendProgress, ServerPlan, ServicePlan, UpdatePlan, UpdateStep,
 };
 use crate::state::{
-    AgentEntry, AppState, ConnectionState, Dialog, Drafts, Loadable, MachineState, Popover,
+    AgentEntry, AppState, Block, ConnectionState, Dialog, Drafts, Loadable, MachineState, Popover,
     Utf16Offset, ViewMode, actions, claude_code_version, daemon_start, file_edits, file_tree,
     machines, projects, quotes, resume, sending,
 };
 use crate::update_script::{self, APP_VERSION};
+use crate::{command_line, ui};
 
 /// The command-line flag that starts the demo.
 pub const DEMO_FLAG: &str = "--demo";
@@ -67,18 +68,45 @@ pub const DEMO_FLAG: &str = "--demo";
 /// With the demo, opens one of the screens of a daemon's update: `--demo-update older`.
 const UPDATE_SCREEN_FLAG: &str = "--demo-update";
 
-/// With the demo, trims it for one of the README's pictures: `--demo-showcase projects`.
+/// With the demo, trims it for one of the README's pictures: `--demo-showcase machines`.
 const SHOWCASE_FLAG: &str = "--demo-showcase";
 
 /// The README's pictures, each a scene of the showcase.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, EnumString, IntoStaticStr, VariantArray)]
 #[strum(serialize_all = "snake_case")]
 pub enum Scene {
-    /// The agents by machine, and a chat with replies under way.
+    /// The agents by project then machine, a chat with replies under way, and its terminal.
+    Main,
+    /// The agents by machine, a question waiting, the files pane, the file view and the load.
     Machines,
-    /// The agents by project, a question waiting, the files pane and the file view.
-    Projects,
+    /// The update of a server's daemon under way.
+    Update,
 }
+
+/// The agent whose terminal the demo shows: the one the main picture selects.
+const TERMINAL_AGENT: u32 = 1;
+
+/// The demo's only terminal, the terminal agent's.
+fn demo_terminal() -> TerminalId {
+    TerminalId::new(1)
+}
+
+/// What the demo's terminal shows: the agent's tests. It fits the pane's default height.
+const TERMINAL_OUTPUT: &str = concat!(
+    "\x1b[1;32mdev@laptop\x1b[0m \x1b[1;34m~/projects/calc-parser\x1b[0m \x1b[33m(columns)\x1b[0m $ cargo test -p calc-lexer columns\r\n",
+    "\x1b[1;32m   Compiling\x1b[0m calc-lexer v0.4.0 (/home/dev/projects/calc-parser/crates/calc-lexer)\r\n",
+    "\x1b[1;32m    Finished\x1b[0m `test` profile [unoptimized + debuginfo] target(s) in 2.41s\r\n",
+    "\x1b[1;32m     Running\x1b[0m unittests src/lib.rs (target/debug/deps/calc_lexer-3f9c2e17ab54c90d)\r\n",
+    "\r\n",
+    "running 4 tests\r\n",
+    "test position::tests::columns_count_from_one ... \x1b[32mok\x1b[0m\r\n",
+    "test position::tests::a_tab_counts_as_one_column ... \x1b[32mok\x1b[0m\r\n",
+    "test tests::columns::an_unexpected_token_reports_its_column ... \x1b[32mok\x1b[0m\r\n",
+    "test tests::columns::the_end_of_the_input_has_a_column ... \x1b[32mok\x1b[0m\r\n",
+    "\r\n",
+    "test result: \x1b[32mok\x1b[0m. 4 passed; 0 failed; 0 ignored; 0 measured; 27 filtered out; finished in 0.00s\r\n",
+    "\x1b[1;32mdev@laptop\x1b[0m \x1b[1;34m~/projects/calc-parser\x1b[0m \x1b[33m(columns)\x1b[0m $ ",
+);
 
 /// Wide enough for the showcase's titles to show whole.
 const SHOWCASE_SIDEBAR_WIDTH: u16 = 430;
@@ -1864,7 +1892,7 @@ fn server_session(machine: MachineId, agent: AgentId) -> ClaudeSessionId {
 }
 
 /// The scene the arguments ask for: `--demo --demo-showcase`, then the scene's name, or
-/// `machines` when no name follows. An unknown name asks for no showcase.
+/// `main` when no name follows. An unknown name asks for no showcase.
 pub fn showcase_scene(arguments: &[String]) -> Option<Scene> {
     if !is_requested(arguments) {
         return None;
@@ -1874,7 +1902,7 @@ pub fn showcase_scene(arguments: &[String]) -> Option<Scene> {
     }
     match command_line::flag_value(arguments, SHOWCASE_FLAG) {
         Some(name) if !name.starts_with("--") => name.parse::<Scene>().ok(),
-        Some(_) | None => Some(Scene::Machines),
+        Some(_) | None => Some(Scene::Main),
     }
 }
 
@@ -1964,16 +1992,84 @@ pub fn showcase(state: &mut AppState, scene: Scene) {
     }
     state.prefs.sidebar.width = Some(SHOWCASE_SIDEBAR_WIDTH);
     match scene {
-        Scene::Machines => {}
-        Scene::Projects => show_project_files(state),
+        Scene::Main => show_projects_and_terminal(state),
+        Scene::Machines => show_question_files(state),
+        Scene::Update => show_update(state),
     }
 }
 
-/// The question agent, grouped by project, with its folder in the files pane and the changelog it
-/// edits in the file view. Every project is kept, so that no header offers to keep it.
-fn show_project_files(state: &mut AppState) {
-    let agent = AgentId::new(QUESTION_AGENT);
+/// The agents by project, then by machine in each project, and the selected agent's terminal under
+/// its chat.
+fn show_projects_and_terminal(state: &mut AppState) {
+    let agent = AgentId::new(TERMINAL_AGENT);
     state.prefs.sidebar.group_by = GroupBy::Project;
+    state.prefs.sidebar.project_split = ProjectSplit::ByMachine;
+    keep_projects(state);
+    state.ui.selected = Some(agent);
+    state.prefs.terminal.place = TerminalPlace::Bottom;
+    state.ui.terminal_panes.insert(agent);
+    // The terminal takes the chat's height: the folded block leaves the reply's notes room beside
+    // their passages.
+    state.ui.open_blocks.remove(&Block::Messages);
+    if let Some(entry) = state.agents.get_mut(&agent) {
+        quiet_chat(entry);
+    }
+}
+
+/// Leaves out the answered requests, which an agent in auto mode does not make, and the messages
+/// still queued, so that one message waits.
+fn quiet_chat(entry: &mut AgentEntry) {
+    let items: Vec<TranscriptItem> = entry
+        .transcript
+        .items()
+        .filter(|item| !matches!(item.body, ItemBody::Approval(_)))
+        .cloned()
+        .collect();
+    entry.transcript = Default::default();
+    entry.transcript.merge_page(HistoryPage {
+        items,
+        older_items: OlderItems::None,
+        ancestors: Vec::new(),
+    });
+    if let Loadable::Loaded(details) = &mut entry.details {
+        details
+            .waiting_prompts
+            .retain(|prompt| prompt.state == WaitingState::Sent);
+    }
+}
+
+/// The update of gpu-box's daemon under way: the app sent its daemon, the server checked it, and
+/// the daemon restarts.
+fn show_update(state: &mut AppState) {
+    let machine = GPU_SERVER;
+    if let Some(server) = state.machines.others.get_mut(&machine) {
+        // An older daemon refuses the app, which then sees none of its agents at work.
+        server.connection = ConnectionState::Disconnected {
+            error: format!("the daemon refused the connection: {REFUSED_FOR_OLDER}"),
+            retry_at: Instant::now() + Duration::from_secs(10),
+        };
+        server.version_gap = Some(older_gap());
+        server.update_plan = Some(sending_plan());
+        server.daemon_probe = owned_probe();
+    }
+    if daemon_update::start(state, machine).is_some() {
+        daemon_update::sending(state, machine, all_sent());
+        let lines = SENT_OUTPUT
+            .iter()
+            .take(2)
+            .map(|text| OutputLine {
+                stream: OutputStream::Stderr,
+                text: (*text).to_owned(),
+            })
+            .collect();
+        daemon_update::output(state, machine, lines);
+        daemon_update::step_started(state, machine, UpdateStep::Restart);
+    }
+    state.ui.dialog = Some(Dialog::DaemonUpdate(machine));
+}
+
+/// Keeps every project under the showcase's names, so that no header offers to keep it.
+fn keep_projects(state: &mut AppState) {
     let repositories: Vec<Repository> = projects::shown_projects(state)
         .into_iter()
         .filter_map(|key| match key {
@@ -2001,6 +2097,12 @@ fn show_project_files(state: &mut AppState) {
             }
         }
     }
+}
+
+/// The question agent, with its folder in the files pane, the changelog it edits in the file view,
+/// and the machine's load.
+fn show_question_files(state: &mut AppState) {
+    let agent = AgentId::new(QUESTION_AGENT);
     state.ui.selected = Some(agent);
     if let Some(entry) = state.agents.get_mut(&agent) {
         for folder in ["docs", "src", "tests"] {
@@ -2087,6 +2189,10 @@ pub fn latency(request: &Request) -> Duration {
         }
         // `claude` starts.
         Request::AgentResume(_) => Duration::from_millis(500),
+        // The screen must come after the pane fits the terminal to its box, past its opening. A
+        // screen drawn narrower wraps its prompt, and the widening leaves the cursor in the middle
+        // of it: the demo has no shell to draw the prompt again.
+        Request::TerminalAttach(_) => Duration::from_millis(5 * u64::from(ui::FIT_SETTLE_MS)),
         _ => Duration::ZERO,
     }
 }
@@ -2299,9 +2405,25 @@ pub fn answer(state: &AppState, request: &Request) -> Result<ResponseBody, Reque
         }
         Request::AgentListDir(params) => list_dir(&params.path),
         Request::AgentFindFiles(params) => Ok(find_files(&params.name)),
-        Request::AgentTerminals(_) => Ok(ResponseBody::Terminals {
-            terminals: Vec::new(),
+        Request::AgentTerminals(params) => Ok(ResponseBody::Terminals {
+            terminals: (params.agent == AgentId::new(TERMINAL_AGENT))
+                .then(|| TerminalInfo {
+                    terminal: demo_terminal(),
+                    title: "zsh".to_owned(),
+                    exited: None,
+                })
+                .into_iter()
+                .collect(),
         }),
+        Request::TerminalAttach(params) if params.terminal == demo_terminal() => {
+            use base64::Engine;
+            use base64::engine::general_purpose::STANDARD as BASE64;
+
+            Ok(ResponseBody::TerminalScreen {
+                offset: 0,
+                data: BASE64.encode(TERMINAL_OUTPUT),
+            })
+        }
         Request::AgentTerminalOpen(_) => {
             Err(refused(ErrorCode::Unsupported, "The demo runs no shell."))
         }
@@ -5072,7 +5194,7 @@ mod tests {
     use cockpit_protocol::{
         AgentParams, AnswerParams, FoldersListParams, HistoryParams, MarkParams, PlanAnswer,
         PlanDecision, PromptDelivery, PromptParams, ReadFileParams, RenameParams,
-        TerminalOpenParams, TerminalSize,
+        TerminalOpenParams, TerminalParams, TerminalSize,
     };
 
     use super::*;
@@ -5310,6 +5432,36 @@ mod tests {
             }
         );
         assert!(answer(&state, &open).is_err());
+    }
+
+    #[test]
+    fn the_terminal_agent_lists_one_terminal_whose_screen_is_the_demos_output() {
+        use base64::Engine;
+        use base64::engine::general_purpose::STANDARD as BASE64;
+
+        let state = state(label());
+        let agent = AgentId::new(TERMINAL_AGENT);
+        let list = Request::AgentTerminals(AgentParams { agent });
+        let attach = Request::TerminalAttach(TerminalParams {
+            agent,
+            terminal: demo_terminal(),
+        });
+
+        let ResponseBody::Terminals { terminals } = answer(&state, &list).unwrap() else {
+            panic!("expected the terminals");
+        };
+        assert_eq!(
+            terminals
+                .iter()
+                .map(|info| info.terminal)
+                .collect::<Vec<_>>(),
+            [demo_terminal()]
+        );
+        let ResponseBody::TerminalScreen { offset, data } = answer(&state, &attach).unwrap() else {
+            panic!("expected the terminal's screen");
+        };
+        assert_eq!(offset, 0);
+        assert_eq!(BASE64.decode(data).unwrap(), TERMINAL_OUTPUT.as_bytes());
     }
 
     /// The card would keep its buttons disabled, its answer on its way, until the app restarts.
@@ -5940,30 +6092,41 @@ pub struct ParseError {
         };
         let names: Vec<&str> = Scene::VARIANTS.iter().map(|&scene| scene.into()).collect();
 
-        assert_eq!(names, ["machines", "projects"]);
-        assert_eq!(scene(&[DEMO_FLAG, SHOWCASE_FLAG]), Some(Scene::Machines));
+        assert_eq!(names, ["main", "machines", "update"]);
+        assert_eq!(scene(&[DEMO_FLAG, SHOWCASE_FLAG]), Some(Scene::Main));
         assert_eq!(
-            scene(&[DEMO_FLAG, SHOWCASE_FLAG, "projects"]),
-            Some(Scene::Projects)
+            scene(&[DEMO_FLAG, SHOWCASE_FLAG, "machines"]),
+            Some(Scene::Machines)
         );
         assert_eq!(
             scene(&[SHOWCASE_FLAG, DEMO_FLAG]),
-            Some(Scene::Machines),
+            Some(Scene::Main),
             "the demo's flag may come after"
         );
         assert_eq!(scene(&[DEMO_FLAG, SHOWCASE_FLAG, "gallery"]), None);
-        assert_eq!(scene(&[SHOWCASE_FLAG, "projects"]), None);
+        assert_eq!(scene(&[SHOWCASE_FLAG, "machines"]), None);
     }
 
     #[test]
-    fn the_projects_scene_shows_the_question_agent_by_project_with_its_files() {
+    fn the_main_scene_groups_by_project_then_machine_and_shows_a_terminal() {
         let mut state = state(label());
 
-        showcase(&mut state, Scene::Projects);
+        showcase(&mut state, Scene::Main);
 
-        let agent = AgentId::new(QUESTION_AGENT);
+        let agent = AgentId::new(TERMINAL_AGENT);
         assert_eq!(state.ui.selected, Some(agent));
         assert_eq!(state.prefs.sidebar.group_by, GroupBy::Project);
+        assert_eq!(state.prefs.sidebar.project_split, ProjectSplit::ByMachine);
+        assert!(crate::state::terminals::pane_open(&state));
+        let entry = &state.agents[&agent];
+        assert!(
+            entry
+                .transcript
+                .items()
+                .all(|item| !matches!(item.body, ItemBody::Approval(_))),
+            "an agent in auto mode makes no request"
+        );
+        assert_eq!(entry.waiting_prompts().len(), 1);
         let shown: Vec<(String, usize)> = projects::shown_projects(&state)
             .iter()
             .map(|key| {
@@ -5984,6 +6147,18 @@ pub struct ParseError {
                 ("Ranking".to_owned(), 2)
             ]
         );
+        assert!(prefs::is_sidebar_width(SHOWCASE_SIDEBAR_WIDTH));
+    }
+
+    #[test]
+    fn the_machines_scene_shows_the_question_agent_with_its_files_and_the_load() {
+        let mut state = state(label());
+
+        showcase(&mut state, Scene::Machines);
+
+        let agent = AgentId::new(QUESTION_AGENT);
+        assert_eq!(state.ui.selected, Some(agent));
+        assert_eq!(state.prefs.sidebar.group_by, GroupBy::Machine);
         assert!(file_tree::pane_open(&state, agent));
         assert_eq!(
             state
@@ -6000,13 +6175,32 @@ pub struct ParseError {
         );
     }
 
+    #[test]
+    fn the_update_scene_shows_gpu_box_restarting_a_daemon_it_received_and_checked() {
+        let mut state = state(label());
+
+        showcase(&mut state, Scene::Update);
+
+        assert_eq!(state.ui.dialog, Some(Dialog::DaemonUpdate(GPU_SERVER)));
+        let Some(DaemonUpdate::Running(progress)) = state
+            .machines
+            .others
+            .get(&GPU_SERVER)
+            .and_then(|server| server.update.as_ref())
+        else {
+            panic!("expected gpu-box's update under way");
+        };
+        assert_eq!(progress.step, UpdateStep::Restart);
+        assert_eq!(progress.sent, Some(all_sent()));
+    }
+
     /// `PathBuf::join` writes a backslash on Windows, and a folder written so matches none of
     /// the tree's: its files never show.
     #[test]
-    fn the_projects_scene_opens_its_folders_by_their_unix_paths() {
+    fn the_machines_scene_opens_its_folders_by_their_unix_paths() {
         let mut state = state(label());
 
-        showcase(&mut state, Scene::Projects);
+        showcase(&mut state, Scene::Machines);
 
         let mut expanded: Vec<String> = state.agents[&AgentId::new(QUESTION_AGENT)]
             .tree

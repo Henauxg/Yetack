@@ -2,20 +2,28 @@
 
 Orchestrator to control multiple agents over multiple machines and accounts.
 
-| ![The app with agents on three machines: the sidebar lists the agents by machine, the middle shows one agent's conversation with a reply under way that quotes three passages, each with its comment beside the text, and the right column shows the agent's tasks, subagents and messages](docs/images/machines.png) | ![The app with the agents grouped by project: one agent asks three questions, the machine's load is open under the header with each agent's cores and memory, the file view shows the changelog that the agent edited, and the files pane lists the agent's folder](docs/images/projects.png) |
-| --- | --- |
+![The app with the agents grouped by project, then by machine in each project. The middle shows one agent's conversation with a reply under way that quotes three passages, each with its comment beside the text. The right column shows the agent's tasks and subagents, and a terminal under the chat shows the agent's tests passing](docs/images/main.png)
 
 Features:
 
 - Multiple machines (local & remotes)
 - Multiple accounts (work, personal)
+- Multiple apps on the same agents (desktop, laptop)
 - Persistent sessions via daemons
+- Daemons installed and updated from the app
 - Steering, questions, plans, approvals, MCPs, notifications
-- File browsing, diffs, machine load
+- Terminal, file explorer, find, diffs
 - Projects grouping
-- Quote & reply intuitively
+- Intuitive quotes & replies
 - Messages timeline
-- Subagents views and map
+- Usage, context and machine load at a glance
+- Subagent views
+
+## Quick look
+
+| ![The agents grouped by machine: one agent asks three questions, the machine's load is open under the header with each agent's cores and memory, the file view shows the changelog that the agent edited, and the files pane lists the agent's folder](docs/images/machines.png) | ![The update of a server's daemon from the app: the daemon was sent and checked, the daemon restarts, and the sidebar shows the update's progress under the server](docs/images/update.png) |
+| --- | --- |
+| A question, the machine's load, and the files an agent changed | A server's daemon updated from the app |
 
 ## Install
 

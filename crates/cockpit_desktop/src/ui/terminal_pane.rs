@@ -426,11 +426,14 @@ for (;;) {
 }
 "##;
 
+/// How long the pane's size stays the same before the terminal fits it: past its opening
+/// animation.
+pub const FIT_SETTLE_MS: u32 = 180;
+
 #[derive(Serialize)]
 struct Settings {
     screen_id: &'static str,
-    /// How long the pane's size stays the same before the terminal fits it: past its opening
-    /// animation.
+    /// [`FIT_SETTLE_MS`].
     settle_ms: u32,
     min: u16,
     max: u16,
@@ -552,7 +555,7 @@ pub fn use_terminal_script(cockpit: Cockpit) {
         let mut script = document::eval(SCRIPT);
         let settings = Settings {
             screen_id: SCREEN_ID,
-            settle_ms: 180,
+            settle_ms: FIT_SETTLE_MS,
             min: MIN_TERMINAL_SIZE,
             max: MAX_TERMINAL_SIZE,
         };
@@ -905,7 +908,7 @@ mod tests {
     fn the_messages_to_and_from_the_page_are_pinned() {
         let settings = Settings {
             screen_id: SCREEN_ID,
-            settle_ms: 180,
+            settle_ms: FIT_SETTLE_MS,
             min: 120,
             max: 2000,
         };
