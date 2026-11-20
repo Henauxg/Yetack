@@ -18,6 +18,7 @@ use super::app_state::Loadable;
 use super::find::FindFocus;
 use super::mcp_reconnect::Reconnects;
 use super::projects::{ProjectKey, RuleKind};
+use super::terminal_menu::MenuSpot;
 use super::terminals::Screen;
 use super::transcript::{KEPT_ITEMS_AWAY, KEPT_ITEMS_SCROLLED_UP};
 use crate::keymap::{Chord, Command, Refusal};
@@ -100,6 +101,8 @@ pub enum Popover {
     AgentNotifications,
     /// The app's notification levels, from the sidebar's bell.
     AppNotifications,
+    /// A terminal's right-click menu, which `UiState::terminal_menu` describes.
+    TerminalMenu,
 }
 
 /// Where a tab's menu opened, which names its groups and decides what it closes to.
@@ -561,6 +564,8 @@ pub struct UiState {
     pub terminal_panes: BTreeSet<AgentId>,
     /// The agents whose file view shows the terminal's tab rather than a file.
     pub terminal_tab_shown: BTreeSet<AgentId>,
+    /// Where a terminal's right-click menu opened, while `Popover::TerminalMenu` shows it.
+    pub terminal_menu: Option<MenuSpot>,
     /// Terminal output the daemon kept, which the page writes before what comes next.
     pub terminal_screens: Vec<Screen>,
     /// Agents that finished while another one was selected, or that their row's menu marked
@@ -630,6 +635,7 @@ impl Default for UiState {
             selected: None,
             terminal_panes: BTreeSet::new(),
             terminal_tab_shown: BTreeSet::new(),
+            terminal_menu: None,
             terminal_screens: Vec::new(),
             unread: BTreeSet::new(),
             folded_machines: BTreeSet::new(),

@@ -22,6 +22,7 @@ use crate::prefs::{
     TerminalPlace,
 };
 use crate::render::{self, LineRef};
+use crate::state::terminal_menu::{self, MenuSpot, TerminalLink};
 use crate::state::{actions, terminals};
 use crate::terminal_feed::FeedReceiver;
 use crate::ui::icons::{Icon, IconKind};
@@ -60,6 +61,51 @@ let unfocused = null;
 // The rows whose `path:line` references the app is finding, by the id of the request.
 const linkAnswers = new Map();
 let linkAsks = 0;
+
+// Pastes `text` through `term.paste`, which brackets it for a shell that asks. Without its
+// escapes, the text cannot end the paste early with a bracket's end, after which the shell would
+// run the rest as typed.
+function pasteInto(term, text) {
+  if (text) {
+    term.paste(text.replaceAll("\x1b", ""));
+  }
+}
+
+// The link under the pointer, found as ghostty-web finds the one a click opens. Its hovered
+// link would keep one that output or a scroll moved from under the pointer.
+async function linkUnder(term, event) {
+  const { canvas, renderer, linkDetector, wasmTerm } = term;
+  if (!canvas || !renderer || !linkDetector || !wasmTerm) {
+    return null;
+  }
+  const rect = canvas.getBoundingClientRect();
+  const col = Math.floor((event.clientX - rect.left) / renderer.charWidth);
+  const row = Math.floor((event.clientY - rect.top) / renderer.charHeight);
+  const scrollback = wasmTerm.getScrollbackLength();
+  const up = Math.max(0, Math.floor(term.getViewportY()));
+  const line = up > 0 && row < up ? scrollback - up + row : scrollback + row - up;
+  // A scan the pointer's move started marks the row before its links come, which waits on the
+  // app: this lookup scans the row again and waits for them.
+  linkDetector.scannedRows?.delete(line);
+  const link = await linkDetector.getLinkAt(col, line);
+  return link?.target ?? null;
+}
+
+// Runs a row of the right-click menu that only the page can run, then gives the terminal the
+// focus back.
+function act(term, action) {
+  if (action === "copy" && term.hasSelection()) {
+    send({ type: "copy", text: term.getSelection() });
+  } else if (action === "select_all") {
+    term.selectAll();
+  } else if (action === "paste") {
+    navigator.clipboard.readText().then(
+      (text) => pasteInto(term, text),
+      (error) => send({ type: "paste_refused", text: String(error) }),
+    );
+  }
+  term.focus();
+}
 
 // A row's text, one code point per cell, so that a character's place is its column. A wide
 // character fills its second cell too, so that the path after it still starts after a letter.
@@ -164,18 +210,27 @@ function terminalFor(agent, terminal) {
   const fit = new ghostty.FitAddon();
   term.loadAddon(fit);
   term.open(box);
-  // Every paste goes through `term.paste`, which brackets the text for a shell that asks.
+  // Every paste goes through `pasteInto`.
   // ghostty-web's other paste path, on the box itself, sends it as typed keys: the shell would run
   // each line of a pasted text as it comes.
   box.addEventListener("paste", (event) => {
     event.preventDefault();
     event.stopImmediatePropagation();
-    const text = event.clipboardData?.getData("text/plain");
-    if (text) {
-      // Without its escapes, the text cannot end the paste early with a bracket's end, after
-      // which the shell would run the rest as typed.
-      term.paste(text.replaceAll("\x1b", ""));
-    }
+    pasteInto(term, event.clipboardData?.getData("text/plain"));
+  }, { capture: true });
+  // A right-click opens the app's menu, with the link under the pointer, rather than
+  // ghostty-web's empty one.
+  box.addEventListener("contextmenu", (event) => {
+    event.preventDefault();
+    event.stopImmediatePropagation();
+    const spot = {
+      x: Math.round(event.clientX),
+      y: Math.round(event.clientY),
+      selection: term.hasSelection(),
+    };
+    linkUnder(term, event)
+      .catch(() => null)
+      .then((link) => send({ type: "menu", agent, terminal, ...spot, link }));
   }, { capture: true });
   // ghostty-web selects the cell under a click and copies it as the button comes up. A click that
   // gives the terminal the focus would then replace what the user copied with one character. Only
@@ -232,6 +287,7 @@ function terminalFor(agent, terminal) {
     provider.provideLinks = (y, callback) => provide(y, (links) => {
       const web = (links ?? []).filter((link) => /^https?:\/\//i.test(link.text)).map((link) => ({
         ...link,
+        target: { web: link.text },
         activate: (event) => {
           if (event.ctrlKey || event.metaKey) {
             send({ type: "open_url", url: link.text });
@@ -269,6 +325,7 @@ function terminalFor(agent, terminal) {
           .map((link) => ({
             text: cells.slice(link.start, link.end).join(""),
             range: { start: { x: link.start, y }, end: { x: link.end - 1, y } },
+            target: { file: { path: link.path, line: link.line } },
             activate: (event) => {
               if (event.ctrlKey || event.metaKey) {
                 send({ type: "open_file", agent, path: link.path, line: link.line });
@@ -422,6 +479,11 @@ function receive(message) {
     const answer = linkAnswers.get(message.id);
     linkAnswers.delete(message.id);
     answer?.(message.links);
+  } else if (message.type === "act" && entry !== undefined) {
+    act(entry.term, message.action);
+  } else if (message.type === "paste" && entry !== undefined) {
+    pasteInto(entry.term, message.text);
+    entry.term.focus();
   } else if (message.type === "shortcut") {
     shortcut = message;
   } else if (message.type === "focus" && entry !== undefined) {
@@ -523,6 +585,19 @@ enum FromPage {
     Copy {
         text: String,
     },
+    /// A right-click, at `x`, `y` in the window's pixels.
+    Menu {
+        agent: AgentId,
+        terminal: TerminalId,
+        x: i32,
+        y: i32,
+        selection: bool,
+        link: Option<TerminalLink>,
+    },
+    /// The menu's Paste could not read the clipboard.
+    PasteRefused {
+        text: String,
+    },
 }
 
 /// What the page's script receives.
@@ -552,6 +627,80 @@ enum ToPage {
     Live { terminals: Vec<TerminalParams> },
     /// The answer to [`FromPage::Links`].
     Links { id: u64, links: Vec<PageLink> },
+    /// A row of the right-click menu that only the page can run.
+    Act {
+        agent: AgentId,
+        terminal: TerminalId,
+        action: PageAction,
+    },
+    /// The text the right-click menu's Paste read from the clipboard.
+    #[cfg(target_os = "linux")]
+    Paste {
+        agent: AgentId,
+        terminal: TerminalId,
+        text: String,
+    },
+}
+
+/// What the right-click menu asks the page to do in a terminal.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PageAction {
+    Copy,
+    /// The page reads the clipboard itself, where its web view lets it.
+    #[cfg_attr(
+        target_os = "linux",
+        expect(
+            dead_code,
+            reason = "on Linux, the app reads the clipboard for the page"
+        )
+    )]
+    Paste,
+    SelectAll,
+}
+
+/// The page's terminal script, for the right-click menu.
+#[derive(Clone, Copy)]
+pub struct TerminalScript(document::Eval);
+
+impl TerminalScript {
+    pub fn act(self, agent: AgentId, terminal: TerminalId, action: PageAction) {
+        let message = ToPage::Act {
+            agent,
+            terminal,
+            action,
+        };
+        if let Err(error) = self.0.send(message) {
+            tracing::warn!("cannot ask the terminal to {action:?}: {error}");
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    pub fn paste(self, agent: AgentId, terminal: TerminalId, text: String) {
+        let message = ToPage::Paste {
+            agent,
+            terminal,
+            text,
+        };
+        if let Err(error) = self.0.send(message) {
+            tracing::warn!("cannot paste in the terminal: {error}");
+        }
+    }
+}
+
+/// Opens a terminal's web link. Only a web address opens: the opener would run any other, such
+/// as a `file:` one, which a program's output may hold.
+pub fn open_web_link(cockpit: Cockpit, url: String) {
+    if render::is_web_url(&url) {
+        cockpit.open_in_browser(url);
+    } else {
+        tracing::warn!("a terminal link is no web address: {url}");
+        cockpit.update(|state| {
+            state
+                .ui
+                .report(format!("Cannot open {url}: only web addresses open"));
+        });
+    }
 }
 
 /// A `path:line` reference in a terminal's row, from column `start` to `end`, excluded.
@@ -624,6 +773,7 @@ pub fn use_terminal_script(cockpit: Cockpit) {
         }
         script
     });
+    use_context_provider(|| TerminalScript(script));
     // A closed terminal's screen goes, and so do those of a daemon that restarted, whose new
     // terminals take the same ids.
     let live = use_memo(move || terminals::live(&cockpit.state.read()));
@@ -694,17 +844,41 @@ fn receive(cockpit: Cockpit, script: document::Eval, message: FromPage) {
         FromPage::OpenFile { agent, path, line } => cockpit.update(|state| {
             actions::open_file(state, agent, PathBuf::from(path), Some(line));
         }),
-        // Only a web address opens: the opener would run any other, such as a `file:` one.
-        FromPage::OpenUrl { url } if !render::is_web_url(&url) => {
-            tracing::warn!("a terminal link is no web address: {url}");
+        FromPage::OpenUrl { url } => open_web_link(cockpit, url),
+        FromPage::Copy { text } => bridge::copy_to_clipboard(text),
+        FromPage::Menu {
+            agent,
+            terminal,
+            x,
+            y,
+            selection,
+            link,
+        } => cockpit.update(|state| {
+            terminal_menu::open(
+                state,
+                MenuSpot {
+                    agent,
+                    terminal,
+                    x,
+                    y,
+                    selection,
+                    link,
+                },
+            );
+        }),
+        FromPage::PasteRefused { text } => {
+            tracing::warn!("the terminal cannot read the clipboard: {text}");
+            let keys = if cfg!(target_os = "macos") {
+                "Cmd+V"
+            } else {
+                "Ctrl+V or Ctrl+Shift+V"
+            };
             cockpit.update(|state| {
-                state
-                    .ui
-                    .report(format!("Cannot open {url}: only web addresses open"))
+                state.ui.report(format!(
+                    "The menu cannot read the clipboard here: paste with {keys}."
+                ));
             });
         }
-        FromPage::OpenUrl { url } => cockpit.open_in_browser(url),
-        FromPage::Copy { text } => bridge::copy_to_clipboard(text),
         FromPage::Input {
             agent,
             terminal,
@@ -970,6 +1144,11 @@ mod tests {
                     line: 2,
                 }],
             },
+            ToPage::Act {
+                agent,
+                terminal,
+                action: PageAction::SelectAll,
+            },
         ];
         let from_page = [
             r#"{"type":"input","agent":3,"terminal":2,"data":"ls\r"}"#,
@@ -982,6 +1161,10 @@ mod tests {
             r#"{"type":"open_file","agent":3,"path":"a.rs","line":2}"#,
             r#"{"type":"open_url","url":"https://example.org/login"}"#,
             r#"{"type":"copy","text":"ls"}"#,
+            r#"{"type":"menu","agent":3,"terminal":2,"x":40,"y":60,"selection":false,"link":{"file":{"path":"a.rs","line":2}}}"#,
+            r#"{"type":"menu","agent":3,"terminal":2,"x":40,"y":60,"selection":true,"link":{"web":"https://example.org"}}"#,
+            r#"{"type":"menu","agent":3,"terminal":2,"x":40,"y":60,"selection":true,"link":null}"#,
+            r#"{"type":"paste_refused","text":"NotAllowedError"}"#,
         ];
 
         let parsed: Vec<FromPage> = from_page
@@ -1000,6 +1183,7 @@ mod tests {
                 { "type": "screen", "agent": 3, "terminal": 2, "offset": 0, "data": "bHMK" },
                 { "type": "live", "terminals": [{ "agent": 3, "terminal": 2 }] },
                 { "type": "links", "id": 5, "links": [{ "start": 0, "end": 6, "path": "a.rs", "line": 2 }] },
+                { "type": "act", "agent": 3, "terminal": 2, "action": "select_all" },
             ])
         );
         assert!(
@@ -1020,6 +1204,17 @@ mod tests {
                     FromPage::OpenFile { line: 2, .. },
                     FromPage::OpenUrl { .. },
                     FromPage::Copy { .. },
+                    FromPage::Menu {
+                        link: Some(TerminalLink::File { line: 2, .. }),
+                        ..
+                    },
+                    FromPage::Menu {
+                        link: Some(TerminalLink::Web(_)),
+                        selection: true,
+                        ..
+                    },
+                    FromPage::Menu { link: None, .. },
+                    FromPage::PasteRefused { .. },
                 ]
             ),
             "{parsed:?}"

@@ -56,8 +56,10 @@ url = "2.5.8"
 # The browser opener Dioxus uses, where the app does not run `xdg-open` itself.
 webbrowser = "1.2.6"
 
-# The web view's settings, from the binding and the version wry brings.
+# The web view's settings, from the binding and the version wry brings. The terminal menu's Paste
+# reads the clipboard through GTK: WebKitGTK does not let the page read it.
 [target.'cfg(target_os = "linux")'.dependencies]
+gtk = "0.18.2"
 webkit2gtk = "2.0.1"
 
 # Waits for the app that started an updated one to end.

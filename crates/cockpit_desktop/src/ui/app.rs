@@ -35,6 +35,7 @@ use crate::ui::splitter::{
     SidebarSplitter, Splitter, use_splitter,
 };
 use crate::ui::tab_menu::TabMenu;
+use crate::ui::terminal_menu::TerminalMenu;
 use crate::ui::terminal_pane::{TerminalPane, use_terminal_script};
 use crate::ui::transcript::{TranscriptView, use_call_detail, use_undrawn_rows};
 
@@ -205,6 +206,7 @@ pub fn App() -> Element {
             ProjectMenu {}
             TreeMenu {}
             TabMenu {}
+            TerminalMenu {}
             Dialogs {}
         }
     }

@@ -561,6 +561,7 @@ dependencies = [
  "cockpit_protocol",
  "dioxus",
  "futures-util",
+ "gtk",
  "image",
  "notify-rust",
  "pulldown-cmark",

@@ -44,6 +44,7 @@ pub mod settings;
 mod shortcuts;
 pub mod sidebar_keys;
 pub mod tab_menu;
+pub mod terminal_menu;
 pub mod terminals;
 pub mod title_emoji;
 pub mod to_handle;

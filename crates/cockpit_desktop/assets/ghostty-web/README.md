@@ -9,5 +9,6 @@ The pane's script uses these private members:
 - `Terminal.startRenderLoop()` and `Terminal.animationFrameId`, to stop drawing the terminals not on screen.
 - `Terminal.linkDetector.providers`, to open the library's own web links in the browser: their `activate` calls `window.open`, which the window ignores.
 - `Terminal.selectionManager`: its `copyToClipboard`, `selectionStart` and `selectionEnd`, so that a click, which selects the cell under it, copies nothing.
+- `Terminal.canvas`, `renderer.charWidth`, `renderer.charHeight`, `wasmTerm.getScrollbackLength()`, `getViewportY()`, `linkDetector.getLinkAt()` and `linkDetector.scannedRows`, to find the link under a right-click as ghostty-web finds the one a click opens.
 
 Check them when updating the library.

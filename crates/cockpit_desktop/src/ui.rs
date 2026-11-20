@@ -47,6 +47,7 @@ mod settings;
 mod sidebar;
 mod splitter;
 mod tab_menu;
+mod terminal_menu;
 mod terminal_pane;
 mod tool_rows;
 mod transcript;

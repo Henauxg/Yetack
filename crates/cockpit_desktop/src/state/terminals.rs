@@ -12,6 +12,7 @@ use cockpit_protocol::{
 
 use super::app_state::AppState;
 use super::requests::{Outgoing, Purpose};
+use super::terminal_menu;
 use crate::machine::MachineId;
 use crate::prefs::TerminalPlace;
 
@@ -123,6 +124,12 @@ fn outgoing(request: Request, purpose: Purpose) -> Outgoing {
         purpose,
         to: MachineId::THIS,
     }
+}
+
+/// Whether `terminal` is the one the selected agent `agent` shows.
+pub fn shows(state: &AppState, agent: AgentId, terminal: TerminalId) -> bool {
+    selected(state)
+        .is_some_and(|(selected, terminals)| selected == agent && terminals.shown == Some(terminal))
 }
 
 /// Whether the selected agent's pane shows.
@@ -282,6 +289,8 @@ pub fn opened(state: &mut AppState, agent: AgentId, opened: Option<TerminalId>) 
     if let Some(terminal) = opened {
         terminals.add(terminal, String::new());
         terminals.shown = Some(terminal);
+        // The new terminal takes the screen from the one a menu may be open on.
+        terminal_menu::close_if(state, |spot| spot.agent == agent);
     }
 }
 
@@ -304,7 +313,12 @@ pub fn apply_update(state: &mut AppState, update: TerminalUpdate) {
                 tab.exited = Some(TerminalExit { code });
             }
         }
-        TerminalChange::Closed => terminals.remove(update.terminal),
+        TerminalChange::Closed => {
+            terminals.remove(update.terminal);
+            terminal_menu::close_if(state, |spot| {
+                spot.agent == update.agent && spot.terminal == update.terminal
+            });
+        }
         // Output goes to the page, not to the state.
         TerminalChange::Output { .. } => {}
     }
@@ -319,6 +333,7 @@ pub fn connected(state: &mut AppState, machine: MachineId) {
             entry.terminals = AgentTerminals::default();
         }
     }
+    terminal_menu::close_if(state, |spot| MachineId::of(spot.agent) == machine);
 }
 
 pub fn show(state: &mut AppState, agent: AgentId, terminal: TerminalId) {

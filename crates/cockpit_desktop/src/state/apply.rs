@@ -18,7 +18,7 @@ use super::sending::Sending;
 use super::transcript::Transcript;
 use super::{
     actions, daemon_start, daemon_update, details_updates, file_reread, file_tree, grouping,
-    notification_levels, project_menu, projects, resume, sending, terminals,
+    notification_levels, project_menu, projects, resume, sending, terminal_menu, terminals,
 };
 use crate::machine::MachineId;
 
@@ -317,6 +317,8 @@ pub fn apply(
         Event::AgentAdded(summary) => {
             let agent = summary.id;
             state.agents.insert(agent, AgentEntry::new(summary));
+            // A new entry has no terminals: a menu open on the old one's goes.
+            terminal_menu::close_if(state, |spot| spot.agent == agent);
             projects::apply_pick(state, agent);
             if state.ui.selected.is_none() {
                 state.fix_selection();

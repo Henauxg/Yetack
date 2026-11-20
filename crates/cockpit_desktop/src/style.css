@@ -1397,6 +1397,11 @@ button:disabled {
   transform-origin: top left;
 }
 
+/* A terminal's menu holds up to 10 rows and 4 lines, about 330 px. */
+.popover.row-menu.terminal-menu {
+  top: max(8px, min(var(--menu-y), calc(100vh - 370px)));
+}
+
 /* A compact menu: the row menu's spacing, which the composer's model and mode menus share. */
 .popover.compact-menu {
   gap: 0;
