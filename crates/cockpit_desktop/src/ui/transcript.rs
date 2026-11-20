@@ -636,7 +636,7 @@ impl ChatView {
                 older_step: notes.get(index).copied().unwrap_or(false),
             })
         };
-        let last_unit = units.len().saturating_sub(1);
+        let last_unit = work_runs::last_work_unit(&top_rows, &units);
         let mut top: Vec<TopUnit> = Vec::new();
         for (at, unit) in units.iter().enumerate().skip(first) {
             let range = match unit {

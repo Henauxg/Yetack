@@ -1,14 +1,15 @@
 //! Runs of the agent's work between its messages: thinking and tool calls in a row fold into one
 //! line that says what they did, such as "Ran 4 commands, read 1 file, thought 2 times". The
-//! agent's text, a card, a subagent, a notice and a call that waits for approval end a run, and so
-//! does the "New" divider. A run holds the work of one agent: the items of a subagent whose call
-//! sits in older messages start a run of their own.
+//! notice of a background task that finished folds in too, between two pieces of work: a run
+//! starts and ends on work. The agent's text, a card, a subagent, any other notice and a call that
+//! waits for approval end a run, and so does the "New" divider. A run holds the work of one
+//! agent: the items of a subagent whose call sits in older messages start a run of their own.
 
 use std::collections::BTreeSet;
 use std::ops::Range;
 use std::path::PathBuf;
 
-use cockpit_protocol::{ItemBody, ItemId, ToolCall, TranscriptItem};
+use cockpit_protocol::{ItemBody, ItemId, NoticeKind, ToolCall, TranscriptItem};
 
 use crate::format;
 use crate::render::SearchTool;
@@ -48,10 +49,14 @@ pub fn units(rows: &[Row<'_>], awaiting: &BTreeSet<ItemId>, divider: Option<Item
         while let Some(row) = rows.get(end) {
             let starts_new = end > start
                 && (row.first().parent != parent || divider.is_some_and(|id| holds(row, id)));
-            if !folds(row, awaiting) || starts_new {
+            if !folds(row, awaiting) || starts_new || (end == start && is_task_notice(row)) {
                 break;
             }
             end += 1;
+        }
+        // The step line runs along work only: a notice at the run's end stays a row of its own.
+        while end > start && rows.get(end - 1).is_some_and(is_task_notice) {
+            end -= 1;
         }
         if end - start >= MIN_RUN {
             units.push(Unit::Run(start..end));
@@ -64,7 +69,8 @@ pub fn units(rows: &[Row<'_>], awaiting: &BTreeSet<ItemId>, divider: Option<Item
     units
 }
 
-/// Whether a row is work that folds: thinking, a call, a run of reads, a skill.
+/// Whether a row is work that folds: thinking, a call, a run of reads, a skill, or the notice of
+/// a background task that finished.
 fn folds(row: &Row<'_>, awaiting: &BTreeSet<ItemId>) -> bool {
     let first = row.first();
     if awaiting.contains(&first.id) {
@@ -72,12 +78,43 @@ fn folds(row: &Row<'_>, awaiting: &BTreeSet<ItemId>) -> bool {
     }
     match row {
         Row::Explored { .. } | Row::Skill { .. } => true,
-        Row::Item(item) => matches!(item.body, ItemBody::Thinking { .. } | ItemBody::ToolCall(_)),
+        Row::Item(item) => {
+            matches!(item.body, ItemBody::Thinking { .. } | ItemBody::ToolCall(_))
+                || is_task_notice(row)
+        }
     }
+}
+
+/// Whether a row is the notice of a background task that finished. A stop or a failure is not:
+/// it stays on its own line.
+fn is_task_notice(row: &Row<'_>) -> bool {
+    matches!(
+        row,
+        Row::Item(TranscriptItem {
+            body: ItemBody::Notice {
+                kind: NoticeKind::TaskDone,
+                ..
+            },
+            ..
+        })
+    )
 }
 
 fn holds(row: &Row<'_>, item: ItemId) -> bool {
     row.items().iter().any(|held| held.id == item)
+}
+
+/// The index of the unit that ends the conversation's work: the last one, past the notices of
+/// finished tasks after it. A run open while its turn works stays open when such a notice comes:
+/// the next work joins the run again.
+pub fn last_work_unit(rows: &[Row<'_>], units: &[Unit]) -> usize {
+    units
+        .iter()
+        .rposition(|unit| match unit {
+            Unit::Row(index) => !rows.get(*index).is_some_and(is_task_notice),
+            Unit::Run(_) => true,
+        })
+        .unwrap_or_else(|| units.len().saturating_sub(1))
 }
 
 /// How many units hold new items, from `first_new` on: the count the chat's jump button shows. A
@@ -113,6 +150,8 @@ pub struct WorkSummary {
     /// Calls of any other tool: a skill, a web fetch, an MCP tool.
     other_calls: usize,
     thoughts: usize,
+    /// Background tasks that finished, whose notices the run holds.
+    tasks_finished: usize,
     pub failed: usize,
     /// A call of the run still runs, or waits for approval.
     pub running: bool,
@@ -193,6 +232,12 @@ impl WorkSummary {
                 return;
             }
             ItemBody::ToolCall(call) => call,
+            ItemBody::Notice { kind, .. } => {
+                if *kind == NoticeKind::TaskDone {
+                    self.tasks_finished += 1;
+                }
+                return;
+            }
             _ => return,
         };
         let kind = CallKind::of(call);
@@ -254,6 +299,10 @@ impl WorkSummary {
         }
         if self.thoughts > 0 {
             parts.push(times("thought", self.thoughts));
+        }
+        if self.tasks_finished > 0 {
+            let tasks = format::count(self.tasks_finished, "background task", "background tasks");
+            parts.push(format!("{tasks} finished"));
         }
         capitalized(&parts.join(", "))
     }
@@ -358,6 +407,145 @@ mod tests {
                 Unit::Row(5),
                 Unit::Run(6..8),
             ]
+        );
+    }
+
+    fn task(id: u32, kind: NoticeKind, text: &str) -> TranscriptItem {
+        item(
+            id,
+            ItemBody::Notice {
+                text: text.to_owned(),
+                detail: None,
+                kind,
+            },
+        )
+    }
+
+    /// While the turn works, the run before a finished task's notice still ends its work: it stays
+    /// open, and the work after the notice joins it.
+    #[test]
+    fn a_finished_tasks_notice_after_the_last_run_leaves_it_last() {
+        let done = |id| task(id, NoticeKind::TaskDone, "Agent \"Bench\" finished");
+        let ending = [bash(1), bash(2), done(3), done(4)];
+        let replied = [bash(1), bash(2), done(3), text(4)];
+        let last = |items: &[TranscriptItem]| {
+            let rows: Vec<Row<'_>> = items.iter().map(Row::Item).collect();
+            let units = units(&rows, &BTreeSet::new(), None);
+            last_work_unit(&rows, &units)
+        };
+
+        assert_eq!((last(&ending), last(&replied)), (0, 2));
+    }
+
+    /// A skill's instructions come as a notice too, which is no background task.
+    #[test]
+    fn a_skills_instructions_count_as_no_background_task() {
+        let mut skill = call(2, "Skill", "review", ToolCallStatus::Done);
+        if let ItemBody::ToolCall(call) = &mut skill.body {
+            call.input = json!({"skill": "review"});
+        }
+        let instructions = item(
+            3,
+            ItemBody::Notice {
+                text: cockpit_protocol::skill_instructions_title("review"),
+                detail: Some("Check each column.".to_owned()),
+                kind: NoticeKind::Plain,
+            },
+        );
+        let items = [bash(1), skill, instructions];
+        let refs: Vec<&TranscriptItem> = items.iter().collect();
+        let rows = tool_rows::rows(&refs, &BTreeSet::new(), None);
+
+        assert_eq!(WorkSummary::of(&rows).words(), "Ran 1 command, used 1 tool");
+    }
+
+    #[test]
+    fn a_run_starts_and_ends_on_work_so_a_notice_at_its_edge_stays_a_row() {
+        let done = |id| task(id, NoticeKind::TaskDone, "Agent \"Bench\" finished");
+        let items = [
+            text(1),
+            done(2),
+            bash(3),
+            done(4),
+            bash(5),
+            done(6),
+            done(7),
+            text(8),
+            bash(9),
+            done(10),
+        ];
+        let rows: Vec<Row<'_>> = items.iter().map(Row::Item).collect();
+
+        assert_eq!(
+            units(&rows, &BTreeSet::new(), None),
+            [
+                Unit::Row(0),
+                Unit::Row(1),
+                Unit::Run(2..5),
+                Unit::Row(5),
+                Unit::Row(6),
+                Unit::Row(7),
+                Unit::Row(8),
+                Unit::Row(9),
+            ]
+        );
+    }
+
+    /// The texts are Claude Code's own. A command that ended as it should "completed", whatever
+    /// its exit code: a real failure has the status "failed".
+    #[test]
+    fn a_finished_background_task_folds_into_the_run_and_a_stop_or_a_failure_ends_it() {
+        let items = [
+            bash(1),
+            task(
+                2,
+                NoticeKind::TaskDone,
+                "Background command \"make\" completed (exit code 0)",
+            ),
+            bash(3),
+            task(4, NoticeKind::TaskDone, "Monitor \"tail\" stream ended"),
+            bash(5),
+            task(
+                6,
+                NoticeKind::TaskDone,
+                "Background command \"rg TODO\" completed (exit code 1: No matches found)",
+            ),
+            bash(7),
+            task(
+                8,
+                NoticeKind::TaskStopped,
+                "Background command \"make\" was stopped after reaching its background time limit",
+            ),
+            bash(9),
+            task(
+                10,
+                NoticeKind::TaskFailed,
+                "Background command \"make\" failed with exit code 2",
+            ),
+            bash(11),
+            task(12, NoticeKind::Message, "The subagent's report"),
+            bash(13),
+        ];
+        let rows: Vec<Row<'_>> = items.iter().map(Row::Item).collect();
+
+        let units = units(&rows, &BTreeSet::new(), None);
+        let first_run = rows.get(0..7).map(WorkSummary::of).map(|run| run.words());
+
+        assert_eq!(
+            units,
+            [
+                Unit::Run(0..7),
+                Unit::Row(7),
+                Unit::Row(8),
+                Unit::Row(9),
+                Unit::Row(10),
+                Unit::Row(11),
+                Unit::Row(12),
+            ]
+        );
+        assert_eq!(
+            first_run.as_deref(),
+            Some("Ran 4 commands, 3 background tasks finished")
         );
     }
 

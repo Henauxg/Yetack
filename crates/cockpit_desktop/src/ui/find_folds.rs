@@ -453,7 +453,7 @@ impl Gatherer<'_, '_> {
             },
             Row::Item(item) => match &item.body {
                 ItemBody::Thinking { .. } => vec![THINKING_LABEL.to_owned()],
-                ItemBody::ToolCall(_) => {
+                ItemBody::ToolCall(_) | ItemBody::Notice { .. } => {
                     self.shown(item);
                     Vec::new()
                 }
@@ -817,6 +817,36 @@ mod tests {
                 (FoldKey::Item(ItemId::new(3)), 1),
                 (FoldKey::Run(ItemId::new(1)), 1),
             ])
+        );
+    }
+
+    #[test]
+    fn a_closed_run_counts_the_finished_task_it_holds() {
+        let bash = |id| {
+            item(
+                id,
+                None,
+                ItemBody::ToolCall(call("Bash", "cargo test", json!({}), "ok")),
+            )
+        };
+        let items = [
+            bash(1),
+            item(
+                2,
+                None,
+                ItemBody::Notice {
+                    text: "Background command \"Build the zebra\" completed (exit code 0)"
+                        .to_owned(),
+                    detail: None,
+                    kind: NoticeKind::TaskDone,
+                },
+            ),
+            bash(3),
+        ];
+
+        assert_eq!(
+            matches(&items, "zebra"),
+            FoldMatches::from([(FoldKey::Run(ItemId::new(1)), 1)])
         );
     }
 
