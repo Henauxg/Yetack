@@ -18,6 +18,8 @@ pub enum Tone {
     Fine,
     /// Nothing answers yet, and nothing went wrong: grey.
     Quiet,
+    /// Under way, such as an update: teal, with a spinner.
+    Busy,
     /// Worth a look: amber.
     Notice,
     /// It answers no request: red, and its panel's edge turns red.
@@ -30,6 +32,7 @@ impl Tone {
         match self {
             Self::Fine => "tone-fine",
             Self::Quiet => "tone-quiet",
+            Self::Busy => "tone-busy",
             Self::Notice => "tone-notice",
             Self::Down => "tone-down",
         }
@@ -103,6 +106,8 @@ pub fn status(known: &MachineState) -> MachineStatus {
     MachineStatus {
         tone: if update.down {
             Tone::Down
+        } else if update.progress.is_some() {
+            Tone::Busy
         } else {
             Tone::Notice
         },
@@ -403,7 +408,7 @@ mod tests {
         daemon_update::start(&mut state, lab);
         let running = status(&state.machines.others[&lab]);
 
-        assert_eq!((running.tone, running.chip), (Tone::Notice, "Updating"));
+        assert_eq!((running.tone, running.chip), (Tone::Busy, "Updating"));
         assert_eq!(
             running.line.map(|line| line.actions),
             Some(vec![StatusAction::Update(UpdateLink::Show)])

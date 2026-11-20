@@ -862,12 +862,19 @@ button:disabled {
   color: var(--dim);
 }
 
+/* The dot and the spinner that takes its place during an update take the same width, so the
+   text after them stays put. */
 .trouble-mark {
   flex: none;
   width: 7px;
   height: 7px;
+  margin: 0 1px;
   border-radius: 50%;
   background: var(--dim);
+}
+
+.machine-trouble .spinner {
+  font-size: 9px;
 }
 
 .machine-trouble.tone-notice .trouble-mark {
@@ -876,6 +883,10 @@ button:disabled {
 
 .machine-trouble.tone-down .trouble-mark {
   background: var(--red);
+}
+
+.machine-trouble.tone-busy .update-bar > span {
+  background: var(--teal);
 }
 
 /* An update under way, under its step's name: the line wraps to give it a row of its own. The
@@ -1052,6 +1063,15 @@ button:disabled {
 
 .machine-chip.tone-notice .chip-dot {
   background: var(--amber);
+}
+
+.machine-chip.tone-busy {
+  background: rgba(45, 212, 191, 0.12);
+  color: var(--teal);
+}
+
+.machine-chip.tone-busy .chip-dot {
+  background: var(--teal);
 }
 
 .machine-chip.tone-down {
