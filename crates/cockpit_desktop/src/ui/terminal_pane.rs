@@ -164,6 +164,37 @@ function terminalFor(agent, terminal) {
   const fit = new ghostty.FitAddon();
   term.loadAddon(fit);
   term.open(box);
+  // Every paste goes through `term.paste`, which brackets the text for a shell that asks.
+  // ghostty-web's other paste path, on the box itself, sends it as typed keys: the shell would run
+  // each line of a pasted text as it comes.
+  box.addEventListener("paste", (event) => {
+    event.preventDefault();
+    event.stopImmediatePropagation();
+    const text = event.clipboardData?.getData("text/plain");
+    if (text) {
+      // Without its escapes, the text cannot end the paste early with a bracket's end, after
+      // which the shell would run the rest as typed.
+      term.paste(text.replaceAll("\x1b", ""));
+    }
+  }, { capture: true });
+  // ghostty-web selects the cell under a click and copies it as the button comes up. A click that
+  // gives the terminal the focus would then replace what the user copied with one character. Only
+  // a double-click copies one cell: its word, which may hold one character.
+  const selection = term.selectionManager;
+  if (typeof selection?.copyToClipboard === "function") {
+    let clicks = 0;
+    box.addEventListener("mousedown", (event) => {
+      clicks = event.detail;
+    }, { capture: true });
+    const copy = selection.copyToClipboard.bind(selection);
+    selection.copyToClipboard = (text) => {
+      const { selectionStart: start, selectionEnd: end } = selection;
+      const oneCell = start && end && start.col === end.col && start.absoluteRow === end.absoluteRow;
+      return oneCell && clicks !== 2 ? Promise.resolve() : copy(text);
+    };
+  } else {
+    send({ type: "problem", text: "ghostty-web has no selection copy to keep a click from copying" });
+  }
   term.onData((data) => send({ type: "input", agent, terminal, data }));
   term.onResize(({ cols, rows }) => send({ type: "resize", agent, terminal, cols, rows }));
   term.onTitleChange((title) => send({ type: "title", agent, terminal, title }));
