@@ -947,6 +947,8 @@ pub struct UpdateLine {
     pub link: UpdateLink,
     /// The daemon answers no request: the panel's edge turns red.
     pub down: bool,
+    /// Work under way, such as the update itself: a spinner, not a warning.
+    pub under_way: bool,
     /// The line offers "Retry now" too. A daemon the app can update needs the update, not
     /// another try.
     pub retry: bool,
@@ -960,6 +962,7 @@ pub fn update_line(known: &MachineState) -> Option<UpdateLine> {
         progress: None,
         link,
         down,
+        under_way: false,
         retry: down,
     };
     let connected = known.is_connected();
@@ -970,12 +973,16 @@ pub fn update_line(known: &MachineState) -> Option<UpdateLine> {
         UpdateLink::Update
     };
     if known.checking_jobs {
-        return Some(line("Checking scheduled jobs…", UpdateLink::Show, false));
+        return Some(UpdateLine {
+            under_way: true,
+            ..line("Checking scheduled jobs…", UpdateLink::Show, false)
+        });
     }
     match (&known.update, &known.version_gap) {
         (Some(DaemonUpdate::Running(progress) | DaemonUpdate::Reconnecting(progress)), _) => {
             Some(UpdateLine {
                 progress: Some(LineProgress::from(progress)),
+                under_way: true,
                 ..line("Updating…", UpdateLink::Show, false)
             })
         }

@@ -106,7 +106,7 @@ pub fn status(known: &MachineState) -> MachineStatus {
     MachineStatus {
         tone: if update.down {
             Tone::Down
-        } else if update.progress.is_some() {
+        } else if update.under_way {
             Tone::Busy
         } else {
             Tone::Notice
@@ -413,6 +413,30 @@ mod tests {
             running.line.map(|line| line.actions),
             Some(vec![StatusAction::Update(UpdateLink::Show)])
         );
+    }
+
+    #[test]
+    fn checking_jobs_and_reconnecting_are_work_under_way_on_a_refused_server() {
+        let mut state = four_machines();
+        let lab = MachineId::new(3);
+        let tone = |state: &AppState| status(&state.machines.others[&lab]).tone;
+        if let Some(known) = state.machines.others.get_mut(&lab) {
+            known.checking_jobs = true;
+        }
+        let checking = tone(&state);
+        if let Some(known) = state.machines.others.get_mut(&lab) {
+            known.checking_jobs = false;
+        }
+
+        daemon_update::start(&mut state, lab);
+        if let Some(known) = state.machines.others.get_mut(&lab)
+            && let Some(DaemonUpdate::Running(progress)) = known.update.take()
+        {
+            known.update = Some(DaemonUpdate::Reconnecting(progress));
+        }
+        let reconnecting = tone(&state);
+
+        assert_eq!((checking, reconnecting), (Tone::Busy, Tone::Busy));
     }
 
     #[test]
