@@ -538,7 +538,11 @@ fn MachineLineView(machine: MachineId, line: Option<ShownLine>) -> Element {
                 p {
                     class: "machine-trouble {tone.class()}",
                     title: line.error.unwrap_or_default(),
-                    span { class: "trouble-mark", aria_hidden: true }
+                    if tone == Tone::Busy {
+                        span { class: "spinner", aria_hidden: true }
+                    } else {
+                        span { class: "trouble-mark", aria_hidden: true }
+                    }
                     if let Some(name) = name {
                         span { class: "trouble-machine", "{name}" }
                     }

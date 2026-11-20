@@ -870,6 +870,12 @@ button:disabled {
   background: var(--dim);
 }
 
+/* In place of the dot during work under way, at the dot's 7 px of width, so the text stays put. */
+.machine-trouble .spinner {
+  font-size: 9px;
+  margin: 0 -1px;
+}
+
 .machine-trouble.tone-notice .trouble-mark {
   background: var(--amber);
 }
@@ -915,7 +921,7 @@ button:disabled {
   display: block;
   height: 100%;
   border-radius: 2px;
-  background: var(--amber);
+  background: var(--teal);
   transform-origin: left;
   transition: transform var(--motion-in) var(--ease-out);
 }
@@ -1052,6 +1058,15 @@ button:disabled {
 
 .machine-chip.tone-notice .chip-dot {
   background: var(--amber);
+}
+
+.machine-chip.tone-busy {
+  background: rgba(45, 212, 191, 0.12);
+  color: var(--teal);
+}
+
+.machine-chip.tone-busy .chip-dot {
+  background: var(--teal);
 }
 
 .machine-chip.tone-down {
@@ -12180,10 +12195,6 @@ html.splitting .sidebar {
 .release-note .update-bar {
   flex-basis: calc(100% - 6px);
   margin-bottom: 2px;
-}
-
-.release-note .update-bar > span {
-  background: var(--teal);
 }
 
 /* A newer release in Settings' About. It folds open and shut, and the dialog's gap above it

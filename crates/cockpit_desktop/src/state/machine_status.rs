@@ -18,6 +18,8 @@ pub enum Tone {
     Fine,
     /// Nothing answers yet, and nothing went wrong: grey.
     Quiet,
+    /// Under way, such as an update: teal, with a spinner.
+    Busy,
     /// Worth a look: amber.
     Notice,
     /// It answers no request: red, and its panel's edge turns red.
@@ -30,6 +32,7 @@ impl Tone {
         match self {
             Self::Fine => "tone-fine",
             Self::Quiet => "tone-quiet",
+            Self::Busy => "tone-busy",
             Self::Notice => "tone-notice",
             Self::Down => "tone-down",
         }
@@ -103,6 +106,8 @@ pub fn status(known: &MachineState) -> MachineStatus {
     MachineStatus {
         tone: if update.down {
             Tone::Down
+        } else if update.under_way {
+            Tone::Busy
         } else {
             Tone::Notice
         },
@@ -403,11 +408,35 @@ mod tests {
         daemon_update::start(&mut state, lab);
         let running = status(&state.machines.others[&lab]);
 
-        assert_eq!((running.tone, running.chip), (Tone::Notice, "Updating"));
+        assert_eq!((running.tone, running.chip), (Tone::Busy, "Updating"));
         assert_eq!(
             running.line.map(|line| line.actions),
             Some(vec![StatusAction::Update(UpdateLink::Show)])
         );
+    }
+
+    #[test]
+    fn checking_jobs_and_reconnecting_are_work_under_way_on_a_refused_server() {
+        let mut state = four_machines();
+        let lab = MachineId::new(3);
+        let tone = |state: &AppState| status(&state.machines.others[&lab]).tone;
+        if let Some(known) = state.machines.others.get_mut(&lab) {
+            known.checking_jobs = true;
+        }
+        let checking = tone(&state);
+        if let Some(known) = state.machines.others.get_mut(&lab) {
+            known.checking_jobs = false;
+        }
+
+        daemon_update::start(&mut state, lab);
+        if let Some(known) = state.machines.others.get_mut(&lab)
+            && let Some(DaemonUpdate::Running(progress)) = known.update.take()
+        {
+            known.update = Some(DaemonUpdate::Reconnecting(progress));
+        }
+        let reconnecting = tone(&state);
+
+        assert_eq!((checking, reconnecting), (Tone::Busy, Tone::Busy));
     }
 
     #[test]
