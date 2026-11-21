@@ -119,11 +119,16 @@ update-server host binary="":
 
 # The tree must be committed: the files are built from HEAD, in an Ubuntu 22.04 container.
 
-# Builds the Linux release files in dist/: the static daemon, the app's .deb and SHA256SUMS.
-[unix]
+# Builds the Linux release files and SHA256SUMS in dist/. On Windows, run it from Git Bash.
 release:
     #!/usr/bin/env sh
     set -eu
+    dist="$PWD/dist"
+    # Docker Desktop takes a Windows path, and Git Bash would rewrite the container's paths.
+    if command -v cygpath >/dev/null; then
+        export MSYS_NO_PATHCONV=1
+        dist=$(cygpath -m "$dist")
+    fi
     if [ -n "$(git status --porcelain)" ]; then
         echo "commit or stash your changes first: the release builds HEAD" >&2
         exit 1
@@ -146,11 +151,12 @@ release:
                 exit 1 ;;
         esac
     done
-    # tar -m dates every file now: with the commit's dates, cargo would reuse the cached builds
-    # of a later commit.
-    git archive --format=tar HEAD | docker run --rm -i \
+    # Git for Windows writes CRLF line ends into an archive, as it does on checkout. The packages
+    # need LF. tar -m dates every file now: with the commit's dates, cargo would reuse the cached
+    # builds of a later commit.
+    git -c core.autocrlf=false -c core.eol=lf archive --format=tar HEAD | docker run --rm -i \
         -e YETACK_SOURCE_COMMIT="$(git rev-parse HEAD)" -e OWNER="$(id -u):$(id -g)" \
-        -v "$PWD/dist:/out" \
+        -v "$dist:/out" \
         -v yetack-release-registry:/opt/cargo/registry \
         -v yetack-release-target:/src/target \
         yetack-release sh -c 'tar -xm && exec sh contrib/release/build.sh'
