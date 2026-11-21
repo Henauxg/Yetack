@@ -103,6 +103,14 @@ pub enum Popover {
     AppNotifications,
     /// A terminal's right-click menu, which `UiState::terminal_menu` describes.
     TerminalMenu,
+    /// The menu of a subagent's row in the chat's Running block, opened by a right-click at `x`,
+    /// `y` in the window's pixels. `item` is the subagent's call.
+    SubagentMenu {
+        agent: AgentId,
+        item: ItemId,
+        x: i32,
+        y: i32,
+    },
 }
 
 /// Where a tab's menu opened, which names its groups and decides what it closes to.
@@ -338,6 +346,16 @@ pub enum RevealPlace {
 pub struct ChatReveal {
     /// Tells this reveal from the last one, so that the same entry asked again scrolls again.
     pub serial: u64,
+    pub agent: AgentId,
+    /// A top-level item, which has an entry of its own in the chat.
+    pub item: ItemId,
+    pub place: RevealPlace,
+}
+
+/// A reveal of an entry held above the loaded messages, which waits for the older pages that put
+/// it in its place (see `chat_reveal`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WaitingReveal {
     pub agent: AgentId,
     /// A top-level item, which has an entry of its own in the chat.
     pub item: ItemId,
@@ -616,6 +634,7 @@ pub struct UiState {
     /// The next id of a message on its way, one count for every agent.
     pub next_sending: u64,
     pub chat_reveal: Option<ChatReveal>,
+    pub waiting_reveal: Option<WaitingReveal>,
     /// Agents the app closed and took off its list, until the daemon says they are removed:
     /// their events in between are not applied.
     pub closing: BTreeSet<AgentId>,
@@ -662,6 +681,7 @@ impl Default for UiState {
             chat_jumps: 0,
             next_sending: 0,
             chat_reveal: None,
+            waiting_reveal: None,
             closing: BTreeSet::new(),
             closed: None,
             next_closed: 0,
@@ -683,8 +703,9 @@ impl UiState {
     }
 
     /// Scrolls `agent`'s chat to the entry of the top-level `item`, puts it at `place`, and
-    /// highlights it.
+    /// highlights it. A reveal that waits for older pages gives way.
     pub fn reveal_in_chat(&mut self, agent: AgentId, item: ItemId, place: RevealPlace) {
+        self.waiting_reveal = None;
         let serial = self
             .chat_reveal
             .map_or(0, |last| last.serial.wrapping_add(1));
@@ -694,6 +715,13 @@ impl UiState {
             item,
             place,
         });
+    }
+
+    /// Takes the chat to its bottom, where it follows new entries, as after a send. A reveal that
+    /// waits for older pages gives way.
+    pub fn jump_chat(&mut self) {
+        self.waiting_reveal = None;
+        self.chat_jumps = self.chat_jumps.wrapping_add(1);
     }
 
     /// Shows an error note until it is dismissed or pushed out by newer ones.
@@ -853,6 +881,11 @@ impl UiState {
         }
         if let Some(Dialog::Settings(view)) = &mut self.dialog
             && view.adding_rule.take().is_some()
+        {
+            return true;
+        }
+        if let Some(Dialog::AgentMap(view)) = &mut self.dialog
+            && view.menu.take().is_some()
         {
             return true;
         }

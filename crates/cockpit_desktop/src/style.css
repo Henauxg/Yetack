@@ -9197,9 +9197,9 @@ button.map-toggle:hover {
   color: var(--dim);
 }
 
-.map-show-call {
-  align-self: flex-start;
-  font-size: 13px;
+/* "Show in chat", beside Stop in a subagent's details. */
+.map-show-call .icon {
+  color: var(--muted);
 }
 
 .map-prompt {

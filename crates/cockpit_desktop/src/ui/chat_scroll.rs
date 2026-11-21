@@ -16,8 +16,9 @@
 //!
 //! Older messages arrive at the top of the column, or below those calls when it has some. At the
 //! top, the view holds the first entry past them while it shows, so it moves down as a page comes.
-//! A view that holds one of those calls, as after a reveal of one, asks for nothing until the first
-//! entry past them shows: a page would arrive below the view and leave it where it is.
+//! A view that holds one of those calls, as after a reveal of one or while one opened fills it,
+//! asks for nothing until the first entry past them shows: a page would arrive below the view and
+//! leave it where it is. A click on such a call's fold keeps the call where it is as it opens.
 
 use cockpit_protocol::{AgentId, ItemId};
 use dioxus::prelude::*;
@@ -192,6 +193,15 @@ const anchorInView = () => {
     const element = shown(entry);
     return element === null || element.getBoundingClientRect().top >= top;
   });
+  // A held subagent call opened to fill the view keeps its own place: the entry past it can be far
+  // below, and older messages arrive between the two.
+  const cut = low > 0 ? entries[low - 1] : undefined;
+  const cutElement = cut === undefined ? null : shown(cut);
+  const nextElement = entries[low] === undefined ? null : shown(entries[low]);
+  if (cutElement !== null && isEarly(cut) && bottomOf(cut, cutElement) > top
+    && (nextElement === null || nextElement.getBoundingClientRect().top >= box.getBoundingClientRect().bottom)) {
+    return { id: cut.id, top: cutElement.getBoundingClientRect().top - top };
+  }
   // At the very top, the held subagent calls come first. Older messages arrive below them, so the
   // first entry past them stays in place while it shows: the view then moves down as they come.
   const late = entries[low] !== undefined && isEarly(entries[low]) ? firstLate(entries) : null;
@@ -213,8 +223,8 @@ const lastInView = () => {
   return low === 0 ? null : entries[low - 1];
 };
 // The view holds one of the subagent calls held before the first loaded message, as after a
-// reveal of one. Older messages would arrive below the view and leave it near the top, so the chat
-// asks for none while it does.
+// reveal of one or while one opened fills it. Older messages would arrive below the view and leave
+// it near the top, so the chat asks for none while it does.
 const holdsEarly = () => {
   const entry = following || anchor === null ? null : document.getElementById(anchor.id);
   return entry !== null && isEarly(entry);
@@ -482,6 +492,13 @@ document.addEventListener("click", (event) => {
   }
   if (event.target.closest(`#${settings.jump_button_id}`) !== null) {
     jump();
+    return;
+  }
+  // A held subagent call's fold stays where it is, open or closed: at the top, the anchor is the
+  // entry past those calls, which would move the call up as it opens.
+  const held = event.target.closest(`#${settings.chat_scroll_id} [${settings.early_attribute}] [aria-expanded]`);
+  if (held !== null && box !== null && !following) {
+    pinned = { element: held, top: held.getBoundingClientRect().top - boxTop() };
     return;
   }
   // A row that unfolds grows below its anchor, where the user reads on.

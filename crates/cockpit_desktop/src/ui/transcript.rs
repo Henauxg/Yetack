@@ -3054,8 +3054,8 @@ fn SubagentView(
     call: ToolCall,
     nested: Vec<TranscriptItem>,
 ) -> Element {
-    let mut expanded = use_signal(|| false);
-    let open = expanded();
+    let decided = use_kept_fold(agent, FoldKey::Item(id));
+    let open = decided.decided().unwrap_or(false);
     let calls = nested
         .iter()
         .filter(|item| matches!(item.body, ItemBody::ToolCall(_) | ItemBody::Subagent(_)))
@@ -3082,7 +3082,7 @@ fn SubagentView(
             button {
                 class: "fold-button tool-head",
                 aria_expanded: open,
-                onclick: move |_| expanded.toggle(),
+                onclick: move |_| decided.set(!open),
                 span { class: "tool-name", "{SUBAGENT_NAME}" }
                 span { class: "subagent-title", "{call.summary}" }
                 span { class: "tool-meta", "{meta}" }
@@ -3092,7 +3092,7 @@ fn SubagentView(
                 span { class: if open { "chevron open" } else { "chevron" }, Icon { kind: IconKind::ChevronRight, size: 12 } }
             }
             if open {
-                div { class: "subagent-body",
+                div { class: decided.body_class("subagent-body"),
                     for (child, grandchildren, awaits_approval) in children {
                         CompactItem { key: "{child.id.get()}", agent, folder: folder.clone(), item: child, nested: grandchildren, awaits_approval }
                     }

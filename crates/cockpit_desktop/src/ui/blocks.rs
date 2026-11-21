@@ -17,7 +17,7 @@ use crate::connection::{Clock, Cockpit};
 use crate::keymap::Command;
 use crate::machine::MachineId;
 use crate::state::actions::Direction;
-use crate::state::{Block, actions, agent_map, terminals};
+use crate::state::{Block, actions, agent_map, subagent_menu, terminals};
 use crate::ui::chat_scroll::InView;
 use crate::ui::icons::{Icon, IconKind};
 use crate::ui::mcp::{McpPanel, mcp_summary};
@@ -668,7 +668,20 @@ fn RunningBody(
                         .find(|subagent_task| subagent_task.task == task.id)
                         .map(|subagent_task| subagent_task.item);
                     rsx! {
-                        div { key: "{task.id.as_str()}", class: state_class,
+                        div {
+                            key: "{task.id.as_str()}",
+                            class: state_class,
+                            oncontextmenu: move |event: MouseEvent| {
+                                let Some(item) = subagent else {
+                                    return;
+                                };
+                                event.prevent_default();
+                                let point = event.client_coordinates();
+                                // Whole pixels are enough to place a menu.
+                                #[expect(clippy::cast_possible_truncation, reason = "a window's pixels fit in i32")]
+                                let (x, y) = (point.x.round() as i32, point.y.round() as i32);
+                                cockpit.update(|state| subagent_menu::open_in_block(state, agent, item, x, y));
+                            },
                             span { class: "task-icon", Icon { kind: icon, size: 14 } }
                             span { class: "task-text",
                                 match subagent {

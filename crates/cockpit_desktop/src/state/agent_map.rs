@@ -14,12 +14,12 @@ use cockpit_protocol::{
     Subagent, SubagentRun, SubagentStatus,
 };
 
-use super::actions;
 use super::app_state::AppState;
 use super::requests::Outgoing;
 use super::shortcuts::{KEY_DOWN, KEY_ENTER, KEY_LEFT, KEY_NO, KEY_RIGHT, KEY_UP, KEY_YES};
 use super::transcript::{Transcript, Waiting, WaitingKind};
 use super::ui_state::{Dialog, RevealPlace};
+use super::{actions, chat_reveal};
 
 /// Siblings a level shows before its ended ones fold into one row.
 pub const SIBLING_CAP: usize = 8;
@@ -71,6 +71,16 @@ pub struct MapView {
     /// Shows only the running and failed subagents, with the ones above them.
     pub only_live: bool,
     pub tab: MapTab,
+    /// The right-click menu of a subagent's row.
+    pub menu: Option<MapMenu>,
+}
+
+/// The menu of the subagent of `item`, opened at `x`, `y` in the window's pixels.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MapMenu {
+    pub item: ItemId,
+    pub x: i32,
+    pub y: i32,
 }
 
 impl MapView {
@@ -83,6 +93,7 @@ impl MapView {
             levels_open: BTreeSet::new(),
             only_live: false,
             tab: MapTab::default(),
+            menu: None,
         }
     }
 }
@@ -780,26 +791,37 @@ pub fn select_subagent(state: &mut AppState, item: ItemId) {
     });
 }
 
-/// "Show its call in the chat": closes the map, and scrolls the agent's chat to the entry that
-/// holds the call of `item`'s subagent, which it highlights for a moment. A call the app does not
-/// hold changes nothing.
+/// "Show in chat": closes the map, and scrolls the agent's chat to the entry that holds the call
+/// of `item`'s subagent, which it highlights for a moment. A call the app does not hold changes
+/// nothing.
 pub fn show_call(state: &mut AppState, item: ItemId) {
     let Some(Dialog::AgentMap(view)) = &state.ui.dialog else {
         return;
     };
     let agent = view.agent;
-    let Some(entry) = state
-        .agents
-        .get(&agent)
-        .and_then(|entry| chat_entry(&entry.transcript, item))
-    else {
+    if call_entry(state, agent, item).is_some() {
+        state.ui.dialog = None;
+        show_call_in_chat(state, agent, item);
+    }
+}
+
+/// Selects `agent` and scrolls its chat to the entry that holds the call of `item`'s subagent. A
+/// call held above the loaded messages waits for the older pages that put it in its place.
+pub fn show_call_in_chat(state: &mut AppState, agent: AgentId, item: ItemId) {
+    let Some(entry) = call_entry(state, agent, item) else {
         return;
     };
-    state.ui.dialog = None;
     if state.ui.selected != Some(agent) {
         actions::select_agent(state, agent);
     }
-    state.ui.reveal_in_chat(agent, entry, RevealPlace::Middle);
+    chat_reveal::reveal(state, agent, entry, RevealPlace::Middle);
+}
+
+fn call_entry(state: &AppState, agent: AgentId, item: ItemId) -> Option<ItemId> {
+    state
+        .agents
+        .get(&agent)
+        .and_then(|entry| chat_entry(&entry.transcript, item))
 }
 
 /// The top-level item the chat shows `item` in: `item` itself, or the loaded item it nests under,
@@ -819,7 +841,8 @@ fn chat_entry(transcript: &Transcript, item: ItemId) -> Option<ItemId> {
 #[cfg(test)]
 mod tests {
     use cockpit_protocol::{
-        BackgroundTaskId, ItemBody, Request, Timestamp, ToolCall, ToolCallStatus, TranscriptItem,
+        BackgroundTaskId, HistoryPage, ItemBody, OlderItems, Request, Timestamp, ToolCall,
+        ToolCallStatus, TranscriptItem,
     };
     use serde_json::Value;
 
@@ -1226,6 +1249,32 @@ mod tests {
 
         assert!(matches!(state.ui.dialog, Some(Dialog::AgentMap(_))));
         assert_eq!(state.ui.chat_reveal, Some(second));
+    }
+
+    #[test]
+    fn showing_a_call_held_above_the_loaded_messages_waits_for_its_place() {
+        let mut state = map_state(vec![subagent(5, None, Done)]);
+        if let Some(entry) = state.agents.get_mut(&AgentId::new(1)) {
+            let work = TranscriptItem {
+                parent: Some(ItemId::new(5)),
+                ..agent_call(30, None)
+            };
+            entry.transcript.merge_page(HistoryPage {
+                items: vec![work],
+                older_items: OlderItems::Exist,
+                ancestors: vec![agent_call(5, None)],
+            });
+        }
+
+        show_call(&mut state, ItemId::new(5));
+
+        assert_eq!(state.ui.dialog, None);
+        assert_eq!(
+            state.ui.chat_reveal, None,
+            "no scroll to the top of the chat"
+        );
+        let waiting = state.ui.waiting_reveal.map(|reveal| reveal.item);
+        assert_eq!(waiting, Some(ItemId::new(5)));
     }
 
     #[test]

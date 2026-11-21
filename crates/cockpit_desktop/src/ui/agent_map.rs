@@ -10,22 +10,19 @@ use cockpit_protocol::{
     ToolCall, TranscriptItem,
 };
 use dioxus::prelude::*;
-use serde_json::Value;
 
 use crate::bridge::{self, HIGHLIGHTED_CLASS, HighlightedList};
 use crate::connection::{Clock, Cockpit};
 use crate::format;
 use crate::keymap::Command;
 use crate::state::agent_map::{self, MapRow, MapTab, MapView, OutlineRow, RowKind, StopKind};
-use crate::state::{self, actions};
+use crate::state::{self, actions, subagent_menu};
 use crate::ui::cards::{ApprovalCard, PlanCard};
 use crate::ui::icons::{Icon, IconKind};
 use crate::ui::markdown::MarkdownView;
 use crate::ui::question_card::{CardPlace, QuestionCard};
+use crate::ui::subagent_menu::MapSubagentMenu;
 use crate::ui::transcript::{self, CallStage, CompactItem, ItemView};
-
-/// The input field of an `Agent` call that holds its prompt.
-const PROMPT_FIELD: &str = "prompt";
 
 /// One level of the outline's indent, in pixels. The stylesheet draws its guide lines at the
 /// same step.
@@ -357,12 +354,24 @@ pub fn AgentMapDialog(view: MapView) -> Element {
         earlier,
     };
     let map_keys = cockpit.state.read().prefs.keys.shown(Command::AgentMap);
+    let menu_open = view.menu.is_some();
     rsx! {
         div {
             class: "dialog agent-map",
             role: "dialog",
             aria_label: "Agent map",
-            onclick: move |event| event.stop_propagation(),
+            onclick: move |event| {
+                event.stop_propagation();
+                if menu_open {
+                    cockpit.update(subagent_menu::close);
+                }
+            },
+            oncontextmenu: move |event: MouseEvent| {
+                if menu_open {
+                    event.prevent_default();
+                    cockpit.update(subagent_menu::close);
+                }
+            },
             div { class: "map-head",
                 span { class: "map-head-icon", Icon { kind: IconKind::Map, size: 18 } }
                 h2 { "Agent map" }
@@ -433,6 +442,7 @@ pub fn AgentMapDialog(view: MapView) -> Element {
                 span { class: "spacer" }
                 span { "{map_keys} opens the map" }
             }
+            MapSubagentMenu {}
         }
     }
 }
@@ -465,6 +475,19 @@ fn OutlineRowView(row: RowView, selected: bool) -> Element {
             aria_expanded: row.folded.map(|folded| !folded),
             style: "--indent: {indent}px",
             onclick: move |_| cockpit.update(|state| agent_map::click_row(state, target)),
+            oncontextmenu: move |event: MouseEvent| {
+                let MapRow::Subagent(item) = target else {
+                    return;
+                };
+                event.prevent_default();
+                // The map closes an open menu on the right-clicks it gets.
+                event.stop_propagation();
+                let point = event.client_coordinates();
+                // Whole pixels are enough to place a menu.
+                #[expect(clippy::cast_possible_truncation, reason = "a window's pixels fit in i32")]
+                let (x, y) = (point.x.round() as i32, point.y.round() as i32);
+                cockpit.update(|state| subagent_menu::open_in_map(state, item, x, y));
+            },
             div { class: "map-row-main", style: "padding-left: {indent}px",
                 match (row.folded, target) {
                     (Some(folded), _) => rsx! {
@@ -745,8 +768,7 @@ fn SubagentDetails(
         .collect();
     let prompt = call
         .as_ref()
-        .and_then(|call| call.input.get(PROMPT_FIELD))
-        .and_then(Value::as_str)
+        .and_then(subagent_menu::prompt)
         .map(str::to_owned);
     let stop = agent_map::stop_kind(&subagent);
     let loaded = call.is_some();
@@ -873,6 +895,16 @@ fn SubagentDetails(
         div { class: "map-detail-head {status_class}",
             span { class: "status-dot", aria_hidden: true }
             h3 { "{subagent.description}" }
+            // Only a call the app holds has an entry in the chat to scroll to.
+            if loaded {
+                button {
+                    class: "button small map-show-call",
+                    title: "Close the map and show its call in the chat",
+                    onclick: move |_| cockpit.update(|state| agent_map::show_call(state, item)),
+                    Icon { kind: IconKind::Message, size: 14 }
+                    "Show in chat"
+                }
+            }
             match stop {
                 Some(StopKind::Task) => rsx! {
                     button {
@@ -999,14 +1031,6 @@ fn SubagentDetails(
                         "Load older messages"
                     }
                 }
-            }
-        }
-        // Only a call the app holds has an entry in the chat to scroll to.
-        if loaded {
-            button {
-                class: "link-button map-show-call",
-                onclick: move |_| cockpit.update(|state| agent_map::show_call(state, item)),
-                "Show its call in the chat"
             }
         }
     }

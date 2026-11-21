@@ -1232,7 +1232,7 @@ pub fn send_prompt(
     // The script reports the bottom once its jump got there: what arrived before is not new.
     state.ui.chat_scrolled_up.remove(&agent);
     state.ui.chat_new_from.remove(&agent);
-    state.ui.chat_jumps = state.ui.chat_jumps.wrapping_add(1);
+    state.ui.jump_chat();
     let prompt = Prompt {
         text: quotes::message(&draft.quotes, &draft.text),
         images: draft.images.clone(),

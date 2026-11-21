@@ -258,10 +258,11 @@ document.addEventListener("keydown", (event) => {
     // Taken everywhere, whatever its shortcut runs: it never reloads the page.
     take = true;
   } else if (mode.map) {
-    // The map moves and folds with its keys wherever the focus is, but in a text field. Enter on
-    // one of its buttons still presses the button.
+    // The map moves and folds with its keys wherever the focus is, but in a text field or in a
+    // row's menu. Enter on one of its buttons still presses the button.
     const mapKey = settings.map_keys.includes(key) || (mode.answer_letters && settings.answer_keys.includes(letter));
     take = where !== "field" && plain && !event.shiftKey && mapKey
+      && !(target !== null && target.closest("[data-own-keys]") !== null)
       && !(key === "Enter" && target !== null && target.matches('button, [role="button"]'));
   } else if (where === "composer" && event.altKey && !command && !event.shiftKey && key === "Enter") {
     // Alt+Enter queues the message until the turn ends.

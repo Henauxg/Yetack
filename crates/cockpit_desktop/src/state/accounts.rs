@@ -422,7 +422,7 @@ pub fn send_again(state: &mut AppState, agent: AgentId) -> Vec<Outgoing> {
         entry.sent_again = Some(turn.turn_end);
     }
     state.ui.chat_scrolled_up.remove(&agent);
-    state.ui.chat_jumps = state.ui.chat_jumps.wrapping_add(1);
+    state.ui.jump_chat();
     let prompt = Prompt {
         text: message.text,
         images: message.images,

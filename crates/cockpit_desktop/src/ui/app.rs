@@ -34,6 +34,7 @@ use crate::ui::splitter::{
     APP_ID, FILES_WIDTH_PROPERTY, FilesSplitter, SHARE_PROPERTY, SIDEBAR_WIDTH_PROPERTY,
     SidebarSplitter, Splitter, use_splitter,
 };
+use crate::ui::subagent_menu::BlockSubagentMenu;
 use crate::ui::tab_menu::TabMenu;
 use crate::ui::terminal_menu::TerminalMenu;
 use crate::ui::terminal_pane::{TerminalPane, use_terminal_script};
@@ -207,6 +208,7 @@ pub fn App() -> Element {
             TreeMenu {}
             TabMenu {}
             TerminalMenu {}
+            BlockSubagentMenu {}
             Dialogs {}
         }
     }

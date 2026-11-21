@@ -21,8 +21,8 @@ use super::sending::{self, SendingId};
 use super::transcript::HistoryState;
 use super::ui_state::{Dialog, FolderAction, OpenFileView};
 use super::{
-    accounts, actions, chat_images, details_updates, file_edits, file_tree, mcp_reconnect,
-    page_copy, terminals, working_folder,
+    accounts, actions, chat_images, chat_reveal, details_updates, file_edits, file_tree,
+    mcp_reconnect, page_copy, terminals, working_folder,
 };
 use crate::machine::MachineId;
 use crate::path_style;
@@ -320,6 +320,7 @@ pub fn needed_requests(state: &mut AppState) -> Vec<Outgoing> {
     {
         open_file_requests(view, &mut requests);
     }
+    requests.extend(chat_reveal::requests(state));
     let Some(agent) = state
         .ui
         .selected
