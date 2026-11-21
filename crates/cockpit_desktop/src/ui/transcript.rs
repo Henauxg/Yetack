@@ -37,7 +37,6 @@ use crate::ui::find::SKIP_CLASS;
 use crate::ui::find_folds::{self, FoldChip, FoldKey};
 use crate::ui::icons::{Icon, IconKind};
 use crate::ui::kept_folds::{KeptFold, use_kept_fold};
-use crate::ui::last_instruction::LastInstruction;
 use crate::ui::loading::{OlderSkeleton, TranscriptSkeleton};
 use crate::ui::markdown::{MARKDOWN_CLASS, MarkdownView};
 use crate::ui::presence::{Shown, use_presence};
@@ -1020,7 +1019,6 @@ pub fn TranscriptView(in_view: Signal<Option<InView>>) -> Element {
                 }
             }
         }
-        LastInstruction { in_view }
         JumpToLatest { shown: scrolled_up, count: waiting }
     }
 }

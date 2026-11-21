@@ -254,19 +254,6 @@ impl Transcript {
             .find_map(Waiting::new)
     }
 
-    /// The user message that the items from `top` onward answer: the latest top-level user
-    /// message before `top`. `None` when `top` is a user message itself or is not held.
-    pub fn message_before(&self, top: ItemId) -> Option<(ItemId, &UserMessage)> {
-        let top_message = user_message(self.items.get(&top)?);
-        if top_message.is_some() {
-            return None;
-        }
-        self.items
-            .range(..top)
-            .rev()
-            .find_map(|(_, item)| user_message(item).map(|message| (item.id, message)))
-    }
-
     /// The agent's own calls that run in its current step, the latest first. Claude reads a
     /// message sent meanwhile once they end. A subagent's calls run under its own call.
     pub fn running_calls(&self) -> impl Iterator<Item = (ItemId, &ToolCall)> {
@@ -737,7 +724,7 @@ mod tests {
     }
 
     #[test]
-    fn the_message_before_an_item_is_the_latest_one_the_user_sent() {
+    fn the_sent_messages_are_the_top_level_ones_and_each_item_answers_the_latest() {
         let sent = |id: u32, parent: Option<u32>, text: &str| {
             item(
                 id,
@@ -756,17 +743,6 @@ mod tests {
         transcript.append(sent(4, Some(3), "A subagent's prompt"));
         transcript.append(text(5, "All pass"));
         transcript.append(sent(6, None, "Now the lints"));
-        let before = |top: u32| {
-            transcript
-                .message_before(ItemId::new(top))
-                .map(|(id, message)| (id.get(), message.text.clone()))
-        };
-
-        assert_eq!(before(5), Some((2, "Run the tests".to_owned())));
-        assert_eq!(before(3), Some((2, "Run the tests".to_owned())));
-        assert_eq!(before(1), None);
-        assert_eq!(before(6), None);
-        assert_eq!(before(9), None);
 
         let sent_ids: Vec<u32> = transcript.sent_messages().map(|(id, _)| id.get()).collect();
         let at = |top: u32| transcript.message_at(ItemId::new(top)).map(ItemId::get);

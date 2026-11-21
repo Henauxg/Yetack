@@ -21,7 +21,7 @@ use crate::state::{Block, actions, agent_map, subagent_menu, terminals};
 use crate::ui::chat_scroll::InView;
 use crate::ui::icons::{Icon, IconKind};
 use crate::ui::mcp::{McpPanel, mcp_summary};
-use crate::ui::messages::{LastMessageToggle, MessagesBody};
+use crate::ui::messages::MessagesBody;
 use crate::ui::reorder::block_id;
 use crate::{bridge, format};
 
@@ -283,7 +283,6 @@ pub fn FloatingBlocks(in_view: Signal<Option<InView>>) -> Element {
                     badge_mode,
                     wide: false,
                     shown: cards.clone(),
-                    head_action: rsx! { LastMessageToggle {} },
                     MessagesBody { agent, folder: folder.clone(), waiting: waiting.clone(), in_view }
                 }
             }
@@ -414,8 +413,6 @@ fn BlockCard(
     open: bool,
     badge_mode: bool,
     wide: bool,
-    /// A control at the end of the head, beside the button that folds the block.
-    head_action: Option<Element>,
     /// The blocks this agent shows, in order, which Alt+Up and Alt+Down move past.
     shown: Vec<Block>,
     children: Element,
@@ -430,43 +427,40 @@ fn BlockCard(
     }
     rsx! {
         section { id: block_id(block), class: class.join(" "), aria_label: "{title}",
-            div { class: if open { "block-head-row open" } else { "block-head-row" },
-                button {
-                    id: block_head_id(block),
-                    class: BLOCK_HEAD_CLASS,
-                    aria_expanded: open,
-                    title: "Drag, or Alt+Up and Alt+Down, to move the block",
-                    // Alt+Up and Alt+Down move the block here, not the selected agent. A badge's card
-                    // shows alone, with nothing to move past.
-                    "data-own-moves": (!badge_mode).then_some(true),
-                    onclick: move |_| cockpit.change(|state| actions::toggle_block(state, agent, block)),
-                    onkeydown: move |event| {
-                        let modifiers = event.modifiers();
-                        if !modifiers.alt() || modifiers.ctrl() || modifiers.shift() || modifiers.meta() {
-                            return;
-                        }
-                        let direction = match event.key() {
-                            Key::ArrowUp => Direction::Up,
-                            Key::ArrowDown => Direction::Down,
-                            _ => return,
-                        };
-                        event.prevent_default();
-                        cockpit.update(|state| actions::step_block(state, block, direction, &shown));
-                        bridge::keep_focus(block_head_id(block));
-                    },
-                    span { class: "block-icon", Icon { kind: icon, size: 14 } }
-                    span { class: "block-title", "{title}" }
-                    if alert {
-                        span { class: "alert-dot", aria_hidden: true }
+            button {
+                id: block_head_id(block),
+                class: BLOCK_HEAD_CLASS,
+                aria_expanded: open,
+                title: "Drag, or Alt+Up and Alt+Down, to move the block",
+                // Alt+Up and Alt+Down move the block here, not the selected agent. A badge's card
+                // shows alone, with nothing to move past.
+                "data-own-moves": (!badge_mode).then_some(true),
+                onclick: move |_| cockpit.change(|state| actions::toggle_block(state, agent, block)),
+                onkeydown: move |event| {
+                    let modifiers = event.modifiers();
+                    if !modifiers.alt() || modifiers.ctrl() || modifiers.shift() || modifiers.meta() {
+                        return;
                     }
-                    span { class: "block-summary", "{summary}" }
-                    if badge_mode {
-                        Icon { kind: IconKind::Close, size: 12 }
-                    } else {
-                        span { class: if open { "chevron open" } else { "chevron" }, Icon { kind: IconKind::ChevronRight, size: 12 } }
-                    }
+                    let direction = match event.key() {
+                        Key::ArrowUp => Direction::Up,
+                        Key::ArrowDown => Direction::Down,
+                        _ => return,
+                    };
+                    event.prevent_default();
+                    cockpit.update(|state| actions::step_block(state, block, direction, &shown));
+                    bridge::keep_focus(block_head_id(block));
+                },
+                span { class: "block-icon", Icon { kind: icon, size: 14 } }
+                span { class: "block-title", "{title}" }
+                if alert {
+                    span { class: "alert-dot", aria_hidden: true }
                 }
-                {head_action}
+                span { class: "block-summary", "{summary}" }
+                if badge_mode {
+                    Icon { kind: IconKind::Close, size: 12 }
+                } else {
+                    span { class: if open { "chevron open" } else { "chevron" }, Icon { kind: IconKind::ChevronRight, size: 12 } }
+                }
             }
             if open {
                 div { class: "block-body", {children} }

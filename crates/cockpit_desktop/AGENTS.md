@@ -20,7 +20,7 @@ Check each new or changed element against these rules before you call the work d
 
 - What appears or grows takes `--motion-in` with `--ease-out`. What leaves or shrinks takes `--motion-out` with `--ease-in`.
 - What an element pushes aside moves with it, with the same duration and easing, so both arrive together.
-  For example, the MCP card widens from 272 to 380 px for a server's detail, and in the same 140 ms the chat's right padding, the composer, the last instruction bar and the jump button move left by as much.
+  For example, the MCP card widens from 272 to 380 px for a server's detail, and in the same 140 ms the chat's right padding, the composer and the jump button move left by as much.
 - Put the transition on the property that changes (`width`, `padding-right`, `right`), in both states: the state an element enters sets the timing of the way in.
 - Dioxus removes an element at once. An element that closes goes through `ui/presence.rs` (`Presence` or `use_presence`), which keeps it on screen, marked `leaving` and inert, for its exit animation.
 - A switch to another agent draws that agent's layout at once. The root has the `switching` class in the frame that shows the other agent, and its rule turns the layout transitions off: a new layout transition adds its element there.

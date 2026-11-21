@@ -18,7 +18,6 @@ use crate::ui::dialogs::OVERLAY_CLASS;
 use crate::ui::file_view::{FILE_BODY_CLASS, FILE_LOADING_CLASS};
 use crate::ui::find_folds::CHIP_CLASS;
 use crate::ui::icons::{Icon, IconKind};
-use crate::ui::last_instruction::MESSAGE_CLASS as LAST_INSTRUCTION_CLASS;
 use crate::ui::presence::use_agent_presence;
 use crate::ui::splitter::FILE_VIEW_ID;
 use crate::ui::transcript::{IO_CLIP_CLASS, MESSAGE_CLIP_CLASS, UndrawnRows};
@@ -303,12 +302,11 @@ class Finder {
     return stops;
   }
 
-  // The top of the pane's view that nothing covers.
+  // The top of the pane's view that nothing covers: the file's find box covers the file's top.
   viewTop(scroller) {
     const top = scroller.getBoundingClientRect().top;
-    const covers = [...document.querySelectorAll(this.pane === "chat" ? settings.chat_covers : `#${settings.file_box_id}`)];
-    const bottoms = covers.map((cover) => cover.getBoundingClientRect().bottom);
-    return Math.max(top, ...bottoms) + settings.view_margin_px;
+    const cover = this.pane === "chat" ? null : document.getElementById(settings.file_box_id);
+    return Math.max(top, cover?.getBoundingClientRect().bottom ?? top) + settings.view_margin_px;
   }
 
   pick(scroller) {
@@ -623,8 +621,6 @@ struct Settings {
     block_selector: &'static str,
     /// A closed fold's chip, whose text is its count.
     chip_class: &'static str,
-    /// What covers the top of the chat: the last instruction's bar.
-    chat_covers: String,
     /// An open dialog, behind which F3 moves no find.
     dialog_selector: String,
     /// An element whose keys go to it alone, as a terminal.
@@ -659,7 +655,6 @@ impl Settings {
             skip_class: SKIP_CLASS,
             block_selector: "p, li, pre, td, th, h1, h2, h3, h4, h5, h6, blockquote, div, button",
             chip_class: CHIP_CLASS,
-            chat_covers: format!(".{LAST_INSTRUCTION_CLASS}"),
             dialog_selector: format!(".{OVERLAY_CLASS}"),
             records_keys_selector: format!("[{}]", bridge::RECORDS_KEYS_ATTRIBUTE),
             clip_selector: format!(".{IO_CLIP_CLASS}, .{MESSAGE_CLIP_CLASS}"),
@@ -1071,7 +1066,6 @@ mod tests {
             "skip_class": "find-skip",
             "block_selector": "p, li, pre, td, th, h1, h2, h3, h4, h5, h6, blockquote, div, button",
             "chip_class": "find-chip",
-            "chat_covers": ".last-instruction-message",
             "dialog_selector": ".overlay",
             "records_keys_selector": "[data-records-keys]",
             "clip_selector": ".io-clip, .message-clip",

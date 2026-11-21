@@ -1,22 +1,25 @@
 //! The Messages block: the messages the user sent to the agent, oldest first with their times,
 //! then the prompts Claude has not read yet. The block marks the message being read: at the chat's
 //! bottom the latest one on screen, scrolled up the one whose answer shows at the top. A click on a
-//! sent message scrolls the chat to it. The eye in the block's head shows or hides the last message
-//! over the chat.
+//! sent message scrolls the chat to it.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use cockpit_protocol::{AgentId, ItemId, Timestamp, WaitingPrompt};
 use dioxus::prelude::*;
 
 use crate::connection::{Clock, Cockpit};
 use crate::format;
-use crate::prefs::LastMessage;
+use crate::render::{blocks_plain_text, parse_markdown};
 use crate::state::RevealPlace;
 use crate::ui::blocks::KEPT_ROWS;
 use crate::ui::chat_scroll::InView;
-use crate::ui::icons::{Icon, IconKind};
-use crate::ui::last_instruction::shown_text;
+
+/// The characters of a message that its row holds. The row shows one line of them.
+const SHOWN_CHARS: usize = 400;
+
+/// How many characters of a message's Markdown its row parses: a pasted log can be megabytes long.
+const READ_CHARS: usize = 4 * SHOWN_CHARS;
 
 /// A sent message's row.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -139,26 +142,42 @@ pub fn MessagesBody(
     }
 }
 
-/// The eye in the block's head: shows or hides the last message over the chat.
-#[component]
-pub fn LastMessageToggle() -> Element {
-    let cockpit: Cockpit = use_context();
-    let shown = cockpit.state.read().prefs.chat.last_message == LastMessage::Shown;
-    let (label, icon) = if shown {
-        ("Hide your last message over the chat", IconKind::Eye)
-    } else {
-        ("Show your last message over the chat", IconKind::EyeOff)
-    };
-    rsx! {
-        button {
-            class: "block-head-action",
-            aria_pressed: shown,
-            aria_label: label,
-            title: label,
-            onclick: move |_| cockpit.update(|state| {
-                state.prefs.chat.last_message = state.prefs.chat.last_message.toggled();
-            }),
-            Icon { kind: icon, size: 14 }
-        }
+/// A message's text without its Markdown, on one line and cut to what a line can show, or its
+/// images' count when it has no text. Markdown that shows no text, such as `---`, shows as
+/// written. `folder` is the agent's folder, which the chat's bubble also parses with.
+fn shown_text(text: &str, image_count: usize, folder: &Path) -> Option<String> {
+    let markdown: String = text.chars().take(READ_CHARS).collect();
+    let plain = blocks_plain_text(&parse_markdown(&markdown, folder));
+    let line: Option<String> = [plain.as_str(), markdown.as_str()]
+        .into_iter()
+        .map(|text| text.split_whitespace().collect::<Vec<_>>().join(" "))
+        .find(|line| !line.is_empty());
+    if let Some(line) = line {
+        return Some(line.chars().take(SHOWN_CHARS).collect());
+    }
+    (image_count > 0).then(|| format::count(image_count, "image", "images"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_row_shows_the_text_without_markdown_cut_or_the_images_count() {
+        let shown = |text: &str, images| shown_text(text, images, Path::new("/work"));
+        let long = "é".repeat(READ_CHARS);
+
+        assert_eq!(
+            shown("Fix it:\n\n- count from **1**\n- test `parse`\n", 1),
+            Some("Fix it: count from 1 test parse".to_owned())
+        );
+        assert_eq!(shown(&long, 0), Some("é".repeat(SHOWN_CHARS)));
+        assert_eq!(shown(" ", 2), Some("2 images".to_owned()));
+        assert_eq!(shown("", 0), None);
+        assert_eq!(shown("---", 0), Some("---".to_owned()));
+        assert_eq!(
+            shown("[1]: https://example.org", 1),
+            Some("[1]: https://example.org".to_owned())
+        );
     }
 }

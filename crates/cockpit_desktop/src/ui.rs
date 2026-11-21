@@ -26,7 +26,6 @@ mod grouping;
 mod header;
 mod icons;
 mod kept_folds;
-mod last_instruction;
 mod load_card;
 mod loading;
 mod machines;
