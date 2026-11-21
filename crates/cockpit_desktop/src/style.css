@@ -2499,10 +2499,24 @@ html.reordering * {
 
 /* Chat. */
 
-.chat-area {
+/* The chat and the composer below it. The floating blocks and the quotes' notes take the height
+   of both, since the composer leaves the blocks' strip free. A grid lets an absolute child take
+   one row as its box instead. */
+.chat-stage {
   position: relative;
   flex: 1 1 auto;
+  display: grid;
+  grid-template-rows: minmax(0, 1fr) auto;
+  grid-template-columns: minmax(0, 1fr);
+}
+
+/* The size containment leaves the chat out of the stage's least height, which is then the
+   composer's: a tall bottom terminal goes past the window instead of covering the composer. */
+.chat-area {
+  position: relative;
+  grid-row: 1;
   min-height: 0;
+  contain: size;
   display: flex;
   flex-direction: column;
 }
@@ -4755,7 +4769,9 @@ html.reordering * {
   scrollbar-color: var(--scrollbar-thumb) transparent;
 }
 
+/* The open badge's card stays open while the user types, so it stays clear of the composer. */
 .blocks.beside-badges {
+  grid-row: 1 / 2;
   right: 46px;
 }
 
@@ -5584,7 +5600,7 @@ html.reordering * {
 /* Composer. */
 
 .composer-wrap {
-  flex: none;
+  grid-row: 2;
   padding-right: 296px;
 }
 

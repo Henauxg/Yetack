@@ -164,13 +164,15 @@ pub fn App() -> Element {
                     }
                 }
                 ChatFindBar {}
-                div { class: "chat-area",
-                    TranscriptView { in_view }
+                div { class: "chat-stage",
+                    div { class: "chat-area",
+                        TranscriptView { in_view }
+                        ErrorNotes {}
+                    }
                     QuoteLayer {}
                     FloatingBlocks { in_view }
-                    ErrorNotes {}
+                    Composer {}
                 }
-                Composer {}
                 if let Some(leaving) = terminal_bottom {
                     TerminalPane { place: TerminalPlace::Bottom, leaving }
                 }

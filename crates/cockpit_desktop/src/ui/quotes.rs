@@ -341,7 +341,7 @@ const place = () => {
   // numbers in the "+N" line under the others.
   const cards = document.querySelectorAll(`.${settings.blocks_class} .${settings.block_card_class}`);
   const floor = cards.length > 0 ? cards[cards.length - 1].getBoundingClientRect().bottom + 10 : view.top + 8;
-  const bottom = view.bottom - 8;
+  const bottom = area.bottom - 8;
   const strip = layer();
   const more = document.getElementById(settings.more_id);
   const shown = [];
@@ -713,7 +713,8 @@ const inside = (rect, point, margin) => point.x >= rect.left - margin && point.x
 const hover = () => {
   const host = document.getElementById(settings.replied_host_id);
   const area = layer()?.getBoundingClientRect();
-  if (host === null || area === undefined || pointer === null) {
+  const view = chat()?.getBoundingClientRect();
+  if (host === null || area === undefined || view === undefined || pointer === null) {
     return;
   }
   const card = host.firstElementChild;
@@ -748,7 +749,7 @@ const hover = () => {
   host.replaceChildren(shown);
   const x = Math.min(hitRect.left, area.right - shown.offsetWidth - 8);
   let y = hitRect.bottom + 6;
-  if (y + shown.offsetHeight > area.bottom - 8) {
+  if (y + shown.offsetHeight > view.bottom - 8) {
     y = hitRect.top - 6 - shown.offsetHeight;
   }
   at(shown, x - area.left, y - area.top);
