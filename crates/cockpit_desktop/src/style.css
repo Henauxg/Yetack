@@ -3127,6 +3127,14 @@ html.reordering * {
   color: #eb6f92;
 }
 
+.md-list .md-list .list-marker:not(.number) {
+  color: var(--muted);
+}
+
+.md-list .md-list .md-list .list-marker:not(.number) {
+  color: var(--dim);
+}
+
 .list-marker.number {
   min-width: 18px;
   text-align: right;
