@@ -31,7 +31,7 @@ Linger is off, so systemd stops your services when your last session on the serv
 
 ## A machine's row says "Runs an older version" or "Runs a newer version"
 
-The app and the machine's daemon come from different releases and do not speak the same protocol. Update the older one: the daemon with the row's Update link, or the app. When Nix, a package or another folder holds the daemon, the link reads "Details", and its card says how to update the daemon. The "Update a server" section of [README.md](../README.md) says how to update a server by hand.
+The app and the machine's daemon come from different releases and do not speak the same protocol. Update the older one: the daemon with the row's Update link, or the app. When Nix, a package or another folder holds the daemon, the link reads "Details", and its card says how to update the daemon. [servers.md](./servers.md) says how to update a server by hand.
 
 ## A machine's row says "Update available." or "Runs another build."
 

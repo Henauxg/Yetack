@@ -24,6 +24,8 @@ Several agent sessions work on this repository at once, so each task gets its ow
 8. Remove the worktree and the branch: `git worktree remove ../yetack-<topic>`, then `git branch -D <branch>`.
    The `-D` is needed because git does not count a squashed branch as merged.
 
+Steps 6 to 8 are the maintainer's. Working for a contributor, stop after step 5 and open a pull request, as [CONTRIBUTING.md](CONTRIBUTING.md) says.
+
 The main checkout stays on a clean `main`. Use it only to merge finished branches and to push.
 
 ## Rules
@@ -34,6 +36,7 @@ The main checkout stays on a clean `main`. Use it only to merge finished branche
   Every crate is application code.
 - Three skills review a change: `/review` looks for bugs, `/review-standard` checks the coding standard, and `/review-architecture` checks a crate's design.
   The trust model they review against is in docs/architecture.md, "Security".
+  They are in `.claude/skills/<name>/SKILL.md`. An agent without skills reads that file and follows it: `/review fix` means the `review` skill with the argument `fix`.
 - `docs/standards/rust/` and the three review skills are copies from [rust-standard](https://github.com/Henauxg/rust-standard).
   Make a change there first, then copy it here with `just update-standard <tag, branch or full commit hash>`.
 - A commit message has a plain English subject in the imperative and a short body, with no `Co-Authored-By` or other trailer.
