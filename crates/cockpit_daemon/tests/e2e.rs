@@ -645,7 +645,11 @@ async fn a_reload_updates_the_commands_every_client_sees() {
     let setup = Setup::new();
     let mut client = setup.connect().await;
     let agent = client.start(&setup.work(), "hello").await;
-    client.idle(agent).await;
+    // A new agent shows as idle before `initialize` lists its commands, which a reload's changes
+    // count from.
+    client
+        .wait_for(|event| changed_commands(event, agent))
+        .await;
 
     let skills = client
         .ok(Request::AgentReloadSkills(AgentParams { agent }))
