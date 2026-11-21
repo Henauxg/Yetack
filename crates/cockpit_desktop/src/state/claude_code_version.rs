@@ -9,7 +9,7 @@ use crate::version_order;
 
 /// The Claude Code version this release was tested with. Each release checks the current one and
 /// sets it here (docs/releasing.md).
-pub const TESTED_VERSION: &str = "2.1.319";
+pub const TESTED_VERSION: &str = "2.1.330";
 
 /// The note the agent's header shows when its Claude Code is newer than [`TESTED_VERSION`].
 /// `None` for the tested version, an older one, one the app cannot read, and before the agent's

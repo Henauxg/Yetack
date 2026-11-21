@@ -2034,6 +2034,7 @@ mod tests {
     #[test]
     fn a_daemon_of_this_release_from_another_commit_runs_another_build_and_still_offers_it() {
         let mut state = with_server();
+        state.app_build.version = ProgramBuild::this_program().version;
         let same_release = ProgramBuild {
             version: ProgramBuild::this_program().version,
             ..other_build()
