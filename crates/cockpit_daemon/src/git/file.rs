@@ -9,6 +9,7 @@ use cockpit_protocol::{
 };
 use tokio::time::Instant;
 
+use crate::blocking::{self, Scope};
 use crate::git::blob::{self, Blob, Content};
 use crate::git::command::HEAD;
 use crate::git::commit::Unpushed;
@@ -30,7 +31,7 @@ pub(crate) async fn file(
     path: PathBuf,
 ) -> Result<GitFile, GitError> {
     let deadline = Instant::now() + READ_TIME;
-    let located = match checkout::locate_in_task(folder, touched, home, path).await {
+    let located = match checkout::locate_in_task(folder, touched, home, path, deadline).await {
         Ok(located) => located,
         Err(GitError::Outside(_)) => return Ok(GitFile::Outside),
         Err(error) => return Err(error),
@@ -66,7 +67,7 @@ pub(crate) async fn show(
     commit: CommitHash,
 ) -> Result<GitCommitFile, GitError> {
     let deadline = Instant::now() + READ_TIME;
-    let located = checkout::locate_in_task(folder, touched, home, path).await?;
+    let located = checkout::locate_in_task(folder, touched, home, path, deadline).await?;
     let root = located.root.as_path();
     let Some(hash) = commit::resolve(root, commit.as_str(), deadline).await? else {
         return Err(GitError::NoSuchCommit(commit));
@@ -105,8 +106,10 @@ pub(crate) async fn show(
 /// may lack it.
 async fn on_remote(root: &Path, hash: &CommitHash, deadline: Instant) -> OnRemote {
     let folder = root.to_owned();
-    let remote = match tokio::task::spawn_blocking(move || repository::linked_remote(&folder)).await
-    {
+    let reading = blocking::run(deadline, Scope::Folder(root), move || {
+        repository::linked_remote(&folder)
+    });
+    let remote = match reading.await {
         Ok(Some(remote)) => remote,
         Ok(None) => return OnRemote::MayLack,
         Err(error) => {

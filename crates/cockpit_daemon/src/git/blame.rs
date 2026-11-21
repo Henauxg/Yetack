@@ -30,7 +30,7 @@ pub(crate) async fn blame(
 ) -> Result<GitBlame, GitError> {
     let deadline = Instant::now() + BLAME_TIME;
     let asked = folder.join(&path);
-    let located = checkout::locate_in_task(folder, touched, home, path).await?;
+    let located = checkout::locate_in_task(folder, touched, home, path, deadline).await?;
     let root = located.root.as_path();
     let Some(head) = commit::resolve(root, HEAD, deadline).await? else {
         return Err(GitError::NoCommit(located.root));

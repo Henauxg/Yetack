@@ -4,17 +4,21 @@
 use std::collections::VecDeque;
 use std::io;
 use std::path::{Path, PathBuf};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use claude_protocol::{ControlRequest, InputLine, OutputLine};
 use cockpit_protocol::{
     AccountId, AgentId, AgentStatus, AgentSummary, AnswerParams, COMMAND_PREFIX, ClaudeSessionId,
     CostUsd, EffortSource, ErrorBody, ErrorCode, Event, MAX_TITLE_CHARS, Mark, MarkParams,
-    Position, Prompt, PromptDelivery, PromptId, QueuedPromptParams, RenameParams, ResponseBody,
-    ResponseResult, SetEffortParams, SignInWait, StartParams, TranscriptItem, WaitingState,
+    Position, Prompt, PromptDelivery, PromptId, QueuedPromptParams, RenameParams, Repository,
+    ResponseBody, ResponseResult, SetEffortParams, SignInWait, StartParams, TranscriptItem,
+    WaitingState,
 };
+use tokio::runtime::Handle;
+use tokio::time;
 
 use crate::accounts::ClaudeEnv;
+use crate::blocking::{self, BlockingError, Scope};
 use crate::hub::input::{ControlPurpose, HubInput, Reply};
 use crate::hub::state::{Agent, DetailsOut, Hub, QueuedPrompt};
 use crate::hub::{errors, state};
@@ -27,11 +31,14 @@ use crate::{machine_load, read_file, repository, sessions};
 
 /// The longest model name a client may set: every summary carries it.
 const MODEL_MAX_CHARS: usize = 100;
+/// How long reading the repository of an agent's folder may take.
+const REPOSITORY_TIME: Duration = Duration::from_secs(10);
 
 impl Hub {
     pub(super) fn start_restored_agents(&mut self) {
         let ids: Vec<AgentId> = self.agents.keys().copied().collect();
         for id in ids {
+            self.read_repository(id);
             self.publish(id);
             let running = self
                 .agents
@@ -107,7 +114,15 @@ impl Hub {
         if let Some(index) = places.iter().position(|place| place.agent == id) {
             record.position = places.swap_remove(index).position;
         }
-        let mut view = AgentView::new(initial_summary(&record), self.settings.prompt_cache_ttl());
+        let mut summary = initial_summary(&record);
+        // Until its own read comes back, the agent shows the repository of another agent in its
+        // folder.
+        summary.repository = self
+            .agents
+            .values()
+            .find(|other| other.record.folder == record.folder)
+            .and_then(|other| other.view.summary().repository.clone());
+        let mut view = AgentView::new(summary, self.settings.prompt_cache_ttl());
         if let Some(past) = past {
             view.show_past(past);
         }
@@ -137,6 +152,7 @@ impl Hub {
         agent.view.mark_published();
         let summary = agent.view.summary().clone();
         self.emit(LogName::Agent(id), Event::AgentAdded(summary));
+        self.read_repository(id);
         for place in places {
             self.publish(place.agent);
         }
@@ -225,9 +241,11 @@ impl Hub {
     ) {
         let inputs = self.inputs.clone();
         tokio::spawn(async move {
-            let read =
-                tokio::task::spawn_blocking(move || sessions::restored_cost(&folder, &session))
-                    .await;
+            let deadline = time::Instant::now() + sessions::READ_TIME;
+            let read = blocking::run(deadline, Scope::Sessions, move || {
+                sessions::restored_cost(&folder, &session)
+            })
+            .await;
             if let Ok(Some(cost)) = read {
                 let input = HubInput::RestoredCost {
                     agent: id,
@@ -238,6 +256,63 @@ impl Hub {
                 let _ = inputs.send(input).await;
             }
         });
+    }
+
+    /// Reads the repository of the agent's folder in a task. A `.git` file the agent wrote can
+    /// point into a mount that never answers, which would hold the hub.
+    pub(super) fn read_repository(&mut self, id: AgentId) {
+        let Some(agent) = self.agents.get(&id) else {
+            return;
+        };
+        // Without a runtime, as in some tests, the agent keeps the repository it has.
+        let Ok(runtime) = Handle::try_current() else {
+            return;
+        };
+        let folder = agent.record.folder.clone();
+        // A task already reads it, for another agent in the folder.
+        if !self.repository_reads.insert(folder.clone()) {
+            return;
+        }
+        let inputs = self.inputs.clone();
+        runtime.spawn(async move {
+            let deadline = time::Instant::now() + REPOSITORY_TIME;
+            let read_folder = folder.clone();
+            let read = blocking::run(deadline, Scope::Folder(&folder), move || {
+                repository::of_folder(&read_folder)
+            })
+            .await;
+            // The daemon may be stopping.
+            let _ = inputs.send(HubInput::RepositoryRead { folder, read }).await;
+        });
+    }
+
+    /// Gives the repository read for `folder` to the agents in it now. After a failed read, they
+    /// keep the one they have.
+    pub(super) fn repository_read(
+        &mut self,
+        folder: &Path,
+        read: Result<Option<Repository>, BlockingError>,
+    ) {
+        self.repository_reads.remove(folder);
+        let repository = match read {
+            Ok(repository) => repository,
+            Err(error) => {
+                tracing::warn!(%error, "cannot read the repository of an agent's folder");
+                return;
+            }
+        };
+        let in_folder: Vec<AgentId> = self
+            .agents
+            .iter_mut()
+            .filter(|(_, agent)| agent.record.folder == folder)
+            .map(|(id, agent)| {
+                agent.view.set_repository(repository.clone());
+                *id
+            })
+            .collect();
+        for agent in in_folder {
+            self.publish(agent);
+        }
     }
 
     pub(super) fn restored_cost(&mut self, id: AgentId, generation: u32, cost: CostUsd) {
@@ -822,7 +897,8 @@ pub(super) fn initial_summary(record: &AgentRecord) -> AgentSummary {
         sign_in_wait: SignInWait::NotWaiting,
         background_running: 0,
         mark: record.mark,
-        repository: repository::of_folder(&record.folder),
+        // Read off the hub: `read_repository`.
+        repository: None,
         claude_code_version: None,
     }
 }
@@ -1286,5 +1362,196 @@ mod tests {
             &item.body,
             ItemBody::UserMessage(message) if message.text == "Then this"
         )));
+    }
+
+    /// The new agent's `AgentAdded` carries the repository of another agent in its folder, before
+    /// the read of its own comes back.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_new_agent_takes_the_repository_of_another_agent_in_its_folder() {
+        use tokio::sync::mpsc;
+
+        let temp = tempfile::tempdir().unwrap();
+        let mut hub = Hub::for_tests(&temp.path().join("state"));
+        let claude = temp.path().join("claude");
+        test_script::write_script(&claude, "#!/bin/sh\nexec cat >/dev/null\n");
+        hub.config.claude_program = claude;
+        let folder = temp.path().join("shop");
+        std::fs::create_dir_all(&folder).unwrap();
+        let start = || StartParams {
+            folder: folder.clone(),
+            title: None,
+            model: None,
+            effort: None,
+            mode: None,
+            prompt: None,
+            account: AccountId::DEFAULT,
+        };
+        let Ok(ResponseBody::AgentStarted { agent: first }) = hub.start_agent(start()) else {
+            panic!("the first agent did not start");
+        };
+        let shop = Repository::from_remote("github.com/acme/shop");
+        if let Some(agent) = hub.agents.get_mut(&first) {
+            agent.view.set_repository(Some(shop.clone()));
+        }
+        let (client, mut frames) = mpsc::channel(16);
+        hub.clients.push(client);
+
+        let Ok(ResponseBody::AgentStarted { agent: second }) = hub.start_agent(start()) else {
+            panic!("the second agent did not start");
+        };
+
+        assert_eq!(hub.agents[&second].view.summary().repository, Some(shop));
+        let mut added = None;
+        while let Ok(frame) = frames.try_recv() {
+            let sent = String::from_utf8_lossy(frame.as_bytes()).into_owned();
+            if sent.contains(r#""type":"agent_added""#) {
+                added = Some(sent);
+            }
+        }
+        let added = added.expect("the clients got the new agent");
+        assert!(
+            added.contains(r#""repository":"github.com/acme/shop""#),
+            "{added}"
+        );
+    }
+
+    /// A restored agent shows the repository of its last summary until the read of its folder
+    /// comes back.
+    #[tokio::test]
+    async fn a_restored_agent_keeps_its_repository_until_its_folder_is_read() {
+        use cockpit_protocol::{EventRecord, Frame, Seq, ServerMessage, Timestamp};
+
+        use crate::store::{AgentsFile, EventLogs, StateDir};
+
+        let temp = tempfile::tempdir().unwrap();
+        let folder = temp.path().join("shop");
+        std::fs::create_dir_all(folder.join(".git")).unwrap();
+        std::fs::write(
+            folder.join(".git").join("config"),
+            "[remote \"origin\"]\n\turl = git@github.com:acme/shop.git\n",
+        )
+        .unwrap();
+        let state_dir = temp.path().join("state");
+        let state = StateDir::create(&state_dir).unwrap();
+        let agent = AgentId::new(1);
+        let record = AgentRecord {
+            id: agent,
+            title: "Fix the cart".to_owned(),
+            folder,
+            session: None,
+            model: None,
+            effort: None,
+            mode: None,
+            running: false,
+            started_at: Timestamp::from_unix_millis(0),
+            past: None,
+            position: Position::default(),
+            process: None,
+            account: AccountId::DEFAULT,
+            mark: Mark::Unmarked,
+            resume_as: ResumeAs::Same,
+        };
+        let mut logged = initial_summary(&record);
+        logged.repository = Some(Repository::from_remote("github.com/acme/app"));
+        let added = Frame::encode(&ServerMessage::Event(EventRecord {
+            seq: Seq::new(1),
+            event: Event::AgentAdded(logged),
+        }))
+        .unwrap();
+        EventLogs::new(state.events(), state.details())
+            .append(LogName::Agent(agent), &added)
+            .unwrap();
+        AgentsFile {
+            next_agent: AgentId::new(2),
+            replay_floor: None,
+            agents: vec![record],
+        }
+        .save(&state.agents_file())
+        .unwrap();
+        let (mut hub, mut inputs) = Hub::for_tests_with_inputs(&state_dir);
+        let repository = |hub: &Hub| {
+            let summary = hub.agents[&agent].view.summary();
+            summary
+                .repository
+                .as_ref()
+                .map(|read| read.as_str().to_owned())
+        };
+
+        hub.start_restored_agents();
+        let before_the_read = repository(&hub);
+        while repository(&hub) == before_the_read {
+            let input = tokio::time::timeout(Duration::from_secs(10), inputs.recv())
+                .await
+                .expect("the repository came in time")
+                .unwrap();
+            hub.handle(input);
+        }
+
+        assert_eq!(before_the_read.as_deref(), Some("github.com/acme/app"));
+        assert_eq!(repository(&hub).as_deref(), Some("github.com/acme/shop"));
+    }
+
+    /// Many agents in a folder on a mount that does not answer would otherwise hold a thread each.
+    #[tokio::test]
+    async fn the_agents_of_one_folder_share_one_read_of_its_repository() {
+        use cockpit_protocol::Timestamp;
+
+        use crate::store::{AgentsFile, StateDir};
+
+        let temp = tempfile::tempdir().unwrap();
+        let folder = temp.path().join("shop");
+        std::fs::create_dir_all(folder.join(".git")).unwrap();
+        std::fs::write(
+            folder.join(".git").join("config"),
+            "[remote \"origin\"]\n\turl = git@github.com:acme/shop.git\n",
+        )
+        .unwrap();
+        let state_dir = temp.path().join("state");
+        let state = StateDir::create(&state_dir).unwrap();
+        let record = |id: u32| AgentRecord {
+            id: AgentId::new(id),
+            title: format!("Agent {id}"),
+            folder: folder.clone(),
+            session: None,
+            model: None,
+            effort: None,
+            mode: None,
+            running: false,
+            started_at: Timestamp::from_unix_millis(0),
+            past: None,
+            position: Position::default(),
+            process: None,
+            account: AccountId::DEFAULT,
+            mark: Mark::Unmarked,
+            resume_as: ResumeAs::Same,
+        };
+        AgentsFile {
+            next_agent: AgentId::new(3),
+            replay_floor: None,
+            agents: vec![record(1), record(2)],
+        }
+        .save(&state.agents_file())
+        .unwrap();
+        let (mut hub, mut inputs) = Hub::for_tests_with_inputs(&state_dir);
+
+        hub.start_restored_agents();
+        let reads = hub.repository_reads.len();
+        let input = tokio::time::timeout(Duration::from_secs(10), inputs.recv())
+            .await
+            .expect("the repository came in time")
+            .unwrap();
+        assert!(matches!(input, HubInput::RepositoryRead { .. }));
+        hub.handle(input);
+
+        assert_eq!(reads, 1, "one read for the folder");
+        assert!(hub.repository_reads.is_empty());
+        for agent in [AgentId::new(1), AgentId::new(2)] {
+            let summary = hub.agents[&agent].view.summary();
+            assert_eq!(
+                summary.repository.as_ref().map(Repository::as_str),
+                Some("github.com/acme/shop")
+            );
+        }
     }
 }

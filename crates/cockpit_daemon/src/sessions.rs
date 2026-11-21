@@ -14,7 +14,7 @@ use std::fs::File;
 use std::io;
 use std::io::{BufRead, BufReader, Read, SeekFrom};
 use std::path::{Path, PathBuf};
-use std::time::SystemTime;
+use std::time::{Duration, SystemTime};
 
 use claude_protocol::{MessageOrigin, OutputLine, TypedCommand};
 use cockpit_protocol::{
@@ -42,6 +42,8 @@ const PARTIAL_SUFFIX: &str = ".partial";
 const CHUNK_BYTES: u64 = 64 * 1024;
 /// The newest sessions listed.
 const MAX_SESSIONS: usize = 100;
+/// How long listing or finding the sessions may take: each reads the start of many transcripts.
+pub(crate) const READ_TIME: Duration = Duration::from_secs(30);
 
 /// The keys of Claude Code's session lines that matter here.
 const TYPE_KEY: &str = "type";

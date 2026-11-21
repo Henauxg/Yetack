@@ -10,8 +10,10 @@ use cockpit_protocol::{
     ListDirParams, MAX_LINE_BYTES, McpRemoveParams, McpToggleAction, ReadFileParams, Request,
     ResponseBody, SessionResumeParams, Settings, SlashCommand, StopProcessParams,
 };
+use tokio::time;
 
 use crate::accounts::ClaudeEnv;
+use crate::blocking::{self, Scope};
 use crate::daemon_config::HOME_ENV;
 use crate::git::GitError;
 use crate::hub::input::{ControlPurpose, HubInput, Reply};
@@ -405,10 +407,13 @@ impl Hub {
     fn sessions_list(&self, reply: Reply) {
         let folders = self.account_folders();
         tokio::spawn(async move {
-            let listed = tokio::task::spawn_blocking(move || sessions::list(&folders)).await;
+            let deadline = time::Instant::now() + sessions::READ_TIME;
+            let listing =
+                blocking::run(deadline, Scope::Sessions, move || sessions::list(&folders));
+            let listed = listing.await;
             let result = match listed {
                 Ok(sessions) => Ok(ResponseBody::Sessions { sessions }),
-                Err(error) => Err(errors::internal(error.to_string())),
+                Err(error) => Err(error.to_error_body()),
             };
             agents::respond(reply, result);
         });
@@ -440,7 +445,11 @@ impl Hub {
         let inputs = self.inputs.clone();
         tokio::spawn(async move {
             let id = params.session;
-            let found = tokio::task::spawn_blocking(move || sessions::find(&folder, &id)).await;
+            let deadline = time::Instant::now() + sessions::READ_TIME;
+            let finding = blocking::run(deadline, Scope::Sessions, move || {
+                sessions::find(&folder, &id)
+            });
+            let found = finding.await;
             match found {
                 Ok(Some(found)) => {
                     let input = HubInput::SessionFound {
@@ -464,7 +473,7 @@ impl Hub {
                         "no such Claude session".to_owned(),
                     )),
                 ),
-                Err(error) => agents::respond(reply, Err(errors::internal(error.to_string()))),
+                Err(error) => agents::respond(reply, Err(error.to_error_body())),
             }
         });
     }
@@ -482,11 +491,15 @@ fn max_edits_bytes(text: &str) -> usize {
 
 fn list_folders(params: FoldersListParams, reply: Reply) {
     tokio::spawn(async move {
-        let listed = tokio::task::spawn_blocking(move || browse::list_folders(&params.path)).await;
+        let deadline = time::Instant::now() + browse::LIST_TIME;
+        let listing = blocking::run(deadline, Scope::FolderList, move || {
+            browse::list_folders(&params.path)
+        });
+        let listed = listing.await;
         let result = match listed {
             Ok(Ok(listing)) => Ok(ResponseBody::Directory(listing)),
             Ok(Err(error)) => Err(error.to_error_body()),
-            Err(error) => Err(errors::internal(error.to_string())),
+            Err(error) => Err(error.to_error_body()),
         };
         agents::respond(reply, result);
     });

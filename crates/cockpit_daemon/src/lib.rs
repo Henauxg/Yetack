@@ -5,6 +5,7 @@
 //! same process.
 
 mod accounts;
+mod blocking;
 mod browse;
 mod build_commit;
 mod daemon;

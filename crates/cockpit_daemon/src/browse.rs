@@ -43,6 +43,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::process::Command;
 use tokio::time::Instant;
 
+use crate::blocking::{self, Scope};
 #[cfg(windows)]
 use crate::process::program;
 use crate::read_file::{
@@ -60,6 +61,8 @@ pub(crate) const MAX_READ: usize = 20_000;
 /// How long git may take to say which entries a listing's checkout ignores. The app waits for the
 /// listing to open the folder, so past it the listing goes without the marks.
 const IGNORE_TIME: Duration = Duration::from_secs(1);
+/// How long reading a folder's entries may take.
+pub(crate) const LIST_TIME: Duration = Duration::from_secs(10);
 /// Reads paths, each ended by a NUL byte, and writes back those the checkout ignores, each ended
 /// by a NUL byte. A tracked file is not ignored.
 const CHECK_IGNORE: [&str; 3] = ["check-ignore", "-z", "--stdin"];
@@ -103,11 +106,13 @@ pub(crate) async fn list(
     home: Option<PathBuf>,
     path: PathBuf,
 ) -> Result<DirListing, ListDirError> {
-    let (mut listing, resolved) = tokio::task::spawn_blocking(move || {
-        read_listing(&folder, &touched, home.as_deref(), &path)
-    })
-    .await
-    .map_err(read_file::join_error)??;
+    let agent_folder = folder.clone();
+    let reading = blocking::run(
+        Instant::now() + LIST_TIME,
+        Scope::Folder(&folder),
+        move || read_listing(&agent_folder, &touched, home.as_deref(), &path),
+    );
+    let (mut listing, resolved) = reading.await.map_err(ReadFileError::from)??;
     mark_ignored(
         &resolved,
         &mut listing.entries,
@@ -425,18 +430,18 @@ pub(crate) async fn find_files(
     if needle.is_empty() {
         return Ok(Vec::new());
     }
-    let (access, folder) = tokio::task::spawn_blocking(move || {
-        let access = Access::new(&folder, &touched, home.as_deref());
-        (access, folder)
+    let deadline = Instant::now() + SEARCH_TIME;
+    let agent_folder = folder.clone();
+    let access = blocking::run(deadline, Scope::Folder(&folder), move || {
+        Access::new(&agent_folder, &touched, home.as_deref())
     })
-    .await
-    .map_err(read_file::join_error)?;
+    .await?;
     let name_holds = |relative: &Path| {
         relative
             .file_name()
             .is_some_and(|file| file.to_string_lossy().to_lowercase().contains(&needle))
     };
-    Ok(read_file::search(&access, folder, name_holds, Instant::now() + SEARCH_TIME).await)
+    Ok(read_file::search(&access, folder, name_holds, deadline).await)
 }
 
 /// The entries of the open folder `folder`, at `path`, its folders first, then the others, each

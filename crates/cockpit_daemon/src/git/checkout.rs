@@ -5,6 +5,9 @@ use std::ffi::OsStr;
 use std::io;
 use std::path::{Component, Path, PathBuf};
 
+use tokio::time::Instant;
+
+use crate::blocking::{self, Scope};
 use crate::git::GitError;
 use crate::read_file::{self, Access, GIT_ENTRY, ReadFileError};
 
@@ -22,14 +25,19 @@ pub(super) struct CheckoutFile {
     pub(super) path: String,
 }
 
-/// [`locate`], in a task that may wait on the file system.
+/// [`locate`], in a task that may wait on the file system, until `deadline`.
 pub(super) async fn locate_in_task(
     folder: PathBuf,
     touched: Vec<PathBuf>,
     home: Option<PathBuf>,
     path: PathBuf,
+    deadline: Instant,
 ) -> Result<CheckoutFile, GitError> {
-    tokio::task::spawn_blocking(move || locate(&folder, &touched, home.as_deref(), &path)).await?
+    let agent_folder = folder.clone();
+    blocking::run(deadline, Scope::Folder(&agent_folder), move || {
+        locate(&folder, &touched, home.as_deref(), &path)
+    })
+    .await?
 }
 
 /// The checkout that holds `path`, absolute or relative to `folder`, the agent's folder, once its

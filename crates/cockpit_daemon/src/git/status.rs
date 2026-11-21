@@ -12,6 +12,7 @@ use cockpit_protocol::{
 use strum::{EnumString, IntoStaticStr, VariantArray};
 use tokio::time::Instant;
 
+use crate::blocking::{self, Scope};
 use crate::git::command::{
     self, END_OF_OPTIONS, FIELD_END, Git, HEAD, NO_COLOR, NO_EXT_DIFF, NO_SUBMODULES, NO_TEXTCONV,
     NUMSTAT,
@@ -173,7 +174,8 @@ pub(crate) async fn status(
     home: Option<PathBuf>,
 ) -> Result<GitStatus, GitError> {
     let deadline = Instant::now() + STATUS_TIME;
-    let (access, roots) = tokio::task::spawn_blocking(move || {
+    let agent_folder = folder.clone();
+    let (access, roots) = blocking::run(deadline, Scope::Folder(&agent_folder), move || {
         let access = Access::new(&folder, &touched, home.as_deref());
         let roots = checkout::status_roots(&folder, &touched, home.as_deref());
         (access, roots)
@@ -260,17 +262,19 @@ async fn checkout_state(
         }),
         _ => None,
     };
-    let (root, files, remote, kind) = tokio::task::spawn_blocking(move || {
-        count_untracked(&access, &mut files);
-        let remote = repository::linked_remote(&root);
-        let kind = if repository::is_linked_worktree(&root) {
-            CheckoutKind::LinkedWorktree
-        } else {
-            CheckoutKind::MainWorktree
-        };
-        (root, files, remote, kind)
-    })
-    .await?;
+    let checkout = root.clone();
+    let (root, files, remote, kind) =
+        blocking::run(deadline, Scope::Folder(&checkout), move || {
+            count_untracked(&access, &mut files);
+            let remote = repository::linked_remote(&root);
+            let kind = if repository::is_linked_worktree(&root) {
+                CheckoutKind::LinkedWorktree
+            } else {
+                CheckoutKind::MainWorktree
+            };
+            (root, files, remote, kind)
+        })
+        .await?;
     let remote = match remote {
         Some(remote) => Some(remote_state(&root, remote, head.as_ref(), deadline).await),
         None => None,

@@ -19,17 +19,17 @@ use cockpit_protocol::{
     BackgroundTask, BackgroundTaskId, BackgroundTaskStatus, ClaudeCodeVersion, ClaudeSessionId,
     CommandChanges, ContextUsage, CostUsd, Effort, EffortSource, Event, Image, ItemBody, ItemId,
     Mark, McpServer, NoticeKind, PendingId, PermissionMode, Plan, Position, Prompt, PromptId,
-    Question, SignInWait, SlashCommand, SubagentRun, SubagentStatus, SubagentToolCall, Timestamp,
-    TokenUsage, ToolCall, ToolCallStatus, TranscriptItem, TurnEnd, TurnOutcome, UserMessage,
-    WaitingPrompt, WaitingState,
+    Question, Repository, SignInWait, SlashCommand, SubagentRun, SubagentStatus, SubagentToolCall,
+    Timestamp, TokenUsage, ToolCall, ToolCallStatus, TranscriptItem, TurnEnd, TurnOutcome,
+    UserMessage, WaitingPrompt, WaitingState,
 };
 use serde_json::{Map, Value};
 use strum::{EnumString, IntoStaticStr, VariantArray};
 
+use crate::sessions;
 use crate::transcript::past_transcript::LAST_PAST_ID;
 use crate::transcript::subagents::{Ended, Started};
 use crate::transcript::{answers, details, notices, subagents, tools, words};
-use crate::{repository, sessions};
 
 /// What the hub does after a line, beyond publishing the view's events.
 #[derive(Debug, Clone, PartialEq)]
@@ -973,10 +973,13 @@ impl AgentView {
         self.summary.title = title;
     }
 
-    /// Moves the agent to `folder`, which may belong to another repository.
+    /// Moves the agent to `folder`. Its repository stays until the hub reads the new one.
     pub(crate) fn set_folder(&mut self, folder: PathBuf) {
-        self.summary.repository = repository::of_folder(&folder);
         self.summary.folder = folder;
+    }
+
+    pub(crate) fn set_repository(&mut self, repository: Option<Repository>) {
+        self.summary.repository = repository;
     }
 
     pub(crate) fn set_position(&mut self, position: Position) {

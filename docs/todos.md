@@ -14,6 +14,7 @@ Ideas and fixes noted for later. None of them is planned yet.
 - **Notes on an agent.** A short Markdown note per agent session, which the user writes and edits by hand: what the agent is for, what to check next. Open question: whether the agent can read the note too, or write to it.
 - **Smaller fixes, not done:**
   - `settings.set` takes a value of any size. Give it a limit.
+  - The hub checks an agent's folder itself when the agent starts or resumes (`agent_folder`, `check_folder`). The agent can replace its folder with a link into a mount that never answers, and the next resume then holds the hub. Starting and resuming would check the folder in a task first (`blocking::run`), then go on when the answer comes back to the hub.
   - Undo after closing an agent brings it back under a new id, so it loses its files pane (open or closed) and its notification level. Carry both through the undo (`ui.closed`, `Reopening`).
   - The notification levels of a removed server's agents stay in `prefs.json` for good. Drop them in `machines::forget`, as its files panes are dropped.
   - With no agent selected on its machine, the new agent dialog fills its folder from the first recent folder before the past sessions arrive, so it can open on an older folder.

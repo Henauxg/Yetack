@@ -45,7 +45,7 @@ pub(crate) async fn log(
     path: PathBuf,
 ) -> Result<Vec<LogEntry>, GitError> {
     let deadline = Instant::now() + LOG_TIME;
-    let located = checkout::locate_in_task(folder, touched, home, path).await?;
+    let located = checkout::locate_in_task(folder, touched, home, path, deadline).await?;
     let root = located.root.as_path();
     let Some(head) = commit::resolve(root, HEAD, deadline).await? else {
         return Ok(Vec::new());

@@ -1,6 +1,6 @@
 //! The hub's state, its loop, and how an event goes out.
 
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::path::PathBuf;
 use std::time::{Duration, Instant, SystemTime};
 
@@ -64,6 +64,9 @@ pub(crate) struct Hub {
     pub(super) terminals: Terminals,
     /// What the agents closed a moment ago were given, for an undo that resumes their session.
     pub(super) closed_choices: ClosedChoices,
+    /// The agents' folders whose repository a task reads: one task per folder, however many
+    /// agents it holds.
+    pub(super) repository_reads: BTreeSet<PathBuf>,
 }
 
 pub(super) struct Agent {
@@ -229,6 +232,7 @@ impl Hub {
             checking_sign_ins: false,
             terminals: Terminals::default(),
             closed_choices: ClosedChoices::default(),
+            repository_reads: BTreeSet::new(),
         }
     }
 
@@ -304,6 +308,7 @@ impl Hub {
                 cost,
             } => self.restored_cost(agent, generation, cost),
             HubInput::DetailsDue { agent } => self.send_held_details(agent),
+            HubInput::RepositoryRead { folder, read } => self.repository_read(&folder, read),
             HubInput::TerminalOutput { terminal, data } => self.terminal_output(terminal, &data),
             HubInput::TerminalExited { terminal, code } => self.terminal_exited(terminal, code),
         }

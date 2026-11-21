@@ -32,9 +32,9 @@ use std::time::Duration;
 use cockpit_protocol::{ErrorBody, ErrorCode, FileEdit, Image, ImageMediaType};
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
-use tokio::task::JoinError;
 use tokio::time::Instant;
 
+use crate::blocking::{self, BlockingError, Scope};
 #[cfg(windows)]
 use crate::process::program;
 #[cfg(windows)]
@@ -51,6 +51,8 @@ pub(crate) const GIT_ENTRY: &str = ".git";
 pub(crate) const MAX_MATCHES: usize = 20;
 /// How long a search may run, all checkouts together.
 pub(crate) const SEARCH_TIME: Duration = Duration::from_secs(3);
+/// How long finding and reading a file may take, its search apart.
+const READ_TIME: Duration = Duration::from_secs(10);
 pub(crate) const GIT_PROGRAM: &str = "git";
 /// Lists the files of the checkout under the current folder, tracked or not, without the ignored
 /// ones, each ended by a NUL byte.
@@ -199,6 +201,8 @@ pub(crate) enum ReadFileError {
     NotText,
     #[error("cannot read the file: {0}")]
     Io(#[source] io::Error),
+    #[error(transparent)]
+    Blocking(#[from] BlockingError),
 }
 
 impl ReadFileError {
@@ -211,6 +215,7 @@ impl ReadFileError {
             Self::NotAFile | Self::TooLarge(_) | Self::NotText | Self::Io(_) => {
                 ErrorCode::FileUnreadable
             }
+            Self::Blocking(error) => return error.to_error_body(),
         };
         ErrorBody::new(code, self.to_string())
     }
@@ -300,15 +305,19 @@ pub(crate) async fn find_and_read(
     path: PathBuf,
 ) -> Result<Found, ReadFileError> {
     let task = {
-        let folder = folder.clone();
+        let agent_folder = folder.clone();
         let path = path.clone();
-        tokio::task::spawn_blocking(move || {
-            let access = Access::new(&folder, &touched, home.as_deref());
-            let found = read_or_match_touched(&access, &folder, &touched, &path)?;
-            Ok::<_, ReadFileError>((access, found))
-        })
+        blocking::run(
+            Instant::now() + READ_TIME,
+            Scope::Folder(&folder),
+            move || {
+                let access = Access::new(&agent_folder, &touched, home.as_deref());
+                let found = read_or_match_touched(&access, &agent_folder, &touched, &path)?;
+                Ok::<_, ReadFileError>((access, found))
+            },
+        )
     };
-    let (access, found) = task.await.map_err(join_error)??;
+    let (access, found) = task.await??;
     if let Some(found) = found {
         return Ok(found);
     }
@@ -316,7 +325,7 @@ pub(crate) async fn find_and_read(
     let ends_with_tail = |relative: &Path| relative.ends_with(&tail);
     let matches = search(
         &access,
-        folder,
+        folder.clone(),
         ends_with_tail,
         Instant::now() + SEARCH_TIME,
     )
@@ -325,12 +334,11 @@ pub(crate) async fn find_and_read(
         [] => Err(ReadFileError::Unknown(path)),
         [only] => {
             let only = only.clone();
-            let content = tokio::task::spawn_blocking({
+            let content = blocking::run(Instant::now() + READ_TIME, Scope::Folder(&folder), {
                 let only = only.clone();
                 move || read(&access, &only)
             })
-            .await
-            .map_err(join_error)??;
+            .await??;
             Ok(Found::File {
                 path: only,
                 content,
@@ -338,10 +346,6 @@ pub(crate) async fn find_and_read(
         }
         _ => Ok(Found::Several(matches)),
     }
-}
-
-pub(crate) fn join_error(error: JoinError) -> ReadFileError {
-    ReadFileError::Io(io::Error::other(error))
 }
 
 /// The first two steps: `path` itself, then for a name that is not in `folder`, the most recent
@@ -435,11 +439,18 @@ pub(crate) async fn search(
                 continue;
             }
             let found = root.join(relative);
-            if access.check_before_open(&found).is_err() {
+            // An answer carries paths as text.
+            if found.to_str().is_none() || access.check_before_open(&found).is_err() {
                 continue;
             }
-            let Ok(resolved) = canonical(&found) else {
-                continue;
+            let resolving = found.clone();
+            let resolving = blocking::run(deadline, Scope::Folder(&root), move || {
+                canonical(&resolving)
+            });
+            let resolved = match resolving.await {
+                Ok(Ok(resolved)) => resolved,
+                Ok(Err(_)) => continue,
+                Err(_) => return matches,
             };
             if seen.contains(&resolved) {
                 continue;
@@ -827,6 +838,26 @@ mod tests {
         assert_eq!(
             message.message,
             "register-parcel.component.ts is not in the agent's folder or in the files it read or changed"
+        );
+    }
+
+    /// An answer carries paths as text.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_search_leaves_out_a_name_that_is_not_utf8() {
+        use std::os::unix::ffi::OsStrExt;
+
+        let layout = Layout::new();
+        git_init(&layout.agent);
+        write(&layout.agent.join("src/a/widget.ts"), "widget\n");
+        let folder = layout.agent.join("src").join(OsStr::from_bytes(b"\xff"));
+        write(&folder.join("widget.ts"), "unnamed\n");
+
+        let found = find(&layout, &[], "widget.ts").await.unwrap();
+
+        assert_eq!(
+            found,
+            file(layout.agent.join("src/a/widget.ts"), "widget\n")
         );
     }
 

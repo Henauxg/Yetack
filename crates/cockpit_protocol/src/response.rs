@@ -272,7 +272,7 @@ pub enum ErrorCode {
     FileUnreadable,
     /// Claude Code answered with an error, or could not start.
     ClaudeFailed,
-    /// Claude Code did not answer in time.
+    /// Claude Code, git or the file system did not answer in time.
     Timeout,
     /// The daemon's machine cannot do it, such as measuring its load without `/proc`.
     Unsupported,

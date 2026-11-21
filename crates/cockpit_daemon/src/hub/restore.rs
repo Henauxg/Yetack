@@ -11,12 +11,12 @@ use cockpit_protocol::{
 
 use crate::hub::agents::initial_summary;
 use crate::hub::errors;
+use crate::sessions;
 use crate::store::{
     AgentRecord, AgentsFile, DaemonSettings, EventLogs, LatestDetails, LogName, StateDir,
     StoreError, details_path, for_each_event, move_details_out, read_latest_details,
 };
 use crate::transcript::AgentView;
-use crate::{repository, sessions};
 
 pub(crate) struct Restored {
     pub(crate) agents: Vec<(AgentRecord, AgentView)>,
@@ -94,7 +94,6 @@ pub(crate) fn restore(state: &StateDir, default_folder: &Path) -> Result<Restore
             // The record is the reference for what a client chose.
             summary.title = record.title.clone();
             summary.folder = record.folder.clone();
-            summary.repository = repository::of_folder(&record.folder);
             summary.position = record.position;
             summary.account = record.account;
             summary.mark = record.mark;

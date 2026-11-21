@@ -7,12 +7,15 @@
 //! result comes back as a [`HubInput`].
 
 use std::path::PathBuf;
+use std::time::Duration;
 
 use cockpit_protocol::{
     AccountId, AgentId, ClaudeSessionId, Effort, ErrorBody, ErrorCode, FolderParams,
     MAX_TITLE_CHARS, Mark, PermissionMode, Position, ResponseBody,
 };
+use tokio::time;
 
+use crate::blocking::{self, Scope};
 use crate::hub::agents::{agent_folder, respond};
 use crate::hub::input::{HubInput, Reply};
 use crate::hub::state::Hub;
@@ -23,6 +26,9 @@ use crate::store::{AgentRecord, ResumeAs};
 
 /// Added to the title of a fork.
 const FORK_TITLE_SUFFIX: &str = " (fork)";
+/// How long copying a session to another folder's project may take: a session file can reach
+/// hundreds of megabytes.
+const COPY_TIME: Duration = Duration::from_secs(120);
 
 /// What a fork takes from the agent it forks, read when the request came, so that it still starts
 /// if that agent closes meanwhile.
@@ -65,7 +71,8 @@ impl Hub {
                 fork.folder.clone(),
                 fork.target.clone(),
             );
-            let copied = tokio::task::spawn_blocking(move || {
+            let deadline = time::Instant::now() + COPY_TIME;
+            let copied = blocking::run(deadline, Scope::Sessions, move || {
                 sessions::copy_to_project(&claude_folder, &session, &from, &to)?;
                 let folder = AccountFolder {
                     account,
@@ -218,7 +225,8 @@ impl Hub {
         let inputs = self.inputs.clone();
         tokio::spawn(async move {
             let to = folder.clone();
-            let copied = tokio::task::spawn_blocking(move || {
+            let deadline = time::Instant::now() + COPY_TIME;
+            let copied = blocking::run(deadline, Scope::Sessions, move || {
                 sessions::copy_to_project(&claude_folder, &session, &from, &to)
             })
             .await
@@ -252,7 +260,8 @@ impl Hub {
             return respond(reply, Err(errors::agent_not_found(id)));
         };
         agent.moving = None;
-        if copied.is_ok() {
+        let moved = copied.is_ok();
+        if moved {
             agent.record.folder.clone_from(&folder);
             agent.view.set_folder(folder);
         }
@@ -264,6 +273,9 @@ impl Hub {
         };
         if restart && let Some(agent) = self.agents.get_mut(&id) {
             agent.view.resumed_by_user(state::now());
+        }
+        if moved {
+            self.read_repository(id);
         }
         self.save_agents();
         self.publish(id);
@@ -300,7 +312,7 @@ mod tests {
     use std::path::Path;
     use std::time::Duration;
 
-    use cockpit_protocol::{ResponseResult, StartParams};
+    use cockpit_protocol::{Repository, ResponseResult, StartParams};
     use tokio::sync::{mpsc, oneshot};
 
     use super::*;
@@ -434,6 +446,51 @@ mod tests {
         assert_eq!(moved.record.resume_as, ResumeAs::Same);
         assert!(moved.process.is_some(), "it runs again");
         assert!(session_file(&hub, &target).is_file());
+    }
+
+    #[tokio::test]
+    async fn a_moved_agent_gets_its_new_repository_read_off_the_hub() {
+        let temp = tempfile::tempdir().unwrap();
+        let (mut hub, mut inputs, agent) = hub_with_agent(temp.path());
+        let target = temp.path().join("shop");
+        std::fs::create_dir_all(target.join(".git")).unwrap();
+        std::fs::write(
+            target.join(".git/config"),
+            "[remote \"origin\"]\n\turl = git@github.com:acme/shop.git\n",
+        )
+        .unwrap();
+        let (reply, answered) = oneshot::channel();
+        hub.change_folder(
+            FolderParams {
+                agent,
+                folder: target.clone(),
+            },
+            reply,
+        );
+        answer(&mut hub, &mut inputs, answered).await.unwrap();
+
+        let repository = loop {
+            if let Some(read) = &hub.agents[&agent].view.summary().repository {
+                break read.clone();
+            }
+            let input = tokio::time::timeout(Duration::from_secs(10), inputs.recv())
+                .await
+                .expect("the repository came in time")
+                .unwrap();
+            hub.handle(input);
+        };
+        let earlier_folder = temp.path().join("app");
+        hub.repository_read(
+            &earlier_folder,
+            Ok(Some(Repository::from_remote("github.com/acme/app"))),
+        );
+
+        assert_eq!(repository.as_str(), "github.com/acme/shop");
+        assert_eq!(
+            hub.agents[&agent].view.summary().repository,
+            Some(repository),
+            "a read of the folder the agent left changes nothing"
+        );
     }
 
     #[tokio::test]

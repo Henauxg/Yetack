@@ -3,11 +3,12 @@ use std::path::PathBuf;
 use std::time::Instant;
 
 use cockpit_protocol::{
-    AccountId, AccountState, AgentId, CostUsd, Frame, PermissionMode, Request, ResponseResult, Seq,
-    SignIn, SlashCommand, Snapshot, TerminalId, Timestamp,
+    AccountId, AccountState, AgentId, CostUsd, Frame, PermissionMode, Repository, Request,
+    ResponseResult, Seq, SignIn, SlashCommand, Snapshot, TerminalId, Timestamp,
 };
 use tokio::sync::{mpsc, oneshot};
 
+use crate::blocking::BlockingError;
 use crate::hub::folders::ForkOf;
 use crate::process::ProcessEvent;
 use crate::sessions::FoundSession;
@@ -83,6 +84,11 @@ pub(crate) enum HubInput {
     /// An agent's details change that waited for its turn may go out.
     DetailsDue {
         agent: AgentId,
+    },
+    /// The repository of `folder`, an agent's folder, read off the hub.
+    RepositoryRead {
+        folder: PathBuf,
+        read: Result<Option<Repository>, BlockingError>,
     },
 }
 

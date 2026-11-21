@@ -4,6 +4,7 @@ use std::path::PathBuf;
 use cockpit_protocol::{CommitHash, ErrorBody, ErrorCode};
 use tokio::task::JoinError;
 
+use crate::blocking::BlockingError;
 use crate::read_file::ReadFileError;
 
 #[derive(Debug, thiserror::Error)]
@@ -44,6 +45,8 @@ pub(crate) enum GitError {
     Read(#[source] io::Error),
     #[error("the request's task failed: {0}")]
     Task(#[from] JoinError),
+    #[error(transparent)]
+    Blocking(#[from] BlockingError),
 }
 
 impl GitError {
@@ -51,6 +54,7 @@ impl GitError {
         let code = match self {
             Self::GoesUp => ErrorCode::InvalidRequest,
             Self::Access(error) => return error.to_error_body(),
+            Self::Blocking(error) => return error.to_error_body(),
             Self::Outside(_)
             | Self::NoCommit(_)
             | Self::NotCommitted(_)

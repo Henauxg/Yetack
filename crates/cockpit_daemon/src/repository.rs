@@ -7,6 +7,10 @@ use std::path::{Path, PathBuf};
 
 use cockpit_protocol::Repository;
 
+use crate::read_file;
+#[cfg(windows)]
+use crate::windows_path;
+
 const GIT_ENTRY: &str = ".git";
 /// What a worktree's `.git` file starts with, before the path of its git folder.
 const GITDIR_PREFIX: &str = "gitdir:";
@@ -14,6 +18,10 @@ const GITDIR_PREFIX: &str = "gitdir:";
 const COMMONDIR_FILE: &str = "commondir";
 const CONFIG_FILE: &str = "config";
 const ORIGIN: &str = "origin";
+/// The most bytes read of a `.git` file or a `commondir`, which name one folder.
+const MAX_POINTER_BYTES: u64 = 64 * 1024;
+/// The most bytes read of a git config.
+const MAX_CONFIG_BYTES: u64 = 1024 * 1024;
 
 /// The repository of the git checkout that holds `folder`, by its `origin` remote, else by its
 /// first remote. `None` outside git, or for a checkout without a remote.
@@ -27,7 +35,8 @@ pub(crate) fn linked_remote(folder: &Path) -> Option<ConfigRemote> {
         .ancestors()
         .find(|ancestor| ancestor.join(GIT_ENTRY).symlink_metadata().is_ok())?;
     let git_dir = git_dir(&checkout.join(GIT_ENTRY))?;
-    let config = read_regular(&common_dir(&git_dir).join(CONFIG_FILE))?;
+    let common_dir = common_dir(&git_dir, checkout)?;
+    let config = read_regular(&common_dir.join(CONFIG_FILE), MAX_CONFIG_BYTES)?;
     let remotes = remotes(&config);
     let linked = remotes
         .iter()
@@ -55,38 +64,71 @@ fn git_dir(entry: &Path) -> Option<PathBuf> {
     if entry.is_dir() {
         return Some(entry.to_owned());
     }
-    let text = read_regular(entry)?;
+    let checkout = entry.parent()?;
+    let text = read_regular(entry, MAX_POINTER_BYTES)?;
     let named = text.trim().strip_prefix(GITDIR_PREFIX)?.trim();
-    let named = Path::new(named);
-    Some(if named.is_absolute() {
-        named.to_owned()
-    } else {
-        entry.parent()?.join(named)
-    })
+    openable(checkout.join(named), checkout)
 }
 
-/// The git folder that holds the config: a worktree's names it in `commondir`.
-fn common_dir(git_dir: &Path) -> PathBuf {
-    match read_regular(&git_dir.join(COMMONDIR_FILE)) {
-        Some(text) => {
-            let named = Path::new(text.trim());
-            if named.is_absolute() {
-                named.to_owned()
-            } else {
-                git_dir.join(named)
-            }
-        }
-        None => git_dir.to_owned(),
+/// The git folder that holds the config: a worktree's names it in `commondir`. `None` when that
+/// is a path the daemon does not open.
+fn common_dir(git_dir: &Path, checkout: &Path) -> Option<PathBuf> {
+    match read_regular(&git_dir.join(COMMONDIR_FILE), MAX_POINTER_BYTES) {
+        Some(text) => openable(git_dir.join(text.trim()), checkout),
+        None => Some(git_dir.to_owned()),
     }
 }
 
-/// The text of `path` when it is a regular file. Reading anything else, such as a FIFO an
-/// agent made, could block the daemon or never end.
-fn read_regular(path: &Path) -> Option<String> {
+/// `path` when the daemon may open it. A `gitdir:` or `commondir` line the agent wrote names it.
+/// On Windows, the daemon opens only a path on a disk or on `checkout`'s share: opening a device
+/// can act on it, and opening another share sends its host a hash of the user's login.
+#[cfg(windows)]
+fn openable(path: PathBuf, checkout: &Path) -> Option<PathBuf> {
+    use std::path::Component;
+
+    // Windows resolves `..` in the text before it opens a path, as this does.
+    let mut resolved = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::ParentDir => {
+                resolved.pop();
+            }
+            Component::CurDir => {}
+            Component::Prefix(_) | Component::RootDir | Component::Normal(_) => {
+                resolved.push(component);
+            }
+        }
+    }
+    let text = resolved.to_str()?;
+    let allowed = windows_path::may_open(text, checkout.to_str());
+    (allowed && !windows_path::names_a_device(text)).then_some(resolved)
+}
+
+/// Any path: on Unix, resolving a path opens no device and reaches no other host.
+#[cfg(unix)]
+fn openable(path: PathBuf, _checkout: &Path) -> Option<PathBuf> {
+    Some(path)
+}
+
+/// The text of `path` when it is a regular file of at most `limit` bytes. Reading anything else,
+/// such as a FIFO an agent made, could block the daemon or never end, and a larger file could take
+/// its memory.
+fn read_regular(path: &Path, limit: u64) -> Option<String> {
+    use std::io::Read;
+
+    // Opening a device can act on it, so the type is checked first. The open file is checked
+    // again, in case a FIFO was swapped in since.
     if !fs::metadata(path).ok()?.is_file() {
         return None;
     }
-    fs::read_to_string(path).ok()
+    let file = read_file::open_to_read(path).ok()?;
+    let metadata = file.metadata().ok()?;
+    if !metadata.is_file() || metadata.len() > limit {
+        return None;
+    }
+    let mut text = String::new();
+    file.take(limit + 1).read_to_string(&mut text).ok()?;
+    (u64::try_from(text.len()).ok()? <= limit).then_some(text)
 }
 
 /// Each remote with a `url`, in the file's order.
@@ -126,6 +168,8 @@ fn remotes(config: &str) -> Vec<ConfigRemote> {
 
 #[cfg(test)]
 mod tests {
+    use std::fs::File;
+
     use super::*;
 
     const CONFIG: &str = "[core]\n\tbare = false\n[remote \"upstream\"]\n\turl = https://github.com/upstream/billing.git\n[remote \"origin\"]\n\turl = git@github.com:acme/billing.git\n\tfetch = +refs/heads/*:refs/remotes/origin/*\n";
@@ -198,6 +242,62 @@ mod tests {
         fs::write(temp.path().join(".git/config"), "[core]\n\tbare = false\n").unwrap();
         assert_eq!(of_folder(temp.path()), None);
         assert_eq!(of_folder(&temp.path().join("missing")), None);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_git_line_naming_a_device_or_another_share_names_no_git_folder() {
+        let temp = tempfile::tempdir().unwrap();
+        let checkout = temp.path().join("billing");
+        fs::create_dir_all(&checkout).unwrap();
+        let entry = checkout.join(".git");
+        let worktree_git = temp.path().join("billing.git");
+        fs::create_dir_all(&worktree_git).unwrap();
+        let refused = [
+            r"\\.\COM1",
+            r"//./COM1",
+            r"\\?\GLOBALROOT\Device\Serial0",
+            r"..\NUL",
+            r"\\elsewhere\share\billing\.git",
+        ];
+
+        for named in refused {
+            fs::write(&entry, format!("gitdir: {named}\n")).unwrap();
+            fs::write(worktree_git.join("commondir"), format!("{named}\n")).unwrap();
+
+            assert_eq!(git_dir(&entry), None, "{named}");
+            assert_eq!(common_dir(&worktree_git, &checkout), None, "{named}");
+        }
+        fs::write(&entry, "gitdir: ../.git/modules/billing\n").unwrap();
+        assert_eq!(
+            git_dir(&entry),
+            Some(temp.path().join(".git").join("modules").join("billing")),
+            "a submodule names its git folder with `..`"
+        );
+    }
+
+    #[test]
+    fn a_git_file_past_its_limit_names_no_repository() {
+        let temp = tempfile::tempdir().unwrap();
+        let large_config = temp.path().join("billing");
+        fs::create_dir_all(large_config.join(".git")).unwrap();
+        let config = File::create(large_config.join(".git/config")).unwrap();
+        config.set_len(MAX_CONFIG_BYTES + 1).unwrap();
+        let large_entry = temp.path().join("notes");
+        fs::create_dir_all(&large_entry).unwrap();
+        let entry = File::create(large_entry.join(".git")).unwrap();
+        entry.set_len(MAX_POINTER_BYTES + 1).unwrap();
+        let at_limit = temp.path().join("ledger");
+        fs::create_dir_all(at_limit.join(".git")).unwrap();
+        let padding = " ".repeat(usize::try_from(MAX_CONFIG_BYTES).unwrap() - CONFIG.len());
+        fs::write(at_limit.join(".git/config"), format!("{CONFIG}{padding}")).unwrap();
+
+        assert_eq!(of_folder(&large_config), None);
+        assert_eq!(of_folder(&large_entry), None);
+        assert_eq!(
+            of_folder(&at_limit).as_ref().map(Repository::as_str),
+            Some("github.com/acme/billing")
+        );
     }
 
     #[cfg(unix)]
