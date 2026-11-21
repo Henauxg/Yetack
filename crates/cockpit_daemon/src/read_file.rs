@@ -56,15 +56,18 @@ pub(crate) const GIT_PROGRAM: &str = "git";
 /// ones, each ended by a NUL byte.
 const LIST_FILES: [&str; 5] = [
     "ls-files",
-    "-z",
+    NUL_ENDED,
     "--cached",
     "--others",
     "--exclude-standard",
 ];
 pub(crate) const GIT_FOLDER_OPTION: &str = "-C";
+pub(crate) const CONFIG_OPTION: &str = "-c";
+/// Ends each field or record with a NUL byte, and writes paths as they are.
+pub(crate) const NUL_ENDED: &str = "-z";
 /// Keeps git from running the file system monitor, a command the agent can set in its checkout's
 /// git config.
-pub(crate) const NO_MONITOR: [&str; 2] = ["-c", "core.fsmonitor=false"];
+pub(crate) const NO_MONITOR: [&str; 2] = [CONFIG_OPTION, "core.fsmonitor=false"];
 
 /// Where the agent worked, with symlinks resolved: where a search looks for a name, and on
 /// Windows, the network shares a path may be on.
@@ -161,13 +164,17 @@ impl Access {
 }
 
 /// The git checkout above `folder`, a path without symlinks, unless it is `/` or holds `home`.
-fn checkout_holding(folder: &Path, home: Option<&Path>) -> Option<PathBuf> {
+pub(crate) fn checkout_holding(folder: &Path, home: Option<&Path>) -> Option<PathBuf> {
     let checkout = folder
         .ancestors()
         .find(|ancestor| ancestor.join(GIT_ENTRY).symlink_metadata().is_ok())?;
-    let too_wide =
-        checkout.parent().is_none() || home.is_some_and(|home| is_inside(home, checkout));
-    (!too_wide).then(|| checkout.to_owned())
+    (!too_wide(checkout, home)).then(|| checkout.to_owned())
+}
+
+/// Whether the checkout `checkout`, a path without symlinks, is `/` or holds `home`: its files
+/// are everything the user owns.
+pub(crate) fn too_wide(checkout: &Path, home: Option<&Path>) -> bool {
+    checkout.parent().is_none() || home.is_some_and(|home| is_inside(home, checkout))
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -450,7 +457,7 @@ pub(crate) async fn search(
 /// A path as `git ls-files -z` writes it, relative to the checkout. `None` for an absolute path or
 /// one with `..`, which the checkout's index file can hold when the agent wrote it: on Windows,
 /// `//host/share/file` would make the search connect to that host.
-fn git_path(bytes: &[u8]) -> Option<PathBuf> {
+pub(crate) fn git_path(bytes: &[u8]) -> Option<PathBuf> {
     let path = written_path(bytes)?;
     path.components()
         .all(|component| matches!(component, Component::Normal(_) | Component::CurDir))

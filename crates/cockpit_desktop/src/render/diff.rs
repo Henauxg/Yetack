@@ -353,9 +353,64 @@ pub fn changed_lines(old: &str, new: &str) -> BTreeSet<u32> {
     changed
 }
 
+/// How many separate changes turn `old` into `new`: runs of changed lines with unchanged lines
+/// between them.
+pub fn change_count(old: &str, new: &str) -> usize {
+    let old_lines: Vec<&str> = old.lines().collect();
+    let new_lines: Vec<&str> = new.lines().collect();
+    TextDiff::configure()
+        .timeout(DIFF_TIMEOUT)
+        .diff_slices(&old_lines, &new_lines)
+        .grouped_ops(0)
+        .len()
+}
+
+/// For each line of `new`, from 0, the line of `old` it is, when `new` kept it unchanged.
+pub fn line_origins(old: &str, new: &str) -> Vec<Option<usize>> {
+    let old_lines: Vec<&str> = old.lines().collect();
+    let new_lines: Vec<&str> = new.lines().collect();
+    let diff = TextDiff::configure()
+        .timeout(DIFF_TIMEOUT)
+        .diff_slices(&old_lines, &new_lines);
+    let mut origins = vec![None; new_lines.len()];
+    for operation in diff.ops() {
+        if let DiffOp::Equal {
+            old_index,
+            new_index,
+            len,
+        } = *operation
+        {
+            for offset in 0..len {
+                if let Some(origin) = origins.get_mut(new_index + offset) {
+                    *origin = Some(old_index + offset);
+                }
+            }
+        }
+    }
+    origins
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn changes_count_once_per_run_and_kept_lines_point_to_their_origin() {
+        let old = "one\ntwo\nthree\nfour\nfive\n";
+        let new = "one\nTWO\nthree\nfour\nadded\nfive\n";
+
+        assert_eq!(change_count(old, new), 2);
+        assert_eq!(change_count(old, old), 0);
+        assert_eq!(
+            line_origins(old, new),
+            [Some(0), None, Some(2), Some(3), None, Some(4)]
+        );
+        assert_eq!(
+            line_origins("a\r\nb\r\n", "a\nb\n"),
+            [Some(0), Some(1)],
+            "line endings do not count"
+        );
+    }
 
     #[test]
     fn changed_lines_are_the_new_text_lines_that_differ() {

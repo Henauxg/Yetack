@@ -13,6 +13,7 @@ use cockpit_protocol::{
 use super::app_state::{AgentEntry, AppState, FileRead, Loadable, MachineState, Reread};
 use super::chat_images::ImageKey;
 use super::drafts::{Draft, Drafts};
+use super::git::GitPurpose;
 use super::page_copy::CopyId;
 use super::projects::{self, ProjectKey};
 use super::reload::{self, Reload};
@@ -21,7 +22,7 @@ use super::sending::{self, SendingId};
 use super::transcript::HistoryState;
 use super::ui_state::{Dialog, FolderAction, OpenFileView};
 use super::{
-    accounts, actions, chat_images, chat_reveal, details_updates, file_edits, file_tree,
+    accounts, actions, chat_images, chat_reveal, details_updates, file_edits, file_tree, git,
     mcp_reconnect, page_copy, terminals, working_folder,
 };
 use crate::machine::MachineId;
@@ -102,6 +103,7 @@ pub enum Purpose {
         agent: AgentId,
         path: PathBuf,
     },
+    Git(GitPurpose),
     /// An image a message shows.
     ChatImage {
         agent: AgentId,
@@ -321,6 +323,7 @@ pub fn needed_requests(state: &mut AppState) -> Vec<Outgoing> {
         open_file_requests(view, &mut requests);
     }
     requests.extend(chat_reveal::requests(state));
+    requests.extend(git::card_requests(state));
     let Some(agent) = state
         .ui
         .selected
@@ -372,6 +375,7 @@ pub fn needed_requests(state: &mut AppState) -> Vec<Outgoing> {
         tree_requests(entry, agent, &mut requests);
     }
     chat_images::requests(entry, agent, &mut requests);
+    requests.extend(git::requests(state, agent));
     requests
 }
 
@@ -765,6 +769,9 @@ pub fn apply_response(
                 }
             }
         }
+        Purpose::Git(purpose) => {
+            git::arrived(state, purpose, result.map_err(|failure| failure.message));
+        }
         Purpose::TreeSearch { agent, name } => {
             if let Some(entry) = state.agents.get_mut(&agent)
                 && let Some(search) = &mut entry.tree.search
@@ -1069,7 +1076,7 @@ mod tests {
     }
 
     #[test]
-    fn opening_an_agent_asks_for_its_history_and_details_once() {
+    fn opening_an_agent_asks_for_its_history_details_and_git_once() {
         let mut state = connected_with_selection();
 
         let first = needed_requests(&mut state);
@@ -1077,7 +1084,11 @@ mod tests {
 
         assert_eq!(
             methods(&first),
-            [Method::AgentHistory, Method::AgentDetails]
+            [
+                Method::AgentHistory,
+                Method::AgentDetails,
+                Method::AgentGitStatus
+            ]
         );
         assert!(second.is_empty());
     }
@@ -1350,13 +1361,11 @@ mod tests {
 
         let requests = needed_requests(&mut state);
 
-        assert_eq!(
-            requests.last().map(|outgoing| &outgoing.purpose),
-            Some(&Purpose::ReadFile {
-                agent,
-                path: PathBuf::from("src/main.rs")
-            })
-        );
+        let read = Purpose::ReadFile {
+            agent,
+            path: PathBuf::from("src/main.rs"),
+        };
+        assert!(requests.iter().any(|outgoing| outgoing.purpose == read));
     }
 
     #[test]

@@ -109,6 +109,7 @@ fn run(
                 file_reread::reread(state, agent);
                 if let Some(entry) = state.agents.get_mut(&agent) {
                     file_tree::refresh(&mut entry.tree);
+                    entry.git.refresh();
                 }
             }
         }

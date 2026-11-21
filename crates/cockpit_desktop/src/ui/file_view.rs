@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
-use cockpit_protocol::{AgentId, FileEdit};
+use cockpit_protocol::{AgentId, FileEdit, GitBlame};
 use dioxus::dioxus_core::spawn_forever;
 use dioxus::html::input_data::MouseButton;
 use dioxus::prelude::*;
@@ -17,6 +17,7 @@ use crate::machine::MachineId;
 use crate::path_style::PathStyle;
 use crate::prefs::TerminalPlace;
 use crate::render::{self, Diff, Language, MAX_RENDERED_LINES, diff_lines};
+use crate::state::git::{self, DiffBase, GitHubLinks};
 use crate::state::{
     FileFreshness, FileRead, FileUpdate, Loadable, Popover, Reread, TabMenuOrigin, ViewMode,
     actions, chat_images, file_edits, file_reread, file_tree, is_markdown, page_copy, tab_menu,
@@ -24,6 +25,9 @@ use crate::state::{
 };
 use crate::ui::code::{
     CopyButton, CopyLook, LineMarks, LineNumbers, diff_line, diff_row, lines_not_shown,
+};
+use crate::ui::file_git::{
+    self, BlameCard, BlameCell, BlameHover, ChangeCount, CommitChange, HistoryButton, LineBlame,
 };
 use crate::ui::file_list::FileListButton;
 use crate::ui::find::FileFindBox;
@@ -42,11 +46,14 @@ const SHOWN_TAB_ID: &str = "file-tab-shown";
 pub const CLOSE_TAB_KEY: &str = "w";
 
 /// Unchanged lines kept around each change of the file view's diff.
-const FILE_DIFF_CONTEXT: usize = 3;
+pub(super) const FILE_DIFF_CONTEXT: usize = 3;
 
 /// Above a diff of the edits after one too large to show.
 const AFTER_TOO_LARGE_NOTE: &str =
     "An earlier edit of the file is too large to show, so this diff starts after it.";
+
+/// Above the diff of a file in no git checkout.
+const OUTSIDE_GIT_NOTE: &str = "Not in a git checkout: the diff shows only this agent's edits.";
 
 /// How long "Updated just now" and the changed lines' highlight last after a read again.
 const UPDATE_SHOWN_FOR: Duration = Duration::from_secs(10);
@@ -211,6 +218,38 @@ fn FileShown(agent: AgentId) -> Element {
     };
     let folder = &entry.summary.folder;
     let text = entry.files.get(&view.path).cloned().unwrap_or_default();
+    let absolute = git::absolute(entry, &view.path);
+    let file_git = entry.git.files.get(&absolute);
+    let base = DiffBase::of(file_git);
+    // A blame of another commit than the text the view has, as while both are read again, waits.
+    let blame = file_git
+        .and_then(|file| file.blame.value.loaded().cloned())
+        .filter(|blame| {
+            matches!(&base, DiffBase::Git { head: Some(head), .. } if head.hash == blame.head)
+        });
+    let checkout = entry.git.checkout_of(&absolute);
+    let github = checkout.and_then(GitHubLinks::of);
+    let blame_github = checkout
+        .zip(blame.as_ref())
+        .and_then(|(checkout, blame)| GitHubLinks::of_blame(checkout, blame));
+    let shown_commit = view
+        .commit
+        .as_ref()
+        .filter(|shown| shown.path == view.path)
+        .map(|shown| shown.hash.clone());
+    let commit_change = shown_commit.as_ref().map(|hash| {
+        file_git
+            .and_then(|file| file.commits.get(hash).cloned())
+            .unwrap_or(Loadable::Loading)
+    });
+    let history_open = matches!(
+        state.ui.popover,
+        Some(Popover::FileHistory { agent: shown, .. }) if shown == agent
+    );
+    let history_button = file_git::history_button(
+        &base,
+        matches!(text, Loadable::Loaded(FileRead::Text { .. })),
+    );
     let freshness = entry.file_freshness.clone();
     let update = freshness.update.clone();
     let short = ShortPath::new(folder, &view.path);
@@ -220,7 +259,7 @@ fn FileShown(agent: AgentId) -> Element {
         Loadable::Loaded(FileRead::Text { edits, .. }) => edits.len(),
         _ => 0,
     };
-    let note = if edit_count > 0 {
+    let agent_note = if edit_count > 0 {
         format!(
             "Changed by {} of this agent.",
             format::count(edit_count, "edit", "edits")
@@ -229,6 +268,21 @@ fn FileShown(agent: AgentId) -> Element {
         "Changed by this agent.".to_owned()
     } else {
         "This agent did not change the file.".to_owned()
+    };
+    let note = match (&base, &text) {
+        (DiffBase::Git { new: true, .. }, _) => {
+            FootNote::Plain("New, not committed yet.".to_owned())
+        }
+        (
+            DiffBase::Git {
+                text: committed, ..
+            },
+            Loadable::Loaded(FileRead::Text { text, .. }),
+        ) => FootNote::Changes {
+            base: committed.clone(),
+            text: text.clone(),
+        },
+        _ => FootNote::Plain(agent_note),
     };
     let markdown = is_markdown(&view.path);
     // A view left in Preview on another kind of file shows the whole file.
@@ -284,12 +338,15 @@ fn FileShown(agent: AgentId) -> Element {
                     for (choice, name) in modes {
                         button {
                             key: "{name}",
-                            class: if choice == mode { "segment chosen" } else { "segment" },
-                            aria_pressed: choice == mode,
+                            class: if file_git::mode_chosen(mode, choice, shown_commit.is_some()) { "segment chosen" } else { "segment" },
+                            aria_pressed: file_git::mode_chosen(mode, choice, shown_commit.is_some()),
                             onclick: move |_| cockpit.update(|state| actions::set_view_mode(state, agent, choice)),
                             "{name}"
                         }
                     }
+                }
+                if let Some(enabled) = history_button {
+                    HistoryButton { agent, open: history_open, enabled }
                 }
                 button {
                     class: if wrap && !preview { "icon-button framed toggled" } else { "icon-button framed" },
@@ -331,11 +388,31 @@ fn FileShown(agent: AgentId) -> Element {
                 Loadable::Loaded(FileRead::Choices(matches)) => rsx! {
                     FileChoices { agent, folder: folder.clone(), name: view.path.clone(), matches, line: view.line }
                 },
+                Loadable::Loaded(FileRead::Text { .. }) if commit_change.is_some() => rsx! {
+                    CommitChange {
+                        agent,
+                        shown: commit_change.clone().unwrap_or_default(),
+                        language_path: view.path.clone(),
+                        github: github.clone(),
+                    }
+                },
                 Loadable::Loaded(FileRead::Text { text, .. }) if preview => rsx! {
                     FilePreview { agent, folder: folder.clone(), path: view.path.clone(), text }
                 },
                 Loadable::Loaded(FileRead::Text { text, edits }) => rsx! {
-                    FileContent { path: view.path.clone(), text, mode, line: view.line, edits, changed, update }
+                    FileContent {
+                        agent,
+                        path: view.path.clone(),
+                        text,
+                        mode,
+                        line: view.line,
+                        edits,
+                        changed,
+                        update,
+                        base: base.clone(),
+                        blame: blame.clone(),
+                        github: blame_github.clone(),
+                    }
                 },
                 Loadable::Loaded(FileRead::Image(image)) => {
                     let image = Arc::new(image);
@@ -663,9 +740,12 @@ fn FilePreview(agent: AgentId, folder: PathBuf, path: PathBuf, text: String) -> 
 }
 
 /// The rows are rebuilt only when a prop changes.
-/// `changed` says whether the agent changed the file, even with no edits to show.
+/// `changed` says whether the agent changed the file, even with no edits to show. `base` is what
+/// the diff compares the file with, `blame` who last changed its committed lines, and `github`
+/// the links to the blame's commits.
 #[component]
 fn FileContent(
+    agent: AgentId,
     path: PathBuf,
     text: String,
     mode: ViewMode,
@@ -673,14 +753,59 @@ fn FileContent(
     edits: Vec<FileEdit>,
     changed: bool,
     update: Option<FileUpdate>,
+    base: DiffBase,
+    blame: Option<GitBlame>,
+    github: Option<GitHubLinks>,
 ) -> Element {
+    let hover = use_signal(|| None::<BlameHover>);
+    let on_card = use_signal(|| false);
     let language = Language::from_path(&path);
     let marks = line_marks(line, update.as_ref());
+    if mode == ViewMode::Diff {
+        match &base {
+            DiffBase::Waiting => {
+                return rsx! {
+                    div { class: FILE_LOADING_CLASS, aria_hidden: true,
+                        for (index, width) in LOADING_LINE_WIDTHS.iter().enumerate() {
+                            div { key: "{index}", class: "skeleton skeleton-line", style: "width: {width}%" }
+                        }
+                    }
+                };
+            }
+            DiffBase::Git {
+                head,
+                text: committed,
+                new,
+            } => {
+                let note = file_git::since_note(head.as_ref(), *new);
+                return file_git::git_diff(committed, &text, note, language, marks);
+            }
+            DiffBase::Edits { .. } => {}
+        }
+    }
+    let outside = base == DiffBase::Edits { outside: true };
     let shown = file_edits::after_too_large(&edits);
     let too_large = shown.len() < edits.len();
     if mode == ViewMode::WholeFile || shown.is_empty() {
         let lines = render::plain_lines(&text, language, 1, MAX_RENDERED_LINES);
+        let blames: Vec<BlameCell> = if mode == ViewMode::WholeFile {
+            file_git::line_blames(&base, blame.as_ref(), &text, SystemTime::now())
+                .into_iter()
+                .map(|LineBlame { text, commit }| BlameCell {
+                    text,
+                    commit,
+                    hover,
+                    on_card,
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
+        let commits = blame.map(|blame| blame.commits).unwrap_or_default();
         return rsx! {
+            if mode == ViewMode::Diff && outside {
+                p { class: "file-note", "{OUTSIDE_GIT_NOTE}" }
+            }
             if mode == ViewMode::Diff && too_large {
                 p { class: "file-note", "This agent's last edit of the file is too large to show. Here is its text." }
             } else if mode == ViewMode::Diff && changed {
@@ -689,14 +814,22 @@ fn FileContent(
                 p { class: "file-note", "This agent did not change the file. Here is its text." }
             }
             div { class: "diff-rows",
-                for row in lines.rows.iter() {
-                    {diff_line(row, LineNumbers::Shown, marks)}
+                for (index, row) in lines.rows.iter().enumerate() {
+                    {diff_line(row, LineNumbers::Shown, marks, blames.get(index).cloned())}
                 }
             }
             {lines_not_shown(lines.more)}
+            if !commits.is_empty() || !blames.is_empty() {
+                BlameCard { agent, hover, on_card, commits, github }
+            }
         };
     }
     let edit_refs: Vec<&FileEdit> = shown.iter().collect();
+    let outside_note = rsx! {
+        if outside {
+            p { class: "file-note", "{OUTSIDE_GIT_NOTE}" }
+        }
+    };
     if let Some(original) = file_edits::original_text(&text, &edit_refs) {
         let diff = diff_lines(
             &original,
@@ -715,6 +848,7 @@ fn FileContent(
             };
         }
         return rsx! {
+            {outside_note}
             if too_large {
                 p { class: "file-note", "{AFTER_TOO_LARGE_NOTE}" }
             }
@@ -788,9 +922,20 @@ fn is_recent(update: &FileUpdate, now: SystemTime) -> bool {
         .is_some_and(|age| age < UPDATE_SHOWN_FOR)
 }
 
-/// The foot: what the agent did to the file, when the shown text was read, and Reload.
+/// What the foot says of the file.
+#[derive(Debug, Clone, PartialEq)]
+enum FootNote {
+    Plain(String),
+    /// Its uncommitted changes, counted against the last commit's text.
+    Changes {
+        base: String,
+        text: String,
+    },
+}
+
+/// The foot: what changed in the file, when the shown text was read, and Reload.
 #[component]
-fn FileFoot(agent: AgentId, note: String, freshness: FileFreshness) -> Element {
+fn FileFoot(agent: AgentId, note: FootNote, freshness: FileFreshness) -> Element {
     let cockpit: Cockpit = use_context();
     let Clock(now) = use_context();
     let now = now();
@@ -811,7 +956,14 @@ fn FileFoot(agent: AgentId, note: String, freshness: FileFreshness) -> Element {
     let reload_keys = cockpit.state.read().prefs.keys.shown(Command::ReloadFile);
     rsx! {
         div { class: "file-foot",
-            span { class: "file-foot-note", "{note} To change it, ask the agent." }
+            span { class: "file-foot-note",
+                match note {
+                    FootNote::Plain(text) => rsx! { "{text}" },
+                    FootNote::Changes { base, text } => rsx! {
+                        ChangeCount { base, text }
+                    },
+                }
+            }
             if reading {
                 span { class: "file-freshness",
                     span { class: "spinner", aria_hidden: true }

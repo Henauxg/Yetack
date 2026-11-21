@@ -10,20 +10,22 @@ use cockpit_daemon::NOT_SERVING_HINT;
 use cockpit_protocol::{
     Account, AccountId, AccountState, AgentDetails, AgentHistory, AgentId, AgentLoad, AgentStatus,
     AgentSummary, Answer, AnswerState, Approval, ApprovalAnswer, ApprovalDecision, AskedQuestion,
-    BackgroundTask, BackgroundTaskId, BackgroundTaskKind, BackgroundTaskStatus, BuildCommit,
-    ChangedFile, ClaudeCodeVersion, ClaudeRoute, ClaudeSessionId, CommandChanges, CommandKind,
-    CommandLoad, Completeness, ContextCategory, ContextUsage, Cores, CostUsd, CredentialSource,
+    BackgroundTask, BackgroundTaskId, BackgroundTaskKind, BackgroundTaskStatus, BlameRun,
+    BranchState, BuildCommit, ChangedFile, CheckoutKind, CheckoutState, ClaudeCodeVersion,
+    ClaudeRoute, ClaudeSessionId, CommandChanges, CommandKind, CommandLoad, Commit, CommitHash,
+    CommitTexts, Completeness, ContextCategory, ContextUsage, Cores, CostUsd, CredentialSource,
     DirEntry, DirListing, EditTexts, Effort, EffortSource, EntryKind, EntryLink,
-    EnvironmentCredentials, ErrorBody, ErrorCode, FileEdit, GitIgnore, HistoryPage, Image,
-    ImageMediaType, ItemBody, ItemId, LoadAverage, LoadHistory, MachineLoad, Mark, McpScope,
-    McpServer, McpServerStatus, McpTool, McpTransport, NoticeKind, OlderItems, PROTOCOL_VERSION,
-    PastSession, PendingId, PermissionMode, Plan, PlanUsage, Position, ProcessId, Prompt, PromptId,
-    Question, QuestionAnswer, QuestionOption, RateLimitStatus, ReleaseVersion, Repository, Request,
-    ResourceUse, ResponseBody, Selection, ServerLoad, ServerPoint, SignIn, SignInWait,
-    SlashCommand, Subagent, SubagentRun, SubagentStatus, SubagentToolCall, TaskListItem,
-    TaskProgress, TaskStatus, TerminalId, TerminalInfo, Timestamp, TokenUsage, ToolCall,
-    ToolCallStatus, TranscriptItem, TurnEnd, TurnOutcome, UsageWindow, UserMessage, WaitingPrompt,
-    WaitingState, WindowUsage,
+    EnvironmentCredentials, ErrorBody, ErrorCode, FileChange, FileEdit, FileStatus, GitBlame,
+    GitCommitFile, GitFile, GitIgnore, GitStatus, HistoryPage, Image, ImageMediaType, ItemBody,
+    ItemId, LineCounts as GitLineCounts, LoadAverage, LoadHistory, LogEntry, MachineLoad, Mark,
+    McpScope, McpServer, McpServerStatus, McpTool, McpTransport, NoticeKind, OlderItems, OnRemote,
+    PROTOCOL_VERSION, PastSession, PendingId, PermissionMode, Plan, PlanUsage, Position, ProcessId,
+    Prompt, PromptId, Question, QuestionAnswer, QuestionOption, RateLimitStatus, ReleaseVersion,
+    Remote, Repository, Request, ResourceUse, ResponseBody, Selection, ServerLoad, ServerPoint,
+    SignIn, SignInWait, SlashCommand, Subagent, SubagentRun, SubagentStatus, SubagentToolCall,
+    TaskListItem, TaskProgress, TaskStatus, TerminalId, TerminalInfo, Timestamp, TokenUsage,
+    ToolCall, ToolCallStatus, TranscriptItem, TurnEnd, TurnOutcome, Upstream, UsageWindow,
+    UserMessage, WaitingPrompt, WaitingState, WindowUsage,
 };
 use dioxus::prelude::{Signal, WritableExt};
 use serde_json::Value;
@@ -2537,9 +2539,269 @@ pub fn answer(state: &AppState, request: &Request) -> Result<ResponseBody, Reque
             }
             Ok(ResponseBody::Account(account_state(state, account)))
         }
+        Request::AgentGitStatus(params) => Ok(ResponseBody::GitStatus(demo_git_status(
+            state,
+            params.agent,
+        ))),
+        Request::AgentGitFile(params) => Ok(ResponseBody::GitFile(demo_git_file(&params.path))),
+        Request::AgentGitBlame(params) => demo_blame(&params.path)
+            .map(ResponseBody::GitBlame)
+            .ok_or_else(|| refused(ErrorCode::NotFound, "The demo has no commit.")),
+        Request::AgentGitLog(params) => Ok(ResponseBody::GitLog {
+            entries: demo_log(&params.path),
+        }),
+        Request::AgentGitShow(params) => demo_commit_file(&params.path, &params.commit)
+            .map(ResponseBody::GitCommitFile)
+            .ok_or_else(|| refused(ErrorCode::NotFound, "The demo has no such commit.")),
         _ => Ok(ResponseBody::Done),
     }
 }
+
+/// The parser's lexer as its last commit has it: the agent and a formatter changed three lines
+/// since.
+fn lexer_committed() -> String {
+    LEXER_TEXT
+        .replace(
+            ", so that the parser can point at the token an error is about.",
+            ".",
+        )
+        .replace(
+            "an operator, a parenthesis, a comma, or white space between two tokens.",
+            "an operator, a parenthesis, or white space.",
+        )
+        .replace(
+            "[char; 12] = ['+', '-', '*', '/', '%', '^', '(', ')', ',', ' ', '\\t', '\\n']",
+            "[char; 11] = ['+', '-', '*', '/', '%', '^', '(', ')', ' ', '\\t', '\\n']",
+        )
+        .replace(LEXER_LINE_AFTER, LEXER_LINE_BEFORE)
+}
+
+/// A commit of the demo.
+struct DemoCommit {
+    hash: &'static str,
+    title: &'static str,
+    body: &'static str,
+    days_ago: u32,
+}
+
+/// The demo's commits, newest first.
+const DEMO_COMMITS: [DemoCommit; 5] = [
+    DemoCommit {
+        hash: "9f8e7d6c5b4a39281706f5e4d3c2b1a098765432",
+        title: "Split on every operator",
+        body: "Adds % and ^ to the separators, so that \"a%b\" gives three tokens.",
+        days_ago: 5,
+    },
+    DemoCommit {
+        hash: "4c5d6e7f8091a2b3c4d5e6f708192a3b4c5d6e7f",
+        title: "Keep the column of each token",
+        body: "The parser points at the token an error is about.",
+        days_ago: 14,
+    },
+    DemoCommit {
+        hash: "77ab190c2d3e4f5061728394a5b6c7d8e9f0a1b2",
+        title: "Count a tab as one column",
+        body: "",
+        days_ago: 16,
+    },
+    DemoCommit {
+        hash: "3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c0d1e2f",
+        title: "Name the token kinds",
+        body: "",
+        days_ago: 19,
+    },
+    DemoCommit {
+        hash: "a1b2c3d4e5f60718293a4b5c6d7e8f9012345678",
+        title: "Add the lexer",
+        body: "Splits an expression into tokens: numbers, names and operators, with the line and the column of each.",
+        days_ago: 22,
+    },
+];
+
+/// The commit at `index` in [`DEMO_COMMITS`].
+fn demo_commit(index: usize) -> Option<Commit> {
+    let &DemoCommit {
+        hash,
+        title,
+        body,
+        days_ago,
+    } = DEMO_COMMITS.get(index)?;
+    let time = SystemTime::now()
+        .checked_sub(Duration::from_secs(24 * 3600) * days_ago)
+        .and_then(Timestamp::from_system_time)?;
+    Some(Commit {
+        hash: CommitHash::new(hash)?,
+        title: title.to_owned(),
+        body: body.to_owned(),
+        author: "Robin Hale".to_owned(),
+        time,
+    })
+}
+
+/// The parser's checkout is a worktree on a branch with commits to push and uncommitted files,
+/// the agent's and others. Every other agent's folder is on a clean `main`.
+fn demo_git_status(state: &AppState, agent: AgentId) -> GitStatus {
+    let Some(entry) = state.agents.get(&agent) else {
+        return GitStatus {
+            checkouts: Vec::new(),
+        };
+    };
+    let folder = entry.summary.folder.clone();
+    let parser = folder == Path::new(PARSER_FOLDER);
+    let file = |path: &str, change, added, removed| FileStatus {
+        path: in_folder(PARSER_FOLDER, path),
+        change,
+        counts: Some(GitLineCounts { added, removed }),
+    };
+    let (branch, ahead, files) = if parser {
+        let files = vec![
+            file(ERROR_FILE, FileChange::Modified, 2, 0),
+            file(LEXER_FILE, FileChange::Modified, 3, 3),
+            file("src/parser.rs", FileChange::Modified, 5, 2),
+            file(TEST_FILE, FileChange::Untracked, 8, 0),
+        ];
+        ("fix/error-columns", PARSER_UNPUSHED, files)
+    } else {
+        ("main", 0, Vec::new())
+    };
+    // The commits to push are the newest ones.
+    let unpushed: Vec<CommitHash> = (0..)
+        .map_while(demo_commit)
+        .take(usize::try_from(ahead).unwrap_or_default())
+        .map(|commit| commit.hash)
+        .collect();
+    let remote = folder.file_name().map(|name| Remote {
+        name: "origin".to_owned(),
+        repository: Repository::from_remote(&format!("github.com/acme/{}", name.to_string_lossy())),
+        unpushed,
+        unpushed_completeness: Completeness::Complete,
+    });
+    GitStatus {
+        checkouts: vec![CheckoutState {
+            root: folder,
+            remote,
+            kind: if parser {
+                CheckoutKind::LinkedWorktree
+            } else {
+                CheckoutKind::MainWorktree
+            },
+            branch: BranchState {
+                name: Some(branch.to_owned()),
+                head: demo_commit(0),
+                upstream: Some(Upstream {
+                    name: format!("origin/{branch}"),
+                    ahead,
+                    behind: 0,
+                }),
+            },
+            files,
+            completeness: Completeness::Complete,
+        }],
+    }
+}
+
+fn demo_git_file(path: &Path) -> GitFile {
+    let Some(head) = demo_commit(0) else {
+        return GitFile::Outside;
+    };
+    if path == in_folder(PARSER_FOLDER, LEXER_FILE) {
+        return GitFile::Committed {
+            head,
+            text: lexer_committed(),
+        };
+    }
+    if path == in_folder(PARSER_FOLDER, TEST_FILE) {
+        return GitFile::New { head: Some(head) };
+    }
+    match files().into_iter().find(|(file, _)| file == path) {
+        Some((_, text)) => GitFile::Committed {
+            head,
+            text: text.to_owned(),
+        },
+        None => GitFile::Outside,
+    }
+}
+
+/// The lexer's lines come from three commits; another file's from the first.
+fn demo_blame(path: &Path) -> Option<GitBlame> {
+    let run = |start, count, commit| BlameRun {
+        start,
+        count,
+        commit,
+    };
+    let runs = if path == in_folder(PARSER_FOLDER, LEXER_FILE) {
+        vec![
+            run(1, 1, 1),
+            run(2, 3, 2),
+            run(5, 2, 0),
+            run(7, 10, 2),
+            run(17, 1, 1),
+            run(18, 4, 2),
+        ]
+    } else {
+        let lines = match demo_git_file(path) {
+            GitFile::Committed { text, .. } => text.lines().count(),
+            GitFile::Outside | GitFile::New { .. } | GitFile::NotText { .. } => 0,
+        };
+        vec![run(1, u32::try_from(lines).unwrap_or(0), 2)]
+    };
+    Some(GitBlame {
+        head: demo_commit(0)?.hash,
+        commits: [0, 1, 4].into_iter().filter_map(demo_commit).collect(),
+        runs,
+    })
+}
+
+fn demo_log(path: &Path) -> Vec<LogEntry> {
+    let counts: &[(usize, u32, u32)] = if path == in_folder(PARSER_FOLDER, LEXER_FILE) {
+        &[(0, 1, 1), (1, 12, 4), (2, 2, 2), (3, 6, 3), (4, 21, 0)]
+    } else {
+        &[(4, 12, 0)]
+    };
+    counts
+        .iter()
+        .filter_map(|&(index, added, removed)| {
+            Some(LogEntry {
+                commit: Commit {
+                    body: String::new(),
+                    ..demo_commit(index)?
+                },
+                counts: Some(GitLineCounts { added, removed }),
+            })
+        })
+        .collect()
+}
+
+/// The last commit changed the lexer's separators; the others added the file.
+fn demo_commit_file(path: &Path, hash: &CommitHash) -> Option<GitCommitFile> {
+    let index = DEMO_COMMITS
+        .iter()
+        .position(|demo| demo.hash == hash.as_str())?;
+    let after = match demo_git_file(path) {
+        GitFile::Committed { text, .. } => Some(text),
+        GitFile::Outside | GitFile::New { .. } | GitFile::NotText { .. } => None,
+    };
+    let before = match (index, &after) {
+        (0, Some(text)) => Some(text.replace(
+            "['+', '-', '*', '/', '%', '^', '(', ')', ' ', '\\t', '\\n']",
+            "['+', '-', '*', '/', '(', ')', ' ', '\\t', '\\n']",
+        )),
+        _ => None,
+    };
+    let on_remote = if index < usize::try_from(PARSER_UNPUSHED).unwrap_or_default() {
+        OnRemote::MayLack
+    } else {
+        OnRemote::Held
+    };
+    Some(GitCommitFile {
+        commit: demo_commit(index)?,
+        texts: CommitTexts::Text { before, after },
+        on_remote,
+    })
+}
+
+/// The parser's newest commits, which its branch has to push.
+const PARSER_UNPUSHED: u32 = 2;
 
 /// The demo server: 48 cores and 256 GB, as a build machine.
 const DEMO_CORES: u16 = 48;

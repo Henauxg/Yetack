@@ -12,6 +12,7 @@ use strum::{Display, EnumString, IntoStaticStr, VariantArray};
 use crate::account::CredentialSource;
 use crate::agent::{Effort, Mark, PermissionMode};
 use crate::details::McpScope;
+use crate::git::{GitFileParams, GitShowParams};
 use crate::ids::{
     AccountId, AgentId, BackgroundTaskId, ClaudeSessionId, ItemId, PendingId, ProcessId, PromptId,
 };
@@ -104,6 +105,17 @@ pub enum Request {
     /// The files whose name holds a text, in the agent's folder and the checkouts it worked in.
     /// Answered by `FileMatches`.
     AgentFindFiles(FindFilesParams),
+    /// A file's text in the last commit of its checkout. Answered by `GitFile`.
+    AgentGitFile(GitFileParams),
+    /// Who last changed each line of a file's last committed text. Answered by `GitBlame`.
+    AgentGitBlame(GitFileParams),
+    /// The last commits that changed a file, newest first. Answered by `GitLog`.
+    AgentGitLog(GitFileParams),
+    /// A file before and after one commit. Answered by `GitCommitFile`.
+    AgentGitShow(GitShowParams),
+    /// The branch and the changed files of the agent's checkout and of the checkouts it worked
+    /// in. Answered by `GitStatus`.
+    AgentGitStatus(AgentParams),
     /// Starts a shell on a PTY in the agent's folder. Answered by `TerminalOpened`.
     AgentTerminalOpen(TerminalOpenParams),
     /// The agent's terminals. Answered by `Terminals`.
@@ -213,6 +225,16 @@ pub enum Method {
     AgentListDir,
     #[strum(serialize = "agent.find_files")]
     AgentFindFiles,
+    #[strum(serialize = "agent.git_file")]
+    AgentGitFile,
+    #[strum(serialize = "agent.git_blame")]
+    AgentGitBlame,
+    #[strum(serialize = "agent.git_log")]
+    AgentGitLog,
+    #[strum(serialize = "agent.git_show")]
+    AgentGitShow,
+    #[strum(serialize = "agent.git_status")]
+    AgentGitStatus,
     #[strum(serialize = "agent.terminal_open")]
     AgentTerminalOpen,
     #[strum(serialize = "agent.terminals")]
@@ -588,6 +610,11 @@ impl Request {
             Self::AgentReadFile(_) => Method::AgentReadFile,
             Self::AgentListDir(_) => Method::AgentListDir,
             Self::AgentFindFiles(_) => Method::AgentFindFiles,
+            Self::AgentGitFile(_) => Method::AgentGitFile,
+            Self::AgentGitBlame(_) => Method::AgentGitBlame,
+            Self::AgentGitLog(_) => Method::AgentGitLog,
+            Self::AgentGitShow(_) => Method::AgentGitShow,
+            Self::AgentGitStatus(_) => Method::AgentGitStatus,
             Self::AgentTerminalOpen(_) => Method::AgentTerminalOpen,
             Self::AgentTerminals(_) => Method::AgentTerminals,
             Self::TerminalAttach(_) => Method::TerminalAttach,
@@ -657,6 +684,11 @@ impl Serialize for Request {
             Self::AgentReadFile(params) => tagged(method, params, serializer),
             Self::AgentListDir(params) => tagged(method, params, serializer),
             Self::AgentFindFiles(params) => tagged(method, params, serializer),
+            Self::AgentGitFile(params)
+            | Self::AgentGitBlame(params)
+            | Self::AgentGitLog(params) => tagged(method, params, serializer),
+            Self::AgentGitShow(params) => tagged(method, params, serializer),
+            Self::AgentGitStatus(params) => tagged(method, params, serializer),
             Self::AgentTerminalOpen(params) => tagged(method, params, serializer),
             Self::AgentTerminals(params) => tagged(method, params, serializer),
             Self::TerminalAttach(params) => tagged(method, params, serializer),
@@ -724,6 +756,11 @@ impl<'de> Deserialize<'de> for Request {
             Method::AgentReadFile => Self::AgentReadFile(params(raw)?),
             Method::AgentListDir => Self::AgentListDir(params(raw)?),
             Method::AgentFindFiles => Self::AgentFindFiles(params(raw)?),
+            Method::AgentGitFile => Self::AgentGitFile(params(raw)?),
+            Method::AgentGitBlame => Self::AgentGitBlame(params(raw)?),
+            Method::AgentGitLog => Self::AgentGitLog(params(raw)?),
+            Method::AgentGitShow => Self::AgentGitShow(params(raw)?),
+            Method::AgentGitStatus => Self::AgentGitStatus(params(raw)?),
             Method::AgentTerminalOpen => Self::AgentTerminalOpen(params(raw)?),
             Method::AgentTerminals => Self::AgentTerminals(params(raw)?),
             Method::TerminalAttach => Self::TerminalAttach(params(raw)?),

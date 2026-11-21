@@ -6,8 +6,8 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use cockpit_protocol::{
-    AccountId, AgentId, AgentSummary, ClaudeSessionId, DirListing, Effort, Image, ItemId,
-    PermissionMode,
+    AccountId, AgentId, AgentSummary, ClaudeSessionId, CommitHash, DirListing, Effort, Image,
+    ItemId, PermissionMode,
 };
 use serde::Serialize;
 use strum::{EnumString, IntoStaticStr, VariantArray};
@@ -103,6 +103,12 @@ pub enum Popover {
     AppNotifications,
     /// A terminal's right-click menu, which `UiState::terminal_menu` describes.
     TerminalMenu,
+    /// The history of the file the agent's file view shows, at `x`, `y` in the window's pixels.
+    FileHistory {
+        agent: AgentId,
+        x: i32,
+        y: i32,
+    },
     /// The menu of a subagent's row in the chat's Running block, opened by a right-click at `x`,
     /// `y` in the window's pixels. `item` is the subagent's call.
     SubagentMenu {
@@ -362,6 +368,15 @@ pub struct WaitingReveal {
     pub place: RevealPlace,
 }
 
+/// The card of an agent's branch and checkout, at `x`, `y` in the window's pixels: beside its
+/// sidebar row.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BranchCard {
+    pub agent: AgentId,
+    pub x: i32,
+    pub y: i32,
+}
+
 /// The agent closed last, which the undo note brings back for a few seconds.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ClosedAgent {
@@ -490,6 +505,17 @@ pub struct FileView {
     pub menu: Option<PathBuf>,
     /// Its find is open (Ctrl+F in the file view).
     pub find: bool,
+    /// The commit whose change to a file shows, picked from its history, in place of `mode`
+    /// while that file shows.
+    pub commit: Option<ShownCommit>,
+}
+
+/// A commit's change to one file, which the file view shows.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ShownCommit {
+    /// As `FileView.path` names the file.
+    pub path: PathBuf,
+    pub hash: CommitHash,
 }
 
 impl FileView {
@@ -502,6 +528,7 @@ impl FileView {
             closed: BTreeSet::new(),
             menu: None,
             find: false,
+            commit: None,
         }
     }
 
@@ -635,6 +662,8 @@ pub struct UiState {
     pub next_sending: u64,
     pub chat_reveal: Option<ChatReveal>,
     pub waiting_reveal: Option<WaitingReveal>,
+    /// The sidebar row whose branch card shows, on hover.
+    pub branch_card: Option<BranchCard>,
     /// Agents the app closed and took off its list, until the daemon says they are removed:
     /// their events in between are not applied.
     pub closing: BTreeSet<AgentId>,
@@ -682,6 +711,7 @@ impl Default for UiState {
             next_sending: 0,
             chat_reveal: None,
             waiting_reveal: None,
+            branch_card: None,
             closing: BTreeSet::new(),
             closed: None,
             next_closed: 0,

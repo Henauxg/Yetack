@@ -15,12 +15,21 @@ use super::drafts::Drafts;
 use super::machine_status::{self, MachineStatus, StatusAction, Tone};
 use super::server_setup::{self, InstallReport, SetupRun};
 use super::ui_state::{Dialog, MachineEdit, MachineMenu, MachinesView};
+
 use super::update_offer::ProgramBuild;
 use super::{daemon_start, file_tree, update_offer};
 use crate::config::{DaemonConfig, MachineConfig};
 use crate::daemon_label::{DaemonLabel, DaemonPlace};
 use crate::format;
 use crate::machine::MachineId;
+
+/// Whether `agent` runs on this computer, with its files here: its daemon is not over SSH.
+pub fn on_this_computer(state: &AppState, agent: AgentId) -> bool {
+    state
+        .machines
+        .get(MachineId::of(agent))
+        .is_some_and(|machine| machine.daemon.place != DaemonPlace::Ssh)
+}
 
 /// What the interface calls this computer, unless its daemon runs over SSH.
 pub const THIS_COMPUTER: &str = "Local";

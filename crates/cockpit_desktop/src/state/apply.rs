@@ -17,7 +17,7 @@ use super::drafts::Drafts;
 use super::sending::Sending;
 use super::transcript::Transcript;
 use super::{
-    actions, daemon_start, daemon_update, details_updates, file_reread, file_tree, grouping,
+    actions, daemon_start, daemon_update, details_updates, file_reread, file_tree, git, grouping,
     notification_levels, project_menu, projects, resume, sending, terminal_menu, terminals,
 };
 use crate::machine::MachineId;
@@ -89,6 +89,7 @@ fn apply_session_update(
             daemon_update::connected(state, machine);
             apply_catchup(state, drafts, catchup, machine);
             terminals::connected(state, machine);
+            git::connected(state, machine);
             Vec::new()
         }
         SessionUpdate::Disconnected { error, retry_in } => {

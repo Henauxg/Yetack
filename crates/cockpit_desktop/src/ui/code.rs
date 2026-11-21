@@ -7,6 +7,7 @@ use dioxus::html::ScrollBehavior;
 use dioxus::prelude::*;
 
 use crate::render::{self, DiffLine, DiffRow, Language, LineKind, MAX_RENDERED_LINES};
+use crate::ui::file_git::BlameCell;
 use crate::ui::icons::{Icon, IconKind};
 use crate::{bridge, format};
 
@@ -171,10 +172,16 @@ pub fn diff_row(row: &DiffRow, numbers: LineNumbers, marks: LineMarks<'_>) -> El
         }
         DiffRow::Line(line) => line,
     };
-    diff_line(line, numbers, marks)
+    diff_line(line, numbers, marks, None)
 }
 
-pub fn diff_line(line: &DiffLine, numbers: LineNumbers, marks: LineMarks<'_>) -> Element {
+/// A line, with the text of its blame after it when the file view shows one.
+pub fn diff_line(
+    line: &DiffLine,
+    numbers: LineNumbers,
+    marks: LineMarks<'_>,
+    blame: Option<BlameCell>,
+) -> Element {
     let (kind_class, sign, word_class) = match line.kind {
         LineKind::Context => ("context", "", ""),
         LineKind::Added => ("added", "+", "word-added"),
@@ -217,6 +224,9 @@ pub fn diff_line(line: &DiffLine, numbers: LineNumbers, marks: LineMarks<'_>) ->
                     "{segment.text}"
                 }
             }
+        }
+        if let Some(blame) = blame {
+            {blame.render()}
         }
     };
     if !is_marked {

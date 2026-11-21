@@ -132,6 +132,7 @@ pub fn select_agent(state: &mut AppState, agent: AgentId) {
         file_reread::reread(state, agent);
         if let Some(entry) = state.agents.get_mut(&agent) {
             file_tree::refresh(&mut entry.tree);
+            entry.git.refresh();
         }
     }
 }
@@ -1733,12 +1734,15 @@ pub fn close_file_view(state: &mut AppState, agent: AgentId) {
     state.ui.badge = None;
     state.ui.popover.take_if(|popover| match popover {
         Popover::FileList => true,
-        Popover::TabMenu { agent: shown, .. } => *shown == agent,
+        Popover::TabMenu { agent: shown, .. } | Popover::FileHistory { agent: shown, .. } => {
+            *shown == agent
+        }
         _ => false,
     });
     if let Some(entry) = state.agents.get_mut(&agent) {
         entry.files.clear();
         entry.file_freshness = FileFreshness::default();
+        entry.git.forget_files();
     }
 }
 
@@ -1753,6 +1757,7 @@ pub fn close_file_panel(state: &mut AppState, agent: AgentId) {
 pub fn set_view_mode(state: &mut AppState, agent: AgentId, mode: ViewMode) {
     if let Some(view) = state.ui.file_views.get_mut(&agent) {
         view.mode = mode;
+        view.commit = None;
     }
 }
 

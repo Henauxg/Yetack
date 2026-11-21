@@ -11,8 +11,10 @@ use cockpit_protocol::AgentId;
 
 use super::app_state::AppState;
 use super::drafts::Drafts;
+use super::git::PageKind;
 use super::ui_state::{Popover, TabMenuOrigin};
-use super::{actions, file_edits, file_list, file_tree, terminals};
+use super::{actions, file_edits, file_list, file_tree, git, machines, terminals};
+use crate::file_manager;
 use crate::path_style::{self, PathStyle};
 
 /// The tabs a close takes, around the tab whose menu is open.
@@ -35,7 +37,15 @@ pub enum TabItem {
     CopyRelativePath,
     Mention,
     ShowInPane,
+    ShowHistory,
+    OpenOnGitHub,
+    ShowInFileManager,
 }
+
+// The files pane's menu shares these labels, and the terminal's menu the first.
+pub const COPY_PATH_LABEL: &str = "Copy the path";
+pub const COPY_RELATIVE_PATH_LABEL: &str = "Copy the relative path";
+pub const MENTION_LABEL: &str = "Mention in the message";
 
 impl TabItem {
     pub fn label(self, origin: TabMenuOrigin) -> &'static str {
@@ -48,10 +58,13 @@ impl TabItem {
             Self::Close(TabGroup::After) if list => "Close the files below",
             Self::Close(TabGroup::After) => "Close the tabs on the right",
             Self::Close(TabGroup::All) => "Close all",
-            Self::CopyPath => "Copy the path",
-            Self::CopyRelativePath => "Copy the relative path",
-            Self::Mention => "Mention in the message",
+            Self::CopyPath => COPY_PATH_LABEL,
+            Self::CopyRelativePath => COPY_RELATIVE_PATH_LABEL,
+            Self::Mention => MENTION_LABEL,
             Self::ShowInPane => "Show in the files pane",
+            Self::ShowHistory => git::SHOW_HISTORY_LABEL,
+            Self::OpenOnGitHub => git::OPEN_ON_GITHUB_LABEL,
+            Self::ShowInFileManager => file_manager::SHOW_LABEL,
         }
     }
 
@@ -70,6 +83,9 @@ impl TabItem {
             Self::CopyRelativePath => 'e',
             Self::Mention => 'm',
             Self::ShowInPane => 'f',
+            Self::ShowHistory => 'h',
+            Self::OpenOnGitHub => 'g',
+            Self::ShowInFileManager => 'x',
         }
     }
 }
@@ -95,6 +111,8 @@ pub struct TabTarget {
     pub full: String,
     /// The path from the agent's folder, for a file inside it.
     pub relative: Option<String>,
+    /// Its page on GitHub, when its checkout is there.
+    pub github: Option<String>,
     pub rows: Vec<TabRow>,
 }
 
@@ -169,7 +187,18 @@ pub fn target(state: &AppState, drafts: &Drafts) -> Option<TabTarget> {
             file_tree::can_show(state, agent, &path),
         ),
     ]);
+    if git::has_history(entry, &absolute) {
+        rows.push(row(TabItem::ShowHistory, true));
+    }
+    let github = git::github_file_page(entry, &absolute, PageKind::Blob);
+    if github.is_some() {
+        rows.push(row(TabItem::OpenOnGitHub, true));
+    }
+    if machines::on_this_computer(state, agent) {
+        rows.push(row(TabItem::ShowInFileManager, true));
+    }
     Some(TabTarget {
+        github,
         agent,
         x,
         y,
@@ -537,6 +566,30 @@ mod tests {
     }
 
     #[test]
+    fn only_a_file_on_this_computer_shows_in_the_file_manager() {
+        use crate::daemon_label::DaemonLabel;
+
+        let mut state = with_tabs("a.rs");
+        open(
+            &mut state,
+            agent(),
+            Path::new("a.rs"),
+            10,
+            20,
+            TabMenuOrigin::Tabs,
+        );
+        let over_ssh = menu(&state, &Drafts::default());
+        state.machines.this.daemon = DaemonLabel::socket();
+        let here = menu(&state, &Drafts::default());
+
+        assert!(!over_ssh.contains(&file_manager::SHOW_LABEL.to_owned()));
+        assert_eq!(
+            here.last().map(String::as_str),
+            Some(file_manager::SHOW_LABEL)
+        );
+    }
+
+    #[test]
     fn show_in_the_files_pane_is_greyed_out_for_a_file_the_pane_cannot_show() {
         let mut state = with_tabs("a.rs");
         let elsewhere = Path::new("/opt/tools/config.toml");
@@ -564,6 +617,9 @@ mod tests {
             TabItem::CopyRelativePath,
             TabItem::Mention,
             TabItem::ShowInPane,
+            TabItem::ShowHistory,
+            TabItem::OpenOnGitHub,
+            TabItem::ShowInFileManager,
         ];
         for origin in [TabMenuOrigin::Tabs, TabMenuOrigin::List] {
             let mut letters: Vec<char> = items.iter().map(|item| item.key(origin)).collect();

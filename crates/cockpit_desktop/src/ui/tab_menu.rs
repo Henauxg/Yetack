@@ -7,8 +7,9 @@ use dioxus::prelude::*;
 use crate::bridge::{self, COMPOSER_ID};
 use crate::connection::Cockpit;
 use crate::state::tab_menu::{self, TabItem, TabTarget};
-use crate::state::{TabMenuOrigin, file_tree};
+use crate::state::{TabMenuOrigin, actions, file_tree, git};
 use crate::ui::file_list::FILTER_ID;
+use crate::ui::files_pane;
 use crate::ui::menu::{FlatMenu, FlatRow};
 use crate::ui::presence::use_presence;
 
@@ -28,6 +29,12 @@ pub fn TabMenu() -> Element {
         target.x,
         target.y
     );
+    // GitHub and the file manager open outside the app: a line sets them apart.
+    let first_outside = target
+        .rows
+        .iter()
+        .map(|row| row.item)
+        .find(|item| matches!(item, TabItem::OpenOnGitHub | TabItem::ShowInFileManager));
     let rows: Vec<FlatRow> = target
         .rows
         .iter()
@@ -36,7 +43,7 @@ pub fn TabMenu() -> Element {
             key: row.item.key(target.origin),
             enabled: row.enabled,
             title: title(row.item, row.enabled),
-            divided: row.item == TabItem::CopyPath,
+            divided: row.item == TabItem::CopyPath || Some(row.item) == first_outside,
             danger: false,
         })
         .collect();
@@ -106,5 +113,24 @@ fn run(cockpit: Cockpit, target: &TabTarget, item: TabItem) {
             state.ui.popover = None;
             file_tree::show_in_pane(state, agent, path);
         }),
+        TabItem::ShowHistory => {
+            let (x, y) = (target.x, target.y);
+            cockpit.update(|state| {
+                tab_menu::close_menu(state);
+                state.ui.popover = None;
+                actions::show_file(state, agent, path.clone());
+                git::toggle_history(state, agent, x, y);
+            });
+        }
+        TabItem::OpenOnGitHub => {
+            if let Some(page) = target.github.clone() {
+                cockpit.open_in_browser(page);
+            }
+            cockpit.update(tab_menu::close_menu);
+        }
+        TabItem::ShowInFileManager => {
+            files_pane::show_in_file_manager(cockpit, target.absolute.clone());
+            cockpit.update(tab_menu::close_menu);
+        }
     }
 }

@@ -13,6 +13,7 @@ use cockpit_protocol::{
 
 use crate::accounts::ClaudeEnv;
 use crate::daemon_config::HOME_ENV;
+use crate::git::GitError;
 use crate::hub::input::{ControlPurpose, HubInput, Reply};
 use crate::hub::state::{Agent, Hub};
 use crate::hub::{agents, errors, history};
@@ -21,7 +22,7 @@ use crate::read_file::{Content, Found};
 use crate::sessions::AccountFolder;
 use crate::store::{DaemonSettings, LogName};
 use crate::transcript::{finished_edits, touched_files, words};
-use crate::{browse, machine_load, mcp_remove, read_file, sessions};
+use crate::{browse, git, machine_load, mcp_remove, read_file, sessions};
 
 /// The most JSON bytes of edits a file's answer holds.
 const MAX_EDITS_BYTES: usize = MAX_LINE_BYTES / 4;
@@ -147,6 +148,43 @@ impl Hub {
             Request::AgentReadFile(params) => self.read_file(params, reply),
             Request::AgentListDir(params) => self.list_dir(params, reply),
             Request::AgentFindFiles(params) => self.find_files(params, reply),
+            Request::AgentGitFile(params) => {
+                self.git_request(params.agent, reply, |access| async move {
+                    let answer = git::file(access.folder, access.touched, access.home, params.path);
+                    answer.await.map(ResponseBody::GitFile)
+                });
+            }
+            Request::AgentGitBlame(params) => {
+                self.git_request(params.agent, reply, |access| async move {
+                    let answer =
+                        git::blame(access.folder, access.touched, access.home, params.path);
+                    answer.await.map(ResponseBody::GitBlame)
+                });
+            }
+            Request::AgentGitLog(params) => {
+                self.git_request(params.agent, reply, |access| async move {
+                    let answer = git::log(access.folder, access.touched, access.home, params.path);
+                    let entries = answer.await?;
+                    Ok(ResponseBody::GitLog { entries })
+                });
+            }
+            Request::AgentGitShow(params) => {
+                self.git_request(params.agent, reply, |access| async move {
+                    let FileAccess {
+                        folder,
+                        touched,
+                        home,
+                    } = access;
+                    let answer = git::show(folder, touched, home, params.path, params.commit);
+                    answer.await.map(ResponseBody::GitCommitFile)
+                });
+            }
+            Request::AgentGitStatus(params) => {
+                self.git_request(params.agent, reply, |access| async move {
+                    let answer = git::status(access.folder, access.touched, access.home);
+                    answer.await.map(ResponseBody::GitStatus)
+                });
+            }
             Request::McpRemove(params) => self.mcp_remove(params, reply),
             Request::SettingsSet(settings) => agents::respond(reply, self.set_settings(settings)),
             Request::SessionsList => self.sessions_list(reply),
@@ -308,6 +346,23 @@ impl Hub {
                 Ok(matches) => Ok(ResponseBody::FileMatches { matches }),
                 Err(error) => Err(error.to_error_body()),
             };
+            agents::respond(reply, result);
+        });
+    }
+
+    /// Answers a git request in a task of its own, with what `request` makes of the agent's file
+    /// access.
+    fn git_request<F>(&self, agent: AgentId, reply: Reply, request: impl FnOnce(FileAccess) -> F)
+    where
+        F: Future<Output = Result<ResponseBody, GitError>> + Send + 'static,
+    {
+        let access = match self.file_access(agent) {
+            Ok(access) => access,
+            Err(error) => return agents::respond(reply, Err(error)),
+        };
+        let answer = request(access);
+        tokio::spawn(async move {
+            let result = answer.await.map_err(|error| error.to_error_body());
             agents::respond(reply, result);
         });
     }

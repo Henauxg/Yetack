@@ -5,7 +5,10 @@ mod syntax;
 mod tool_output;
 
 pub use capped::{MAX_RENDERED_LINES, split_lines};
-pub use diff::{Diff, DiffLine, DiffRow, LineKind, changed_lines, diff_lines, plain_lines};
+pub use diff::{
+    Diff, DiffLine, DiffRow, LineKind, change_count, changed_lines, diff_lines, line_origins,
+    plain_lines,
+};
 pub use markdown::{
     Block, FileRef, Inline, LineRef, blocks_plain_text, is_web_url, line_refs, parse_markdown,
     parse_markdown_file, plain_text,

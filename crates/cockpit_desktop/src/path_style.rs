@@ -250,6 +250,39 @@ impl PathStyle {
         self.strip_prefix(left, right).is_some_and(str::is_empty)
     }
 
+    /// A text two paths share exactly when [`Self::same_path`] holds, to look a path up among many.
+    pub fn key(self, path: &str) -> String {
+        let (root, names) = self.key_parts(path);
+        key_of(&root, &names)
+    }
+
+    /// The keys of the folders above `path`, its root's included, as [`Self::key`] gives them.
+    pub fn folder_keys(self, path: &str) -> Vec<String> {
+        let (root, names) = self.key_parts(path);
+        (0..names.len())
+            .map(|count| key_of(&root, names.get(..count).unwrap_or_default()))
+            .collect()
+    }
+
+    /// The root as [`Self::same_root`] compares it, and the names as [`Self::same_name`] does.
+    fn key_parts(self, path: &str) -> (String, Vec<String>) {
+        let length = self.root_len(path).unwrap_or(0);
+        let root = self.folded(&self.shown(path.get(..length).unwrap_or_default()));
+        let names = self
+            .names_at(path)
+            .into_iter()
+            .map(|(_, name)| self.folded(name))
+            .collect();
+        (root, names)
+    }
+
+    fn folded(self, text: &str) -> String {
+        match self {
+            Self::Unix => text.to_owned(),
+            Self::Windows => text.chars().map(upper).collect(),
+        }
+    }
+
     /// `name` in the folder `base`.
     pub fn join(self, base: &str, name: &str) -> String {
         if base.is_empty() || base.ends_with(|character| self.is_separator(character)) {
@@ -313,6 +346,11 @@ impl PathStyle {
 pub fn shown(path: &Path) -> String {
     let text = path.to_string_lossy();
     PathStyle::of_text(&text).shown(&text).into_owned()
+}
+
+/// The key of the path with the folded `root` and `names`.
+fn key_of(root: &str, names: &[String]) -> String {
+    format!("{root}\0{}", names.join("/"))
 }
 
 /// Windows maps each character to one upper case character, or leaves it: `ß` stays `ß`.
@@ -422,6 +460,32 @@ mod tests {
         assert!(Windows.same_name("Ärger", "äRGER"));
         assert!(!Windows.same_name("\u{212A}", "k"), "the Kelvin sign");
         assert!(!Windows.same_name("\u{1E9E}", "ß"), "the capital sharp s");
+    }
+
+    #[test]
+    fn two_paths_share_a_key_when_they_are_the_same_path() {
+        let pairs = [
+            (Windows, r"C:\Users\Me\", "c:/users/me"),
+            (Windows, r"\\?\C:\work\a.rs", r"c:\WORK\a.rs"),
+            (Windows, r"C:\work\a.rs", r"C:\work\a.rs\b"),
+            (Windows, r"\\server\share", r"\\server\share\"),
+            (Windows, "\u{212A}", "k"),
+            (Unix, "/home/Me", "/home/me"),
+            (Unix, "/work//app/./src/", "/work/app/src"),
+            (Unix, "/work/app", "work/app"),
+        ];
+
+        for (style, left, right) in pairs {
+            assert_eq!(
+                style.key(left) == style.key(right),
+                style.same_path(left, right),
+                "{left} and {right}"
+            );
+        }
+        let holding = Windows.folder_keys(r"C:\work\app\src\a.rs");
+        let holds = |folder: &str| holding.contains(&Windows.key(folder));
+        assert!(holds("c:/") && holds(r"C:\work") && holds("c:/WORK/app/src"));
+        assert!(!holds(r"C:\work\app\src\a.rs") && !holds(r"C:\work\ap"));
     }
 
     #[test]

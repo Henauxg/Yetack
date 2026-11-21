@@ -7,6 +7,7 @@ use strum::VariantArray;
 
 use crate::account::{AccountState, EnvironmentCredentials};
 use crate::details::{AgentDetails, ContextUsage, McpServer, SlashCommand};
+use crate::git::{GitBlame, GitCommitFile, GitFile, GitStatus, LogEntry};
 use crate::ids::{AccountId, AgentId, ClaudeSessionId, Seq};
 use crate::machine_load::MachineLoad;
 use crate::terminal::{TerminalId, TerminalInfo};
@@ -114,6 +115,13 @@ pub enum ResponseBody {
         matches: Vec<PathBuf>,
     },
     Directory(DirListing),
+    GitFile(GitFile),
+    GitBlame(GitBlame),
+    GitLog {
+        entries: Vec<LogEntry>,
+    },
+    GitCommitFile(GitCommitFile),
+    GitStatus(GitStatus),
     Sessions {
         sessions: Vec<PastSession>,
     },
@@ -149,12 +157,12 @@ pub struct DirListing {
     pub completeness: Completeness,
 }
 
-/// Whether a listing holds every entry of the folder.
+/// Whether an answer holds every item, or stops at its cap.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, VariantArray)]
 #[serde(rename_all = "snake_case")]
 pub enum Completeness {
     Complete,
-    /// The folder holds more entries than the listing's cap: some are left out.
+    /// More items exist than the answer's cap: some are left out.
     Truncated,
 }
 

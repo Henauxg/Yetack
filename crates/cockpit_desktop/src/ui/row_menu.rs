@@ -10,7 +10,7 @@ use cockpit_protocol::{AgentId, Mark};
 use dioxus::prelude::*;
 use strum::VariantArray;
 
-use crate::bridge::HIGHLIGHTED_CLASS;
+use crate::bridge::{self, HIGHLIGHTED_CLASS};
 use crate::connection::Cockpit;
 use crate::keymap::{Command, Keymap};
 use crate::path_style;
@@ -18,8 +18,8 @@ use crate::prefs::{AccountColor, NotificationLevel};
 use crate::state::actions::Direction;
 use crate::state::menu_keys::{self, MenuKey};
 use crate::state::{
-    AgentEntry, AppState, FolderAction, Popover, actions, notification_levels, projects, settings,
-    to_handle, unread, working_folder,
+    AgentEntry, AppState, FolderAction, Loadable, Popover, actions, file_tree, git,
+    notification_levels, projects, settings, to_handle, unread, working_folder,
 };
 use crate::ui::icons::{Icon, IconKind};
 use crate::ui::menu::KeyedMenu;
@@ -39,17 +39,19 @@ enum Item {
     Project,
     Notifications,
     Folder,
+    Git,
     Close,
 }
 
 /// The menu's rows, in order.
-const ITEMS: [Item; 7] = [
+const ITEMS: [Item; 8] = [
     Item::Mark,
     Item::Unread,
     Item::Rename,
     Item::Project,
     Item::Notifications,
     Item::Folder,
+    Item::Git,
     Item::Close,
 ];
 
@@ -59,6 +61,7 @@ impl Item {
             Self::Project => Some(Submenu::Project),
             Self::Notifications => Some(Submenu::Notifications),
             Self::Folder => Some(Submenu::Folder),
+            Self::Git => Some(Submenu::Git),
             Self::Mark | Self::Unread | Self::Rename | Self::Close => None,
         }
     }
@@ -70,7 +73,7 @@ impl Item {
             Self::Unread => Some(Pick::Unread),
             Self::Rename => Some(Pick::Rename),
             Self::Close => Some(Pick::Close),
-            Self::Project | Self::Notifications | Self::Folder => None,
+            Self::Project | Self::Notifications | Self::Folder | Self::Git => None,
         }
     }
 
@@ -81,7 +84,7 @@ impl Item {
             Self::Unread => Some('u'),
             Self::Rename => Some('r'),
             Self::Close => Some('w'),
-            Self::Project | Self::Notifications | Self::Folder => None,
+            Self::Project | Self::Notifications | Self::Folder | Self::Git => None,
         }
     }
 
@@ -95,6 +98,7 @@ enum Submenu {
     Project,
     Notifications,
     Folder,
+    Git,
 }
 
 impl Submenu {
@@ -104,6 +108,7 @@ impl Submenu {
             Self::Project => Item::Project,
             Self::Notifications => Item::Notifications,
             Self::Folder => Item::Folder,
+            Self::Git => Item::Git,
         }
     }
 }
@@ -120,6 +125,9 @@ enum Pick {
     NewProject,
     Level(NotificationLevel),
     Folder(FolderAction),
+    CopyBranch,
+    ShowUncommitted,
+    OpenBranch,
 }
 
 impl Pick {
@@ -131,6 +139,9 @@ impl Pick {
             Self::Level(NotificationLevel::Off) => Some('3'),
             Self::Folder(FolderAction::Fork) => Some('f'),
             Self::Folder(FolderAction::Move) => Some('m'),
+            Self::CopyBranch => Some('b'),
+            Self::ShowUncommitted => Some('c'),
+            Self::OpenBranch => Some('g'),
             Self::Mark
             | Self::Unread
             | Self::Rename
@@ -195,6 +206,25 @@ struct RowMenuShown {
     /// Why the fork or the move cannot run now.
     fork_blocked: Option<&'static str>,
     move_blocked: Option<&'static str>,
+    git: RowGit,
+}
+
+/// The agent's branch, as the menu's Git row shows it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum RowGit {
+    Reading,
+    Outside,
+    /// The daemon answered with an error, as one older than the git requests does: the menu has
+    /// no Git row, as before.
+    Unavailable,
+    Branch {
+        branch: String,
+        words: String,
+        /// On a branch, not on a detached HEAD.
+        named: bool,
+        uncommitted: bool,
+        on_github: bool,
+    },
 }
 
 impl RowMenuShown {
@@ -227,7 +257,39 @@ impl RowMenuShown {
                     enabled: self.move_blocked.is_none(),
                 },
             ],
+            Submenu::Git => {
+                let (branch, uncommitted, on_github) = match &self.git {
+                    RowGit::Branch {
+                        named,
+                        uncommitted,
+                        on_github,
+                        ..
+                    } => (*named, *uncommitted, *on_github),
+                    RowGit::Reading | RowGit::Outside | RowGit::Unavailable => {
+                        (false, false, false)
+                    }
+                };
+                vec![
+                    SubRow {
+                        pick: Pick::CopyBranch,
+                        enabled: branch,
+                    },
+                    SubRow {
+                        pick: Pick::ShowUncommitted,
+                        enabled: uncommitted,
+                    },
+                    SubRow {
+                        pick: Pick::OpenBranch,
+                        enabled: on_github,
+                    },
+                ]
+            }
         }
+    }
+
+    /// The menu's rows the arrows reach: all but a Git row the menu does not show.
+    fn items_shown(&self) -> [bool; ITEMS.len()] {
+        ITEMS.map(|item| item != Item::Git || self.git != RowGit::Unavailable)
     }
 }
 
@@ -258,7 +320,7 @@ impl Cursor {
                         ..self
                     },
                     None => Self {
-                        item: menu_keys::next(&[true; ITEMS.len()], self.item, direction),
+                        item: menu_keys::next(&shown.items_shown(), self.item, direction),
                         open: None,
                         sub: None,
                     },
@@ -370,7 +432,9 @@ fn shortcut_title(item: Item, keys: &Keymap) -> String {
         Item::Mark => Command::MarkToHandle,
         Item::Rename => Command::Rename,
         Item::Close => Command::CloseAgent,
-        Item::Unread | Item::Project | Item::Notifications | Item::Folder => return String::new(),
+        Item::Unread | Item::Project | Item::Notifications | Item::Folder | Item::Git => {
+            return String::new();
+        }
     };
     format!("{} does this for the selected agent", keys.shown(command))
 }
@@ -397,6 +461,7 @@ pub fn RowMenu() -> Element {
                     folder: path_style::shown(&entry.summary.folder),
                     fork_blocked: working_folder::blocked(&state, agent, FolderAction::Fork),
                     move_blocked: working_folder::blocked(&state, agent, FolderAction::Move),
+                    git: row_git(entry),
                 })
             }
             _ => None,
@@ -444,7 +509,9 @@ fn MenuBody(shown: RowMenuShown) -> Element {
         ref folder,
         fork_blocked,
         move_blocked,
+        ref git,
     } = shown;
+    let git = git.clone();
     let folder = folder.clone();
     let projects = projects.clone();
     let act = move |pick: Pick| run(cockpit, agent, next_mark, unread, pick);
@@ -629,6 +696,32 @@ fn MenuBody(shown: RowMenuShown) -> Element {
             }
         }
     };
+    let git_value = match &git {
+        RowGit::Reading => "…".to_owned(),
+        RowGit::Outside | RowGit::Unavailable => "none".to_owned(),
+        RowGit::Branch { branch, .. } => branch.clone(),
+    };
+    let git_shown = git != RowGit::Unavailable;
+    let git_rows = shown.rows(Submenu::Git);
+    let git_row = move |index: usize, pick: Pick, label: &'static str| {
+        let enabled = git_rows.get(index).is_some_and(|row| row.enabled);
+        let hint = pick
+            .key()
+            .map(|key| key.to_ascii_uppercase())
+            .unwrap_or(' ');
+        rsx! {
+            button {
+                class: sub_class(Submenu::Git, index),
+                role: "menuitem",
+                tabindex: -1,
+                disabled: !enabled,
+                onmouseenter: move |_| point_in_submenu(index, enabled),
+                onclick: move |_| act(pick),
+                span { class: "menu-label", "{label}" }
+                span { class: "menu-hint", "{hint}" }
+            }
+        }
+    };
     rsx! {
         KeyedMenu {
             x,
@@ -701,6 +794,25 @@ fn MenuBody(shown: RowMenuShown) -> Element {
                     }
                 }
             }
+            if git_shown {
+                div { class: "submenu-anchor",
+                    {trigger_row(Submenu::Git, "Git", Some(git_value.as_str()))}
+                    Presence { open: now.open == Some(Submenu::Git),
+                        div {
+                            class: "popover menu submenu",
+                            role: "menu",
+                            aria_label: "Git",
+                            if let RowGit::Branch { words, .. } = &git {
+                                span { class: "menu-folder menu-git", title: "{words}", "{words}" }
+                                div { class: "menu-divider" }
+                            }
+                            {git_row(0, Pick::CopyBranch, "Copy the branch name")}
+                            {git_row(1, Pick::ShowUncommitted, "Show the uncommitted files")}
+                            {git_row(2, Pick::OpenBranch, "Open the branch on GitHub")}
+                        }
+                    }
+                }
+            }
             div { class: "menu-divider" }
             {action_row(Item::Close, "Close", " danger")}
         }
@@ -751,6 +863,41 @@ fn run(cockpit: Cockpit, agent: AgentId, next_mark: Mark, unread: bool, pick: Pi
         Pick::Folder(action) => cockpit.update_with_drafts(|state, drafts| {
             working_folder::open(state, drafts, agent, action);
         }),
+        Pick::CopyBranch | Pick::OpenBranch => {
+            let (name, page) = {
+                let state = cockpit.state.peek();
+                match state.agents.get(&agent).and_then(git::branch_summary) {
+                    Some(summary) => (summary.checkout.branch.name.clone(), summary.github),
+                    None => (None, None),
+                }
+            };
+            match (pick, name, page) {
+                (Pick::CopyBranch, Some(name), _) => bridge::copy_to_clipboard(name),
+                (Pick::OpenBranch, _, Some(page)) => cockpit.open_in_browser(page),
+                _ => {}
+            }
+            cockpit.update(close_menu);
+        }
+        Pick::ShowUncommitted => cockpit.update(|state| {
+            close_menu(state);
+            file_tree::open_on_changes(state, agent);
+        }),
+    }
+}
+
+/// The agent's branch for the Git row: reading while the daemon has not said.
+fn row_git(entry: &AgentEntry) -> RowGit {
+    match (git::branch_summary(entry), &entry.git.status.value) {
+        (Some(summary), _) => RowGit::Branch {
+            named: summary.checkout.branch.name.is_some(),
+            uncommitted: !summary.checkout.files.is_empty(),
+            on_github: summary.github.is_some(),
+            branch: summary.branch,
+            words: summary.words,
+        },
+        (None, Loadable::NotRequested | Loadable::Loading) => RowGit::Reading,
+        (None, Loadable::Loaded(_)) => RowGit::Outside,
+        (None, Loadable::Failed(_)) => RowGit::Unavailable,
     }
 }
 
@@ -797,7 +944,94 @@ mod tests {
             folder: "/work/project".to_owned(),
             fork_blocked: None,
             move_blocked: None,
+            git: RowGit::Branch {
+                branch: "fix/columns".to_owned(),
+                words: "fix/columns · 2 to push".to_owned(),
+                named: true,
+                uncommitted: false,
+                on_github: true,
+            },
         }
+    }
+
+    #[test]
+    fn the_git_submenu_offers_only_what_the_branch_allows() {
+        let shown = shown();
+
+        let (_, copy) = press(
+            Cursor::default(),
+            &[MenuKey::Up, MenuKey::Up, MenuKey::Right, MenuKey::Enter],
+            &shown,
+        );
+        let rows = enabled(&shown.rows(Submenu::Git));
+        let outside = RowMenuShown {
+            git: RowGit::Outside,
+            ..shown
+        };
+
+        assert_eq!(copy, Some(Pick::CopyBranch));
+        assert_eq!(rows, [true, false, true], "no uncommitted file to show");
+        assert_eq!(enabled(&outside.rows(Submenu::Git)), [false, false, false]);
+    }
+
+    fn checkout_entry(branch: Option<&str>) -> AgentEntry {
+        use cockpit_protocol::{
+            AgentStatus, BranchState, CheckoutKind, CheckoutState, Commit, CommitHash,
+            Completeness, GitStatus, Timestamp,
+        };
+
+        let mut entry = AgentEntry::new(crate::state::summary(1, AgentStatus::Idle));
+        entry.summary.folder = "/work/project".into();
+        let head = Commit {
+            hash: CommitHash::new(&"9".repeat(40)).unwrap(),
+            title: "Start".to_owned(),
+            body: String::new(),
+            author: "Dev".to_owned(),
+            time: Timestamp::from_unix_millis(0),
+        };
+        entry.git.status.value = Loadable::Loaded(GitStatus {
+            checkouts: vec![CheckoutState {
+                root: "/work/project".into(),
+                remote: None,
+                kind: CheckoutKind::MainWorktree,
+                branch: BranchState {
+                    name: branch.map(str::to_owned),
+                    head: Some(head),
+                    upstream: None,
+                },
+                files: Vec::new(),
+                completeness: Completeness::Complete,
+            }],
+        });
+        entry
+    }
+
+    #[test]
+    fn without_gits_answer_the_menu_has_no_git_row() {
+        let mut entry = checkout_entry(Some("main"));
+        entry.git.status.value = Loadable::Failed("unknown method `agent.git_status`".to_owned());
+        let shown = RowMenuShown {
+            git: row_git(&entry),
+            ..shown()
+        };
+
+        let (cursor, _) = press(Cursor::default(), &[MenuKey::Up, MenuKey::Up], &shown);
+
+        assert_eq!(
+            cursor.item,
+            Some(Item::Folder.index()),
+            "the arrows skip it"
+        );
+    }
+
+    #[test]
+    fn a_detached_head_has_no_branch_name_to_copy() {
+        let shown = RowMenuShown {
+            git: row_git(&checkout_entry(None)),
+            ..shown()
+        };
+
+        assert_eq!(enabled(&shown.rows(Submenu::Git)), [false, false, false]);
     }
 
     fn press(cursor: Cursor, keys: &[MenuKey], shown: &RowMenuShown) -> (Cursor, Option<Pick>) {

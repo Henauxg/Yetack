@@ -6,8 +6,7 @@
 use std::time::SystemTime;
 
 use cockpit_protocol::{
-    AgentId, ChangedFile, ContextUsage, MAX_TITLE_CHARS, RateLimitStatus, Timestamp, UsageWindow,
-    WindowUsage,
+    AgentId, ContextUsage, MAX_TITLE_CHARS, RateLimitStatus, Timestamp, UsageWindow, WindowUsage,
 };
 use dioxus::prelude::*;
 use strum::{EnumString, IntoStaticStr, VariantArray};
@@ -16,11 +15,13 @@ use crate::connection::{Clock, Cockpit};
 use crate::keymap::Command;
 use crate::machine::MachineId;
 use crate::state::accounts::{self, Billing, PlanChip};
+use crate::state::file_tree::LineTotals;
 use crate::state::{
-    AgentEntry, Loadable, Popover, TitlePlace, actions, claude_code_version, file_tree, terminals,
-    title_emoji,
+    AgentEntry, Loadable, Popover, TitlePlace, actions, claude_code_version, file_tree, git,
+    terminals, title_emoji,
 };
 use crate::ui::accounts::{AccountDot, AccountTag, PlanAccounts};
+use crate::ui::branch_card::CardHover;
 use crate::ui::emoji_picker::EmojiPicker;
 use crate::ui::icons::{Icon, IconKind};
 use crate::ui::load_card::{LoadCard, LoadChip};
@@ -29,6 +30,9 @@ use crate::ui::presence::{Presence, use_presence};
 use crate::{bridge, format, path_style};
 
 const AT_LIMIT_PERCENT: u8 = 100;
+
+/// How far below the pointer the header's branch card opens, in pixels: under the header's line.
+const BRANCH_CARD_DROP: u16 = 10;
 
 /// How close a plan window is to its limit, which colors its bar.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -121,6 +125,7 @@ const INNER_RING: f64 = 31.42;
 #[component]
 pub fn Header() -> Element {
     let cockpit: Cockpit = use_context();
+    let hover: CardHover = use_context();
     let state = cockpit.state.read();
     let Some(entry) = state.selected() else {
         return rsx! {
@@ -145,8 +150,8 @@ pub fn Header() -> Element {
         PlanChip::Environment | PlanChip::NotSignedIn | PlanChip::Provider(_) => None,
     };
     let context = context_percent(entry);
-    let files = changed_files(entry);
-    let (added, removed) = file_tree::line_totals(&files);
+    let files = file_tree::changes(entry);
+    let LineTotals { added, removed } = files.totals();
     let usage_open = state.ui.popover == Some(Popover::Usage);
     let load_open = state.ui.popover == Some(Popover::Load);
     let emoji_open = state.ui.popover == Some(Popover::TitleEmoji);
@@ -169,16 +174,17 @@ pub fn Header() -> Element {
         .map(|label| format!(" of {}", label.name))
         .unwrap_or_default();
     let usage_label = format!("Usage: {plan_words}{account_words}, context {context_text}");
-    let changes_label = if files.is_empty() {
+    let changes_label = if files.changed.is_empty() {
         "Files".to_owned()
     } else {
         format!(
             "Files. Changes: {}, {added} lines added, {removed} removed",
-            format::count(files.len(), "file", "files")
+            format::count(files.changed.len(), "file", "files")
         )
     };
-    let file_count = files.len();
+    let file_count = files.changed.len();
     let folder = path_style::shown(&summary.folder);
+    let branch_words = git::branch_summary(entry).map(|summary| summary.words);
     let title_edit = state
         .ui
         .title_edit
@@ -262,6 +268,21 @@ pub fn Header() -> Element {
                 }
                 span { class: "header-folder",
                     "{folder}"
+                    if let Some(words) = branch_words.clone() {
+                        span {
+                            class: "header-branch",
+                            onmouseenter: move |event: MouseEvent| {
+                                let point = event.client_coordinates();
+                                // Whole pixels are enough to place a card.
+                                #[expect(clippy::cast_possible_truncation, reason = "a window's pixels fit in i32")]
+                                let (x, y) = (point.x.round() as i32, point.y.round() as i32);
+                                hover.enter(cockpit, agent, x, y + i32::from(BRANCH_CARD_DROP));
+                            },
+                            onmouseleave: move |_| hover.leave(cockpit),
+                            span { aria_hidden: true, " · " }
+                            "{words}"
+                        }
+                    }
                     UntestedNote { agent, note: claude_code_version::untested_note(summary) }
                 }
                 Presence { open: emoji_open,
@@ -356,14 +377,6 @@ fn UntestedNote(agent: AgentId, note: Option<String>) -> Element {
             "{text}"
         }
     }
-}
-
-fn changed_files(entry: &AgentEntry) -> Vec<ChangedFile> {
-    entry
-        .details
-        .loaded()
-        .map(|details| details.changed_files.clone())
-        .unwrap_or_default()
 }
 
 fn context_percent(entry: &AgentEntry) -> Option<u8> {

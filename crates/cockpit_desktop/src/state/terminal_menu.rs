@@ -5,8 +5,8 @@ use cockpit_protocol::{AgentId, TerminalId};
 use serde::Deserialize;
 
 use super::app_state::AppState;
-use super::terminals;
 use super::ui_state::Popover;
+use super::{tab_menu, terminals};
 use crate::prefs::TerminalPlace;
 
 /// The link under the pointer, as the page found it.
@@ -60,7 +60,7 @@ impl TerminalItem {
         match self {
             Self::OpenLink if file => "Open in the file view",
             Self::OpenLink => "Open in the browser",
-            Self::CopyLink if file => "Copy the path",
+            Self::CopyLink if file => tab_menu::COPY_PATH_LABEL,
             Self::CopyLink => "Copy the address",
             Self::Copy => "Copy",
             Self::Paste => "Paste",

@@ -14,9 +14,11 @@ use crate::state::{
 };
 use crate::ui::app_update::use_release_checks;
 use crate::ui::blocks::FloatingBlocks;
+use crate::ui::branch_card::{BranchCardView, use_card_hover};
 use crate::ui::chat_scroll::InView;
 use crate::ui::composer::Composer;
 use crate::ui::dialogs::Dialogs;
+use crate::ui::file_git::FileHistory;
 use crate::ui::file_view::{FileViewPanel, use_page_copies};
 use crate::ui::files_pane::{FilesPane, TreeMenu};
 use crate::ui::find::{ChatFindBar, use_find};
@@ -61,6 +63,7 @@ pub fn App() -> Element {
     use_held_release(cockpit);
     use_page_copies(cockpit);
     use_undrawn_rows();
+    use_card_hover();
     // The entries in the chat's view: the bubble and the Messages block follow them.
     let in_view = use_signal(|| None::<InView>);
     let perf_info = use_memo(move || cockpit.state.read().ui.perf_info);
@@ -211,6 +214,8 @@ pub fn App() -> Element {
             TabMenu {}
             TerminalMenu {}
             BlockSubagentMenu {}
+            FileHistory {}
+            BranchCardView {}
             Dialogs {}
         }
     }

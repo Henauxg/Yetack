@@ -24,6 +24,7 @@ use crate::state::{
 };
 use crate::ui::accounts::{AccountLetter, AccountsButton};
 use crate::ui::app_update::ReleaseNotice;
+use crate::ui::branch_card::CardHover;
 use crate::ui::grouping::GroupSwitch;
 use crate::ui::icons::{Icon, IconKind};
 use crate::ui::machines::{machine_icon, run_action};
@@ -147,6 +148,9 @@ pub fn item_id(item: SidebarItem) -> String {
 
 /// An idle row says "now" for this long after the agent's last activity.
 const JUST_NOW: Duration = Duration::from_secs(60);
+
+/// The room, in pixels, between the sidebar and a row's branch card.
+const CARD_GAP: u16 = 8;
 
 /// The short text next to the title, and its tooltip.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -948,6 +952,7 @@ fn AgentRowView(row: AgentRow) -> Element {
 #[component]
 fn AgentRowButton(row: AgentRow, class: String) -> Element {
     let cockpit: Cockpit = use_context();
+    let hover: CardHover = use_context();
     let agent = row.id;
     rsx! {
         button {
@@ -956,6 +961,16 @@ fn AgentRowButton(row: AgentRow, class: String) -> Element {
             aria_current: row.selected,
             "data-row-agent": "{agent.get()}",
             onclick: move |_| cockpit.update(|state| actions::select_agent(state, agent)),
+            // The branch card shows beside the sidebar, level with the row.
+            onmouseenter: move |event: MouseEvent| {
+                let width = cockpit.state.peek().prefs.sidebar.width();
+                let top = event.client_coordinates().y - event.element_coordinates().y;
+                // Whole pixels are enough to place a card.
+                #[expect(clippy::cast_possible_truncation, reason = "a window's pixels fit in i32")]
+                let y = top.round() as i32;
+                hover.enter(cockpit, agent, i32::from(width) + i32::from(CARD_GAP), y);
+            },
+            onmouseleave: move |_| hover.leave(cockpit),
             oncontextmenu: move |event: MouseEvent| {
                 event.prevent_default();
                 let point = event.client_coordinates();

@@ -20,6 +20,7 @@ mod details;
 mod details_change;
 mod event;
 mod frame;
+mod git;
 mod ids;
 mod machine_load;
 mod position;
@@ -51,6 +52,12 @@ pub use details::{
 pub use details_change::DetailsChange;
 pub use event::{Event, EventRecord};
 pub use frame::{Frame, FrameError, FrameReader, FrameWriter, MAX_LINE_BYTES};
+pub use git::{
+    BlameRun, BranchState, CheckoutKind, CheckoutState, Commit, CommitHash, CommitTexts,
+    FileChange, FileStatus, GitBlame, GitCommitFile, GitFile, GitFileParams, GitShowParams,
+    GitStatus, LineCounts, LogEntry, MAX_COMMIT_BODY_BYTES, MAX_LOG_COMMITS, MAX_STATUS_FILES,
+    MAX_UNPUSHED_COMMITS, OnRemote, Remote, Upstream,
+};
 pub use ids::{
     AccountId, AgentId, BackgroundTaskId, ClaudeSessionId, ItemId, PendingId, ProcessId, PromptId,
     RequestId, Seq,

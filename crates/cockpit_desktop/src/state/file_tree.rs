@@ -9,12 +9,12 @@
 //! A listing is read again when the agent finishes a step that can change files, when the agent
 //! comes back on screen, and on Refresh. The old entries stay on screen until the new ones arrive.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use cockpit_protocol::{
-    AgentId, ChangedFile, Completeness, DirListing, EntryKind, GitIgnore, ItemBody, ToolCallStatus,
-    TranscriptItem,
+    AgentId, ChangedFile, Completeness, DirListing, EntryKind, FileChange, GitIgnore, ItemBody,
+    ToolCallStatus, TranscriptItem,
 };
 use serde_json::Value;
 
@@ -22,6 +22,7 @@ use super::actions::{self, Direction};
 use super::app_state::{AgentEntry, AppState, Loadable};
 use super::drafts::Drafts;
 use super::file_edits::{self, BASH_TOOL, FILE_FIELDS, READ_TOOL};
+use super::git::{self, Step};
 use super::ui_state::{FileSearch, Popover, ViewMode};
 use crate::machine::MachineId;
 use crate::path_style::PathStyle;
@@ -70,6 +71,8 @@ pub struct Listing {
 pub struct Footprint {
     pub changed: BTreeMap<PathBuf, LineCounts>,
     pub read: BTreeSet<PathBuf>,
+    /// How each file that differs from its last commit differs, when the daemon read git.
+    pub git: BTreeMap<PathBuf, FileChange>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -110,8 +113,10 @@ pub struct Marks {
     pub change: Option<LineCounts>,
     /// The agent read the file.
     pub read: bool,
-    /// The folder holds a file the agent changed.
+    /// The folder holds a file the agent changed, or one that differs from its last commit.
     pub holds_change: bool,
+    /// How the file differs from its last commit.
+    pub git: Option<FileChange>,
     /// The checkout ignores the entry or a folder above it.
     pub ignored: bool,
 }
@@ -132,19 +137,92 @@ impl RowKind {
     }
 }
 
-/// What `entry` changed and read, from its details and its transcript.
+/// What `entry` changed and read, from its details and its transcript, and what differs from
+/// the last commit in its checkouts.
 pub fn footprint(entry: &AgentEntry) -> Footprint {
-    let changed = entry
+    let Changes { changed, git } = changes(entry);
+    Footprint {
+        changed,
+        read: read_files(entry.transcript.items()),
+        git,
+    }
+}
+
+/// The changed files, with their line counts.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct Changes {
+    pub changed: BTreeMap<PathBuf, LineCounts>,
+    /// How each file that differs from its last commit differs, when the daemon read git.
+    pub git: BTreeMap<PathBuf, FileChange>,
+}
+
+/// The lines added and removed, all files together, in `u64` so that no count the daemon sends
+/// overflows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LineTotals {
+    pub added: u64,
+    pub removed: u64,
+}
+
+impl Changes {
+    pub fn totals(&self) -> LineTotals {
+        let added = self
+            .changed
+            .values()
+            .map(|counts| u64::from(counts.added))
+            .sum();
+        let removed = self
+            .changed
+            .values()
+            .map(|counts| u64::from(counts.removed))
+            .sum();
+        LineTotals { added, removed }
+    }
+}
+
+/// The files the agent changed, with its counts, and the files that differ from their last
+/// commit, with git's counts, which are more exact: they count every change, whoever made it. A
+/// binary file counts no line.
+pub fn changes(entry: &AgentEntry) -> Changes {
+    let mut changed: BTreeMap<PathBuf, LineCounts> = entry
         .details
         .loaded()
         .into_iter()
         .flat_map(|details| details.changed_files.iter())
         .map(|file| (file.path.clone(), counts(file)))
         .collect();
-    Footprint {
-        changed,
-        read: read_files(entry.transcript.items()),
+    let mut git = BTreeMap::new();
+    let Some(status) = entry.git.status.value.loaded() else {
+        return Changes { changed, git };
+    };
+    let style = PathStyle::of(&entry.summary.folder);
+    // A checkout lists up to `MAX_STATUS_FILES`: each is looked up, not compared with each other.
+    let mut names: HashMap<String, PathBuf> = HashMap::new();
+    for path in changed.keys() {
+        names
+            .entry(style.key(&path.to_string_lossy()))
+            .or_insert_with(|| path.clone());
     }
+    for file in status.checkouts.iter().flat_map(|checkout| &checkout.files) {
+        // The agent's name for the file wins, so that the file shows once.
+        let key = names
+            .entry(style.key(&file.path.to_string_lossy()))
+            .or_insert_with(|| file.path.clone())
+            .clone();
+        let counts = file.counts.map_or(
+            LineCounts {
+                added: 0,
+                removed: 0,
+            },
+            |counts| LineCounts {
+                added: counts.added,
+                removed: counts.removed,
+            },
+        );
+        changed.insert(key.clone(), counts);
+        git.insert(key, file.change);
+    }
+    Changes { changed, git }
 }
 
 fn counts(file: &ChangedFile) -> LineCounts {
@@ -185,11 +263,13 @@ pub fn rows(tree: &FileTree, folder: &Path, footprint: &Footprint) -> Vec<TreeRo
     let roots: Vec<PathBuf> = std::iter::once(folder.to_owned())
         .chain(outside_roots(folder, footprint))
         .collect();
+    let style = PathStyle::of(folder);
     let builder = Builder {
         tree,
         footprint,
-        style: PathStyle::of(folder),
+        style,
         roots: &roots,
+        index: MarkIndex::new(footprint, style),
     };
     let mut rows = Vec::new();
     if let Some(search) = &tree.search {
@@ -307,37 +387,50 @@ struct Builder<'tree> {
     style: PathStyle,
     /// The agent's folder and the folders outside it, each shown once at the top level.
     roots: &'tree [PathBuf],
+    index: MarkIndex,
+}
+
+/// The footprint by [`PathStyle::key`], which each row looks up: git can list thousands of files.
+struct MarkIndex {
+    changed: HashMap<String, LineCounts>,
+    read: HashSet<String>,
+    git: HashMap<String, FileChange>,
+    /// The folders that hold a changed file.
+    holding: HashSet<String>,
+}
+
+impl MarkIndex {
+    fn new(footprint: &Footprint, style: PathStyle) -> Self {
+        let key = |path: &PathBuf| style.key(&path.to_string_lossy());
+        let mut changed = HashMap::new();
+        let mut holding = HashSet::new();
+        for (path, counts) in &footprint.changed {
+            changed.entry(key(path)).or_insert(*counts);
+            holding.extend(style.folder_keys(&path.to_string_lossy()));
+        }
+        let mut git = HashMap::new();
+        for (path, change) in &footprint.git {
+            git.entry(key(path)).or_insert(*change);
+        }
+        Self {
+            changed,
+            read: footprint.read.iter().map(key).collect(),
+            git,
+            holding,
+        }
+    }
 }
 
 impl Builder<'_> {
     fn marks(&self, path: &Path, folder: bool, ignored: bool) -> Marks {
-        let text = path.to_string_lossy();
-        let holds_change = folder
-            && self.footprint.changed.keys().any(|changed| {
-                self.style
-                    .strip_prefix(&changed.to_string_lossy(), &text)
-                    .is_some_and(|rest| !rest.is_empty())
-            });
+        let key = self.style.key(&path.to_string_lossy());
         Marks {
-            change: self
-                .footprint
-                .changed
-                .iter()
-                .find(|(changed, _)| self.same(changed, &text))
-                .map(|(_, counts)| *counts),
-            read: self
-                .footprint
-                .read
-                .iter()
-                .any(|read| self.same(read, &text)),
-            holds_change,
+            change: self.index.changed.get(&key).copied(),
+            read: self.index.read.contains(&key),
+            holds_change: folder && self.index.holding.contains(&key),
             ignored,
+            git: self.index.git.get(&key).copied(),
         }
-    }
-
-    /// Whether `path` names the file at `text`, whatever its separators, and its case on Windows.
-    fn same(&self, path: &Path, text: &str) -> bool {
-        self.style.same_path(&path.to_string_lossy(), text)
     }
 
     fn path_in(&self, folder: &Path, name: &str) -> PathBuf {
@@ -638,13 +731,6 @@ pub fn root_label(root: &Path) -> String {
     }
 }
 
-/// Summed in `u64`, so that no count the daemon sends overflows.
-pub fn line_totals(files: &[ChangedFile]) -> (u64, u64) {
-    let added = files.iter().map(|file| u64::from(file.lines_added)).sum();
-    let removed = files.iter().map(|file| u64::from(file.lines_removed)).sum();
-    (added, removed)
-}
-
 /// The folders whose listing the tree shows: the agent's, and each open folder whose folders
 /// above it are open, up to the agent's folder or a folder outside it.
 pub fn shown_folders(tree: &FileTree, folder: &Path, footprint: &Footprint) -> Vec<PathBuf> {
@@ -711,10 +797,7 @@ pub fn toggle_from_changes(state: &mut AppState, agent: AgentId) {
     }
     set_pane(state, agent, PaneState::Open);
     if let Some(entry) = state.agents.get_mut(&agent) {
-        let changed = entry
-            .details
-            .loaded()
-            .is_some_and(|details| !details.changed_files.is_empty());
+        let changed = !changes(entry).changed.is_empty();
         entry.tree.search = None;
         entry.tree.filter = if changed {
             TreeFilter::Changed
@@ -722,6 +805,15 @@ pub fn toggle_from_changes(state: &mut AppState, agent: AgentId) {
             TreeFilter::All
         };
     }
+}
+
+/// Selects `agent` and opens its pane on its changed files, the uncommitted ones included.
+pub fn open_on_changes(state: &mut AppState, agent: AgentId) {
+    if state.ui.selected != Some(agent) {
+        actions::select_agent(state, agent);
+    }
+    set_pane(state, agent, PaneState::Open);
+    set_filter(state, agent, TreeFilter::Changed);
 }
 
 pub fn set_filter(state: &mut AppState, agent: AgentId, filter: TreeFilter) {
@@ -818,12 +910,19 @@ pub fn item_finished(state: &mut AppState, agent: AgentId, item: &TranscriptItem
     let (ItemBody::ToolCall(call) | ItemBody::Subagent(call)) = &item.body else {
         return;
     };
-    let changes_files = call.edit.is_some() || call.tool == BASH_TOOL;
-    if call.status == ToolCallStatus::Done
-        && changes_files
-        && let Some(entry) = state.agents.get_mut(&agent)
-    {
-        refresh(&mut entry.tree);
+    let bash = call.tool == BASH_TOOL;
+    let Some(entry) = state.agents.get_mut(&agent) else {
+        return;
+    };
+    match call.status {
+        ToolCallStatus::Done if call.edit.is_some() || bash => {
+            refresh(&mut entry.tree);
+            let step = if bash { Step::Command } else { Step::Edit };
+            git::step_finished(entry, step);
+        }
+        // A command that fails may have committed first, as `git commit && cargo test` does.
+        ToolCallStatus::Failed if bash => git::step_finished(entry, Step::Command),
+        ToolCallStatus::Done | ToolCallStatus::Failed | ToolCallStatus::Running => {}
     }
 }
 
@@ -957,9 +1056,12 @@ pub enum TreeMenuItem {
     /// Opens a file, or opens or closes a folder.
     Open,
     OpenDiff,
+    ShowHistory,
     Mention,
     CopyPath,
     CopyRelativePath,
+    OpenOnGitHub,
+    ShowInFileManager,
 }
 
 impl TreeMenuItem {
@@ -968,24 +1070,50 @@ impl TreeMenuItem {
         match self {
             Self::Open => 'o',
             Self::OpenDiff => 'd',
+            Self::ShowHistory => 'h',
             Self::Mention => 'm',
             Self::CopyPath => 'c',
             Self::CopyRelativePath => 'e',
+            Self::OpenOnGitHub => 'g',
+            Self::ShowInFileManager => 'x',
         }
     }
 }
 
+/// Where the entry of a menu stands, beyond its row.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct MenuPlace {
+    /// It is in the agent's folder: its path from there can be copied.
+    pub in_folder: bool,
+    /// It is a file with a git history.
+    pub history: bool,
+    /// Its checkout is on GitHub.
+    pub on_github: bool,
+    /// It is on this computer.
+    pub local: bool,
+}
+
 /// The menu's rows for `row`: a file the agent changed also opens on its diff, and an entry in the
 /// agent's folder also copies its path from that folder.
-pub fn menu_items(row: &TreeRow, in_folder: bool) -> Vec<TreeMenuItem> {
-    let diff = row.kind == RowKind::File && row.marks.change.is_some();
+pub fn menu_items(row: &TreeRow, place: MenuPlace) -> Vec<TreeMenuItem> {
+    let file = row.kind == RowKind::File;
+    let diff = file && row.marks.change.is_some();
     let mut items = vec![TreeMenuItem::Open];
     if diff {
         items.push(TreeMenuItem::OpenDiff);
     }
+    if file && place.history {
+        items.push(TreeMenuItem::ShowHistory);
+    }
     items.extend([TreeMenuItem::Mention, TreeMenuItem::CopyPath]);
-    if in_folder {
+    if place.in_folder {
         items.push(TreeMenuItem::CopyRelativePath);
+    }
+    if place.on_github {
+        items.push(TreeMenuItem::OpenOnGitHub);
+    }
+    if place.local {
+        items.push(TreeMenuItem::ShowInFileManager);
     }
     items
 }
@@ -1164,7 +1292,8 @@ pub fn forget_pane(state: &mut AppState, agent: AgentId) {
 #[cfg(test)]
 mod tests {
     use cockpit_protocol::{
-        AgentDetails, AgentStatus, DirEntry, EntryLink, ItemId, Method, ResponseBody, ToolCall,
+        AgentDetails, AgentStatus, CheckoutKind, DirEntry, EntryLink, ItemId, Method, ResponseBody,
+        ToolCall,
     };
     use serde_json::json;
 
@@ -1289,6 +1418,7 @@ mod tests {
             read: [PathBuf::from("/work/app/src/lib.rs")]
                 .into_iter()
                 .collect(),
+            git: BTreeMap::new(),
         };
 
         let rows = rows(&tree, Path::new(FOLDER), &footprint);
@@ -1328,6 +1458,7 @@ mod tests {
         let footprint = Footprint {
             changed: BTreeMap::new(),
             read: [PathBuf::from("/work/notes.md")].into_iter().collect(),
+            git: BTreeMap::new(),
         };
 
         let rows = rows(&tree, Path::new(FOLDER), &footprint);
@@ -1370,6 +1501,7 @@ mod tests {
             read: [PathBuf::from("C:/work/app/README.md")]
                 .into_iter()
                 .collect(),
+            git: BTreeMap::new(),
         };
 
         let rows = rows(&tree, Path::new(r"C:\work\app"), &footprint);
@@ -1404,6 +1536,7 @@ mod tests {
             read: [PathBuf::from("/etc/calc/config.toml")]
                 .into_iter()
                 .collect(),
+            git: BTreeMap::new(),
         };
 
         let rows = rows(&tree, Path::new(FOLDER), &footprint);
@@ -1443,6 +1576,7 @@ mod tests {
             .into_iter()
             .collect(),
             read: BTreeSet::new(),
+            git: BTreeMap::new(),
         };
 
         let rows = rows(&tree, Path::new(FOLDER), &footprint);
@@ -1484,6 +1618,7 @@ mod tests {
             .into_iter()
             .collect(),
             read: BTreeSet::new(),
+            git: BTreeMap::new(),
         };
 
         let rows = rows(&tree, Path::new(folder), &footprint);
@@ -1580,6 +1715,7 @@ mod tests {
             .into_iter()
             .collect(),
             read: BTreeSet::new(),
+            git: BTreeMap::new(),
         };
 
         let rows = rows(&tree, Path::new(FOLDER), &footprint);
@@ -1622,16 +1758,21 @@ mod tests {
 
     #[test]
     fn line_totals_hold_counts_past_u32() {
-        let file = |path: &str, lines_added: u32, lines_removed: u32| ChangedFile {
-            path: PathBuf::from(path),
-            lines_added,
-            lines_removed,
+        let counts = |added: u32, removed: u32| LineCounts { added, removed };
+        let changes = Changes {
+            changed: BTreeMap::from([
+                (PathBuf::from("a.rs"), counts(u32::MAX, 1)),
+                (PathBuf::from("b.rs"), counts(u32::MAX, u32::MAX)),
+            ]),
+            git: BTreeMap::new(),
         };
-        let files = [file("a.rs", u32::MAX, 1), file("b.rs", u32::MAX, u32::MAX)];
 
         assert_eq!(
-            line_totals(&files),
-            (2 * u64::from(u32::MAX), u64::from(u32::MAX) + 1)
+            changes.totals(),
+            LineTotals {
+                added: 2 * u64::from(u32::MAX),
+                removed: u64::from(u32::MAX) + 1
+            }
         );
     }
 
@@ -1880,6 +2021,75 @@ mod tests {
     }
 
     #[test]
+    fn changed_lists_every_uncommitted_file_with_gits_counts() {
+        use cockpit_protocol::{
+            BranchState, CheckoutState, FileStatus, GitStatus, LineCounts as GitCounts,
+        };
+
+        let (mut state, agent) = changed_agent();
+        let file = |path: &str, change, counts| FileStatus {
+            path: PathBuf::from(path),
+            change,
+            counts,
+        };
+        let status = GitStatus {
+            checkouts: vec![CheckoutState {
+                root: PathBuf::from("/work/project-1"),
+                remote: None,
+                kind: CheckoutKind::MainWorktree,
+                branch: BranchState {
+                    name: Some("main".to_owned()),
+                    head: None,
+                    upstream: None,
+                },
+                files: vec![
+                    file(
+                        "/work/project-1/src/lib.rs",
+                        FileChange::Modified,
+                        Some(GitCounts {
+                            added: 3,
+                            removed: 1,
+                        }),
+                    ),
+                    file("/work/project-1/logo.png", FileChange::Untracked, None),
+                ],
+                completeness: Completeness::Complete,
+            }],
+        };
+        let entry = state.agents.get_mut(&agent).unwrap();
+        let before = changes(entry);
+        entry.git.status.value = Loadable::Loaded(status);
+        let after = changes(entry);
+
+        let counts = |added, removed| LineCounts { added, removed };
+        let agent_counts: Vec<LineCounts> = before.changed.values().copied().collect();
+        assert_eq!(
+            agent_counts,
+            [counts(2, 0)],
+            "the agent's counts, without git"
+        );
+        assert_eq!(
+            after.changed,
+            BTreeMap::from([
+                (PathBuf::from("/work/project-1/logo.png"), counts(0, 0)),
+                (PathBuf::from("/work/project-1/src/lib.rs"), counts(3, 1)),
+            ]),
+            "git's counts win, and a binary file counts no line"
+        );
+        assert_eq!(
+            after.git.get(Path::new("/work/project-1/logo.png")),
+            Some(&FileChange::Untracked)
+        );
+        assert_eq!(
+            after.totals(),
+            LineTotals {
+                added: 3,
+                removed: 1
+            }
+        );
+    }
+
+    #[test]
     fn each_agent_keeps_its_pane_and_a_new_one_takes_the_settings_one() {
         let mut state = crate::state::state_with(vec![
             crate::state::summary(1, AgentStatus::Idle),
@@ -2104,6 +2314,7 @@ mod tests {
             read: [PathBuf::from("/etc/calc/config.toml")]
                 .into_iter()
                 .collect(),
+            git: BTreeMap::new(),
         };
 
         let rows = rows(&tree, Path::new(FOLDER), &footprint);
@@ -2135,6 +2346,7 @@ mod tests {
             read: [PathBuf::from("/work/project-1_feature/src/x.rs")]
                 .into_iter()
                 .collect(),
+            git: BTreeMap::new(),
         };
         for (root, entries) in [
             (
@@ -2295,8 +2507,21 @@ mod tests {
         let rows = shown_rows(&state, agent);
         let row = |name: &str| rows.iter().find(|row| row.name == name).unwrap();
 
-        let changed_file = menu_items(row("lib.rs"), true);
-        let folder_outside = menu_items(row("src"), false);
+        let in_folder = MenuPlace {
+            in_folder: true,
+            ..MenuPlace::default()
+        };
+        let changed_file = menu_items(row("lib.rs"), in_folder);
+        let folder_outside = menu_items(row("src"), MenuPlace::default());
+        let in_git = menu_items(
+            row("lib.rs"),
+            MenuPlace {
+                in_folder: true,
+                history: true,
+                on_github: true,
+                local: true,
+            },
+        );
 
         assert_eq!(
             changed_file,
@@ -2316,14 +2541,23 @@ mod tests {
                 TreeMenuItem::CopyPath,
             ]
         );
-        let mut letters: Vec<char> = changed_file.iter().map(|item| item.key()).collect();
+        assert_eq!(
+            in_git,
+            [
+                TreeMenuItem::Open,
+                TreeMenuItem::OpenDiff,
+                TreeMenuItem::ShowHistory,
+                TreeMenuItem::Mention,
+                TreeMenuItem::CopyPath,
+                TreeMenuItem::CopyRelativePath,
+                TreeMenuItem::OpenOnGitHub,
+                TreeMenuItem::ShowInFileManager,
+            ]
+        );
+        let mut letters: Vec<char> = in_git.iter().map(|item| item.key()).collect();
         letters.sort_unstable();
         letters.dedup();
-        assert_eq!(
-            letters.len(),
-            changed_file.len(),
-            "each row has its own letter"
-        );
+        assert_eq!(letters.len(), in_git.len(), "each row has its own letter");
     }
 
     #[test]
@@ -2332,6 +2566,7 @@ mod tests {
         let footprint = Footprint {
             changed: [changed("c:/WORK/other/a.md", 1, 0)].into_iter().collect(),
             read: BTreeSet::new(),
+            git: BTreeMap::new(),
         };
         let mut tree = FileTree::default();
         for root in outside_roots(folder, &footprint) {

@@ -10,6 +10,7 @@ mod build_commit;
 mod daemon;
 mod daemon_config;
 mod error_chain;
+mod git;
 mod hub;
 mod in_app_daemon;
 mod lock_holder;

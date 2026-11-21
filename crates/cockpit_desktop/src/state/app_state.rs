@@ -20,6 +20,7 @@ use super::daemon_start::DaemonStart;
 use super::daemon_update::DaemonUpdate;
 use super::details_updates::EarlyUpdate;
 use super::file_tree::FileTree;
+use super::git::AgentGit;
 use super::grouping::GroupKey;
 use super::no_daemon::{NoDaemon, SERVICE_OFFERED};
 use super::page_copy::PageCopies;
@@ -197,6 +198,7 @@ pub struct AgentEntry {
     pub images: VecDeque<KeptImage>,
     /// The files pane's tree of its folder.
     pub tree: FileTree,
+    pub git: AgentGit,
     /// The messages sent that the daemon has not echoed yet.
     pub sending: Sending,
     /// The Resume of the agent, while it has exited.
@@ -337,6 +339,7 @@ impl AgentEntry {
             held_finish: None,
             images: VecDeque::new(),
             tree: FileTree::default(),
+            git: AgentGit::default(),
             sending: Sending::default(),
             resume: Resume::default(),
         }

@@ -11,6 +11,7 @@ mod config;
 mod connection;
 mod daemon_label;
 mod demo;
+mod file_manager;
 mod fonts;
 mod format;
 mod in_app_host;

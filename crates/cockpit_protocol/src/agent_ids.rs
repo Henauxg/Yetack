@@ -27,6 +27,7 @@ impl Request {
             | Self::AgentCommands(params)
             | Self::AgentReloadSkills(params)
             | Self::AgentReloadPlugins(params)
+            | Self::AgentGitStatus(params)
             | Self::AgentTerminals(params) => &mut params.agent,
             Self::AgentTerminalOpen(params) => &mut params.agent,
             Self::TerminalAttach(params) | Self::TerminalClose(params) => &mut params.agent,
@@ -47,6 +48,10 @@ impl Request {
             Self::AgentReadFile(params) => &mut params.agent,
             Self::AgentListDir(params) => &mut params.agent,
             Self::AgentFindFiles(params) => &mut params.agent,
+            Self::AgentGitFile(params)
+            | Self::AgentGitBlame(params)
+            | Self::AgentGitLog(params) => &mut params.agent,
+            Self::AgentGitShow(params) => &mut params.agent,
             Self::McpRemove(params) => &mut params.agent,
             Self::AgentStart(_)
             | Self::SettingsSet(_)
@@ -94,6 +99,11 @@ impl ResponseBody {
             | Self::Image { .. }
             | Self::FileMatches { .. }
             | Self::Directory(_)
+            | Self::GitFile(_)
+            | Self::GitBlame(_)
+            | Self::GitLog { .. }
+            | Self::GitCommitFile(_)
+            | Self::GitStatus(_)
             | Self::Sessions { .. }
             | Self::Accounts { .. }
             | Self::Account(_) => {}

@@ -4,16 +4,21 @@
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use cockpit_protocol::AgentId;
+use cockpit_protocol::{AgentId, FileChange};
+use dioxus::dioxus_core::spawn_forever;
 use dioxus::prelude::*;
 
 use crate::bridge::{self, COMPOSER_ID, HIGHLIGHTED_CLASS, HighlightedList};
 use crate::connection::Cockpit;
+use crate::file_manager;
 use crate::keymap::Command;
 use crate::path_style::{self, PathStyle};
 use crate::state::actions::Direction;
-use crate::state::file_tree::{self, RowKind, Sideways, TreeFilter, TreeMenuItem, TreeRow};
-use crate::state::{AppState, Popover, file_edits, terminals};
+use crate::state::file_tree::{
+    self, MenuPlace, RowKind, Sideways, TreeFilter, TreeMenuItem, TreeRow,
+};
+use crate::state::git::{self, PageKind};
+use crate::state::{AppState, Popover, file_edits, machines, tab_menu, terminals};
 use crate::ui::icons::{Icon, IconKind};
 use crate::ui::menu::{FlatMenu, FlatRow};
 use crate::ui::presence::use_presence;
@@ -313,6 +318,9 @@ fn TreeRowView(agent: AgentId, row: TreeRow, highlighted: bool, shown: bool) -> 
     if row.marks.change.is_some() {
         classes.push("changed");
     }
+    if row.marks.git == Some(FileChange::Deleted) {
+        classes.push("deleted");
+    }
     let open = matches!(row.kind, RowKind::Folder { open: true, .. });
     let is_folder = matches!(row.kind, RowKind::Folder { .. });
     let full = path_style::shown(&row.path);
@@ -362,11 +370,14 @@ fn TreeRowView(agent: AgentId, row: TreeRow, highlighted: bool, shown: bool) -> 
                 span { class: "tree-name-head", "{head}" }
                 span { class: "tree-name-tail", "{tail}" }
             }
-            if let Some(change) = row.marks.change {
+            if let Some(change) = row.marks.change.filter(|change| change.added > 0 || change.removed > 0 || row.marks.git.is_none()) {
                 span { class: "tree-change mono",
                     span { class: "added", "+{change.added}" }
                     span { class: "removed", "-{change.removed}" }
                 }
+            }
+            if let Some(change) = row.marks.git {
+                span { class: "git-letter mono {git_letter_class(change)}", title: git_letter_title(change), {git_letter(change)} }
             }
             if row.marks.read && row.marks.change.is_none() {
                 span { class: "tree-read", title: "Read by the agent" }
@@ -402,6 +413,13 @@ pub fn TreeMenu() -> Element {
         target.y
     );
     let folder_open = matches!(target.row.kind, RowKind::Folder { open: true, .. });
+    // GitHub and the file manager open outside the app: a line sets them apart.
+    let first_outside = target.items.iter().copied().find(|item| {
+        matches!(
+            item,
+            TreeMenuItem::OpenOnGitHub | TreeMenuItem::ShowInFileManager
+        )
+    });
     let rows: Vec<FlatRow> = target
         .items
         .iter()
@@ -412,18 +430,22 @@ pub fn TreeMenu() -> Element {
                     "Enter in the tree does this",
                 ),
                 TreeMenuItem::OpenDiff => ("Open on its diff", ""),
+                TreeMenuItem::ShowHistory => (git::SHOW_HISTORY_LABEL, ""),
+                TreeMenuItem::OpenOnGitHub => (git::OPEN_ON_GITHUB_LABEL, ""),
+                TreeMenuItem::ShowInFileManager => (file_manager::SHOW_LABEL, ""),
                 TreeMenuItem::Mention => {
-                    ("Mention in the message", "Alt+Enter in the tree does this")
+                    (tab_menu::MENTION_LABEL, "Alt+Enter in the tree does this")
                 }
-                TreeMenuItem::CopyPath => ("Copy the path", ""),
-                TreeMenuItem::CopyRelativePath => ("Copy the relative path", ""),
+                TreeMenuItem::CopyPath => (tab_menu::COPY_PATH_LABEL, ""),
+                TreeMenuItem::CopyRelativePath => (tab_menu::COPY_RELATIVE_PATH_LABEL, ""),
             };
             FlatRow {
                 label,
                 key: item.key(),
                 enabled: true,
                 title: title.to_owned(),
-                divided: item == TreeMenuItem::CopyPath,
+                divided: item == TreeMenuItem::CopyPath
+                    || item == first_outside.unwrap_or(TreeMenuItem::CopyPath),
                 danger: false,
             }
         })
@@ -466,6 +488,24 @@ fn run_menu_item(cockpit: Cockpit, target: &MenuTarget, item: TreeMenuItem) {
             close(state);
             file_tree::open_diff(state, agent, &row.path);
         }),
+        TreeMenuItem::ShowHistory => {
+            let (x, y) = (target.x, target.y);
+            cockpit.update(|state| {
+                close(state);
+                file_tree::activate(state, agent, row);
+                git::toggle_history(state, agent, x, y);
+            });
+        }
+        TreeMenuItem::OpenOnGitHub => {
+            if let Some(page) = target.github.clone() {
+                cockpit.open_in_browser(page);
+            }
+            cockpit.update(close);
+        }
+        TreeMenuItem::ShowInFileManager => {
+            show_in_file_manager(cockpit, row.path.clone());
+            cockpit.update(close);
+        }
         TreeMenuItem::Mention => mention(cockpit, agent, &row.path),
         TreeMenuItem::CopyPath => {
             bridge::copy_to_clipboard(path_style::shown(&row.path));
@@ -489,6 +529,8 @@ struct MenuTarget {
     row: TreeRow,
     /// The path from the agent's folder, for an entry inside it.
     relative: Option<String>,
+    /// Its page on GitHub, when its checkout is there.
+    github: Option<String>,
     items: Vec<TreeMenuItem>,
 }
 
@@ -501,14 +543,38 @@ fn menu_target(state: &AppState, agent: AgentId, x: i32, y: i32) -> Option<MenuT
     let folder = &entry.summary.folder;
     let relative = file_edits::shown_path(folder, path);
     let relative = (!PathStyle::of(folder).is_absolute(&relative)).then_some(relative);
+    let kind = if matches!(row.kind, RowKind::Folder { .. }) {
+        PageKind::Tree
+    } else {
+        PageKind::Blob
+    };
+    let github = git::github_file_page(entry, &row.path, kind);
+    let place = MenuPlace {
+        in_folder: relative.is_some(),
+        history: git::has_history(entry, &row.path),
+        on_github: github.is_some(),
+        local: machines::on_this_computer(state, agent),
+    };
     Some(MenuTarget {
         agent,
         x,
         y,
-        items: file_tree::menu_items(&row, relative.is_some()),
+        items: file_tree::menu_items(&row, place),
         row,
         relative,
+        github,
     })
+}
+
+/// Shows `path` in the system's file manager, and reports a failure. The showing outlives the
+/// menu that asked for it.
+pub fn show_in_file_manager(cockpit: Cockpit, path: PathBuf) {
+    spawn_forever(async move {
+        if let Err(error) = file_manager::show(&path).await {
+            let shown = path_style::shown(&path);
+            cockpit.update(|state| state.ui.report(format!("Cannot show {shown}: {error}")));
+        }
+    });
 }
 
 /// `name` cut before its last `TAIL_CHARS` characters, so that a narrow row hides its middle.
@@ -543,6 +609,36 @@ fn attaches(character: char) -> bool {
             | '\u{1F3FB}'..='\u{1F3FF}'
             | ZERO_WIDTH_JOINER
     )
+}
+
+/// Git's letter for how a file differs from its last commit.
+fn git_letter(change: FileChange) -> &'static str {
+    match change {
+        FileChange::Modified => "M",
+        FileChange::Added | FileChange::Untracked => "N",
+        FileChange::Deleted => "D",
+        FileChange::Renamed => "R",
+        FileChange::Conflicted => "C",
+    }
+}
+
+fn git_letter_class(change: FileChange) -> &'static str {
+    match change {
+        FileChange::Modified | FileChange::Renamed => "modified",
+        FileChange::Added | FileChange::Untracked => "new",
+        FileChange::Deleted | FileChange::Conflicted => "deleted",
+    }
+}
+
+fn git_letter_title(change: FileChange) -> &'static str {
+    match change {
+        FileChange::Modified => "Modified since the last commit",
+        FileChange::Added => "New, added to the next commit",
+        FileChange::Untracked => "New, not committed yet",
+        FileChange::Deleted => "Deleted since the last commit",
+        FileChange::Renamed => "Renamed since the last commit",
+        FileChange::Conflicted => "In a merge conflict",
+    }
 }
 
 #[cfg(test)]

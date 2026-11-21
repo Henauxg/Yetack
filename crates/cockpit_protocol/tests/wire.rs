@@ -18,27 +18,29 @@ use cockpit_protocol::{
     AccountState, AgentDetails, AgentHistory, AgentId, AgentLoad, AgentParams, AgentStatus,
     AgentSummary, Answer, AnswerParams, AnswerState, Approval, ApprovalAnswer, ApprovalDecision,
     AskedQuestion, BackgroundTask, BackgroundTaskId, BackgroundTaskKind, BackgroundTaskStatus,
-    BuildCommit, Catchup, ChangedFile, ClaudeCodeVersion, ClaudeRoute, ClaudeSessionId,
-    ClientMessage, CommandChanges, CommandKind, CommandLoad, Completeness, ContextCategory,
-    ContextUsage, Cores, CostUsd, CredentialSource, DEFAULT_TITLE_MAX_CHARS, DetailsChange,
-    DirEntry, DirListing, EditTexts, Effort, EffortSource, EntryKind, EntryLink,
-    EnvironmentCredentials, ErrorBody, ErrorCode, Event, EventRecord, FileEdit, FindFilesParams,
-    FolderParams, FoldersListParams, GitIgnore, HistoryPage, HistoryParams, Image, ImageMediaType,
-    ItemBody, ItemId, ListDirParams, LoadAverage, LoadHistory, MachineLoad, Mark, MarkParams,
+    BlameRun, BranchState, BuildCommit, Catchup, ChangedFile, CheckoutKind, CheckoutState,
+    ClaudeCodeVersion, ClaudeRoute, ClaudeSessionId, ClientMessage, CommandChanges, CommandKind,
+    CommandLoad, Commit, CommitHash, CommitTexts, Completeness, ContextCategory, ContextUsage,
+    Cores, CostUsd, CredentialSource, DEFAULT_TITLE_MAX_CHARS, DetailsChange, DirEntry, DirListing,
+    EditTexts, Effort, EffortSource, EntryKind, EntryLink, EnvironmentCredentials, ErrorBody,
+    ErrorCode, Event, EventRecord, FileChange, FileEdit, FileStatus, FindFilesParams, FolderParams,
+    FoldersListParams, GitBlame, GitCommitFile, GitFile, GitFileParams, GitIgnore, GitShowParams,
+    GitStatus, HistoryPage, HistoryParams, Image, ImageMediaType, ItemBody, ItemId, LineCounts,
+    ListDirParams, LoadAverage, LoadHistory, LogEntry, MachineLoad, Mark, MarkParams,
     McpRemoveParams, McpScope, McpServer, McpServerParams, McpServerStatus, McpToggleAction,
-    McpToggleParams, McpTool, McpTransport, Method, MoveParams, NoticeKind, OlderItems,
+    McpToggleParams, McpTool, McpTransport, Method, MoveParams, NoticeKind, OlderItems, OnRemote,
     PROTOCOL_VERSION, PastSession, PendingId, PermissionMode, Plan, PlanAnswer, PlanDecision,
     PlanUsage, Position, ProcessId, Prompt, PromptDelivery, PromptId, PromptParams, Question,
     QuestionAnswer, QuestionOption, QueuedPromptParams, RateLimitStatus, ReadFileParams,
-    ReleaseVersion, RenameParams, Request, RequestId, ResourceUse, ResponseBody, ResponseResult,
-    Selection, Seq, ServerLoad, ServerMessage, ServerPoint, SessionResumeParams, SetEffortParams,
-    SetModeParams, SetModelParams, Settings, SignIn, SignInWait, SlashCommand, Snapshot,
-    StartParams, StopProcessParams, StopTaskParams, Subagent, SubagentRun, SubagentStatus,
-    SubagentToolCall, TaskListItem, TaskProgress, TaskStatus, TerminalChange, TerminalExit,
-    TerminalId, TerminalInfo, TerminalInputParams, TerminalOpenParams, TerminalParams,
-    TerminalResizeParams, TerminalSize, TerminalUpdate, Timestamp, TokenUsage, ToolCall,
-    ToolCallStatus, TranscriptItem, TurnEnd, TurnOutcome, UsageWindow, UserMessage, WaitingPrompt,
-    WaitingState, WindowUsage,
+    ReleaseVersion, Remote, RenameParams, Repository, Request, RequestId, ResourceUse,
+    ResponseBody, ResponseResult, Selection, Seq, ServerLoad, ServerMessage, ServerPoint,
+    SessionResumeParams, SetEffortParams, SetModeParams, SetModelParams, Settings, SignIn,
+    SignInWait, SlashCommand, Snapshot, StartParams, StopProcessParams, StopTaskParams, Subagent,
+    SubagentRun, SubagentStatus, SubagentToolCall, TaskListItem, TaskProgress, TaskStatus,
+    TerminalChange, TerminalExit, TerminalId, TerminalInfo, TerminalInputParams,
+    TerminalOpenParams, TerminalParams, TerminalResizeParams, TerminalSize, TerminalUpdate,
+    Timestamp, TokenUsage, ToolCall, ToolCallStatus, TranscriptItem, TurnEnd, TurnOutcome,
+    Upstream, UsageWindow, UserMessage, WaitingPrompt, WaitingState, WindowUsage,
 };
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -692,6 +694,24 @@ fn requests() -> Vec<Request> {
             agent,
             name: "login".to_owned(),
         }),
+        Request::AgentGitFile(GitFileParams {
+            agent,
+            path: PathBuf::from("/srv/app/src/login.rs"),
+        }),
+        Request::AgentGitBlame(GitFileParams {
+            agent,
+            path: PathBuf::from("/srv/app/src/login.rs"),
+        }),
+        Request::AgentGitLog(GitFileParams {
+            agent,
+            path: PathBuf::from("/srv/app/src/login.rs"),
+        }),
+        Request::AgentGitShow(GitShowParams {
+            agent,
+            path: PathBuf::from("/srv/app/src/login.rs"),
+            commit: CommitHash::new("9f8e7d6c5b4a39281706f5e4d3c2b1a098765432").unwrap(),
+        }),
+        Request::AgentGitStatus(AgentParams { agent }),
         Request::AgentTerminalOpen(TerminalOpenParams {
             agent,
             size: TerminalSize { cols: 80, rows: 24 },
@@ -859,6 +879,16 @@ fn machine_load() -> MachineLoad {
     }
 }
 
+fn git_commit() -> Commit {
+    Commit {
+        hash: CommitHash::new("9f8e7d6c5b4a39281706f5e4d3c2b1a098765432").unwrap(),
+        title: "Fix the login form".to_owned(),
+        body: "The form now checks the e-mail address.".to_owned(),
+        author: "Dev".to_owned(),
+        time: at(1_700_000_000_000),
+    }
+}
+
 /// One body of every kind.
 fn response_bodies() -> Vec<ResponseBody> {
     vec![
@@ -941,6 +971,66 @@ fn response_bodies() -> Vec<ResponseBody> {
                 PathBuf::from("/srv/projects/shop_feature/src/login.rs"),
             ],
         },
+        ResponseBody::GitFile(GitFile::Committed {
+            head: git_commit(),
+            text: "fn login() {}".to_owned(),
+        }),
+        ResponseBody::GitBlame(GitBlame {
+            head: git_commit().hash,
+            commits: vec![git_commit()],
+            runs: vec![BlameRun {
+                start: 1,
+                count: 1,
+                commit: 0,
+            }],
+        }),
+        ResponseBody::GitLog {
+            entries: vec![LogEntry {
+                commit: git_commit(),
+                counts: Some(LineCounts {
+                    added: 3,
+                    removed: 1,
+                }),
+            }],
+        },
+        ResponseBody::GitCommitFile(GitCommitFile {
+            commit: git_commit(),
+            texts: CommitTexts::Text {
+                before: None,
+                after: Some("fn login() {}".to_owned()),
+            },
+            on_remote: OnRemote::Held,
+        }),
+        ResponseBody::GitStatus(GitStatus {
+            checkouts: vec![CheckoutState {
+                root: PathBuf::from("/srv/projects/shop"),
+                remote: Some(Remote {
+                    name: "origin".to_owned(),
+                    repository: Repository::from_remote("git@github.com:acme/shop.git"),
+                    unpushed: vec![git_commit().hash],
+                    unpushed_completeness: Completeness::Complete,
+                }),
+                kind: CheckoutKind::MainWorktree,
+                branch: BranchState {
+                    name: Some("main".to_owned()),
+                    head: Some(git_commit()),
+                    upstream: Some(Upstream {
+                        name: "origin/main".to_owned(),
+                        ahead: 1,
+                        behind: 0,
+                    }),
+                },
+                files: vec![FileStatus {
+                    path: PathBuf::from("/srv/projects/shop/src/login.rs"),
+                    change: FileChange::Modified,
+                    counts: Some(LineCounts {
+                        added: 3,
+                        removed: 1,
+                    }),
+                }],
+                completeness: Completeness::Complete,
+            }],
+        }),
         ResponseBody::Sessions {
             sessions: vec![PastSession {
                 id: session_id(),
@@ -1229,6 +1319,11 @@ fn method_names_are_pinned() {
             "agent.read_file",
             "agent.list_dir",
             "agent.find_files",
+            "agent.git_file",
+            "agent.git_blame",
+            "agent.git_log",
+            "agent.git_show",
+            "agent.git_status",
             "agent.terminal_open",
             "agent.terminals",
             "terminal.attach",
@@ -1291,6 +1386,11 @@ fn message_and_body_tags_are_pinned() {
             "image",
             "directory",
             "file_matches",
+            "git_file",
+            "git_blame",
+            "git_log",
+            "git_commit_file",
+            "git_status",
             "sessions",
             "machine_load",
             "accounts",
@@ -1352,6 +1452,34 @@ fn message_and_body_tags_are_pinned() {
             "state",
         ),
         ["waiting", "answered", "cancelled"]
+    );
+    assert_eq!(
+        tags(
+            &[
+                GitFile::Outside,
+                GitFile::New { head: None },
+                GitFile::Committed {
+                    head: git_commit(),
+                    text: String::new(),
+                },
+                GitFile::NotText { head: git_commit() },
+            ],
+            "state",
+        ),
+        ["outside", "new", "committed", "not_text"]
+    );
+    assert_eq!(
+        tags(
+            &[
+                CommitTexts::Text {
+                    before: None,
+                    after: None,
+                },
+                CommitTexts::NotText,
+            ],
+            "type",
+        ),
+        ["text", "not_text"]
     );
     let transports: Vec<McpTransport> = mcp_servers()
         .into_iter()
@@ -1470,6 +1598,22 @@ fn words_are_pinned() {
     assert_eq!(words::<Completeness>(), ["complete", "truncated"]);
     assert_eq!(words::<EntryLink>(), ["direct", "symbolic_link"]);
     assert_eq!(words::<GitIgnore>(), ["kept", "ignored"]);
+    assert_eq!(
+        words::<CheckoutKind>(),
+        ["main_worktree", "linked_worktree"]
+    );
+    assert_eq!(words::<OnRemote>(), ["held", "may_lack"]);
+    assert_eq!(
+        words::<FileChange>(),
+        [
+            "modified",
+            "added",
+            "deleted",
+            "renamed",
+            "untracked",
+            "conflicted"
+        ]
+    );
     assert_eq!(words::<OlderItems>(), ["exist", "none"]);
     assert_eq!(words::<McpToggleAction>(), ["enable", "disable"]);
 }
@@ -1769,6 +1913,178 @@ fn a_folders_listing_on_the_wire() {
                 ],
                 "completeness": "truncated",
             }},
+        }),
+    );
+}
+
+#[test]
+fn git_requests_and_answers_on_the_wire() {
+    let hash = "9f8e7d6c5b4a39281706f5e4d3c2b1a098765432";
+    let file_request = ClientMessage::Request {
+        id: RequestId::new(14),
+        request: Request::AgentGitFile(GitFileParams {
+            agent: agent(),
+            path: PathBuf::from("/srv/projects/shop/src/login.rs"),
+        }),
+    };
+    let show_request = ClientMessage::Request {
+        id: RequestId::new(15),
+        request: Request::AgentGitShow(GitShowParams {
+            agent: agent(),
+            path: PathBuf::from("/srv/projects/shop/src/login.rs"),
+            commit: CommitHash::new(hash).unwrap(),
+        }),
+    };
+    let file = ResponseBody::GitFile(GitFile::Committed {
+        head: git_commit(),
+        text: "fn login() {}".to_owned(),
+    });
+    let blame = ResponseBody::GitBlame(GitBlame {
+        head: git_commit().hash,
+        commits: vec![git_commit()],
+        runs: vec![BlameRun {
+            start: 1,
+            count: 4,
+            commit: 0,
+        }],
+    });
+    let log = ResponseBody::GitLog {
+        entries: vec![LogEntry {
+            commit: Commit {
+                body: String::new(),
+                ..git_commit()
+            },
+            counts: Some(LineCounts {
+                added: 3,
+                removed: 1,
+            }),
+        }],
+    };
+    let show = ResponseBody::GitCommitFile(GitCommitFile {
+        commit: git_commit(),
+        texts: CommitTexts::Text {
+            before: None,
+            after: Some("fn login() {}".to_owned()),
+        },
+        on_remote: OnRemote::MayLack,
+    });
+    let status = ResponseBody::GitStatus(GitStatus {
+        checkouts: vec![CheckoutState {
+            root: PathBuf::from("/srv/projects/shop"),
+            remote: Some(Remote {
+                name: "origin".to_owned(),
+                repository: Repository::from_remote("git@github.com:acme/shop.git"),
+                unpushed: vec![git_commit().hash],
+                unpushed_completeness: Completeness::Truncated,
+            }),
+            kind: CheckoutKind::LinkedWorktree,
+            branch: BranchState {
+                name: Some("main".to_owned()),
+                head: Some(git_commit()),
+                upstream: Some(Upstream {
+                    name: "origin/main".to_owned(),
+                    ahead: 1,
+                    behind: 2,
+                }),
+            },
+            files: vec![FileStatus {
+                path: PathBuf::from("/srv/projects/shop/src/login.rs"),
+                change: FileChange::Renamed,
+                counts: None,
+            }],
+            completeness: Completeness::Truncated,
+        }],
+    });
+    let commit = json!({
+        "hash": hash,
+        "title": "Fix the login form",
+        "body": "The form now checks the e-mail address.",
+        "author": "Dev",
+        "time": 1_700_000_000_000_u64,
+    });
+
+    assert_wire(
+        &file_request,
+        json!({
+            "type": "request",
+            "id": 14,
+            "request": {
+                "method": "agent.git_file",
+                "params": {"agent": 3, "path": "/srv/projects/shop/src/login.rs"},
+            },
+        }),
+    );
+    assert_wire(
+        &show_request,
+        json!({
+            "type": "request",
+            "id": 15,
+            "request": {
+                "method": "agent.git_show",
+                "params": {"agent": 3, "path": "/srv/projects/shop/src/login.rs", "commit": hash},
+            },
+        }),
+    );
+    assert_wire(
+        &file,
+        json!({"type": "git_file", "state": "committed", "head": commit, "text": "fn login() {}"}),
+    );
+    assert_wire(
+        &blame,
+        json!({
+            "type": "git_blame",
+            "head": hash,
+            "commits": [commit],
+            "runs": [{"start": 1, "count": 4, "commit": 0}],
+        }),
+    );
+    assert_wire(
+        &log,
+        json!({
+            "type": "git_log",
+            "entries": [{
+                "commit": {
+                    "hash": hash,
+                    "title": "Fix the login form",
+                    "author": "Dev",
+                    "time": 1_700_000_000_000_u64,
+                },
+                "counts": {"added": 3, "removed": 1},
+            }],
+        }),
+    );
+    assert_wire(
+        &show,
+        json!({
+            "type": "git_commit_file",
+            "commit": commit,
+            "texts": {"type": "text", "before": null, "after": "fn login() {}"},
+            "on_remote": "may_lack",
+        }),
+    );
+    assert_wire(
+        &status,
+        json!({
+            "type": "git_status",
+            "checkouts": [{
+                "root": "/srv/projects/shop",
+                "remote": {
+                    "name": "origin",
+                    "repository": "github.com/acme/shop",
+                    "unpushed": [hash],
+                    "unpushed_completeness": "truncated",
+                },
+                "kind": "linked_worktree",
+                "branch": {
+                    "name": "main",
+                    "head": commit,
+                    "upstream": {"name": "origin/main", "ahead": 1, "behind": 2},
+                },
+                "files": [
+                    {"path": "/srv/projects/shop/src/login.rs", "change": "renamed", "counts": null},
+                ],
+                "completeness": "truncated",
+            }],
         }),
     );
 }

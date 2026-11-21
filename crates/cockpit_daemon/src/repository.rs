@@ -18,24 +18,36 @@ const ORIGIN: &str = "origin";
 /// The repository of the git checkout that holds `folder`, by its `origin` remote, else by its
 /// first remote. `None` outside git, or for a checkout without a remote.
 pub(crate) fn of_folder(folder: &Path) -> Option<Repository> {
+    linked_remote(folder).map(|remote| Repository::from_remote(&remote.url))
+}
+
+/// The remote [`of_folder`] names the repository by.
+pub(crate) fn linked_remote(folder: &Path) -> Option<ConfigRemote> {
     let checkout = folder
         .ancestors()
         .find(|ancestor| ancestor.join(GIT_ENTRY).symlink_metadata().is_ok())?;
     let git_dir = git_dir(&checkout.join(GIT_ENTRY))?;
     let config = read_regular(&common_dir(&git_dir).join(CONFIG_FILE))?;
     let remotes = remotes(&config);
-    let remote = remotes
+    let linked = remotes
         .iter()
-        .find(|remote| remote.name == ORIGIN)
-        .or_else(|| remotes.first())?;
-    Some(Repository::from_remote(&remote.url))
+        .position(|remote| remote.name == ORIGIN)
+        .unwrap_or(0);
+    remotes.into_iter().nth(linked)
+}
+
+/// Whether the checkout whose top folder is `checkout` is a linked worktree: its `.git` file
+/// names a git folder with a `commondir`, which a submodule's git folder lacks.
+pub(crate) fn is_linked_worktree(checkout: &Path) -> bool {
+    let entry = checkout.join(GIT_ENTRY);
+    !entry.is_dir() && git_dir(&entry).is_some_and(|git_dir| git_dir.join(COMMONDIR_FILE).is_file())
 }
 
 /// A `[remote "<name>"]` section of a git config.
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct Remote {
-    name: String,
-    url: String,
+pub(crate) struct ConfigRemote {
+    pub(crate) name: String,
+    pub(crate) url: String,
 }
 
 /// The git folder: `.git` itself, or the folder a worktree's `.git` file names.
@@ -78,8 +90,8 @@ fn read_regular(path: &Path) -> Option<String> {
 }
 
 /// Each remote with a `url`, in the file's order.
-fn remotes(config: &str) -> Vec<Remote> {
-    let mut remotes: Vec<Remote> = Vec::new();
+fn remotes(config: &str) -> Vec<ConfigRemote> {
+    let mut remotes: Vec<ConfigRemote> = Vec::new();
     let mut section: Option<String> = None;
     for line in config.lines() {
         let line = line.trim();
@@ -103,7 +115,7 @@ fn remotes(config: &str) -> Vec<Remote> {
         };
         if key.trim().eq_ignore_ascii_case("url") && !remotes.iter().any(|kept| kept.name == *name)
         {
-            remotes.push(Remote {
+            remotes.push(ConfigRemote {
                 name: name.clone(),
                 url: value.trim().to_owned(),
             });
@@ -154,6 +166,20 @@ mod tests {
             of_folder(&worktree).as_ref().map(Repository::as_str),
             Some("github.com/acme/billing")
         );
+        assert!(is_linked_worktree(&worktree));
+        assert!(!is_linked_worktree(&main));
+    }
+
+    #[test]
+    fn a_submodule_is_no_linked_worktree() {
+        let temp = tempfile::tempdir().unwrap();
+        let module_git = temp.path().join("billing/.git/modules/ledger");
+        fs::create_dir_all(&module_git).unwrap();
+        let module = temp.path().join("billing/ledger");
+        fs::create_dir_all(&module).unwrap();
+        fs::write(module.join(".git"), "gitdir: ../.git/modules/ledger\n").unwrap();
+
+        assert!(!is_linked_worktree(&module));
     }
 
     #[test]
@@ -162,7 +188,7 @@ mod tests {
 
         assert_eq!(
             remotes(only_upstream),
-            [Remote {
+            [ConfigRemote {
                 name: "upstream".to_owned(),
                 url: "https://github.com/upstream/billing".to_owned(),
             }]
