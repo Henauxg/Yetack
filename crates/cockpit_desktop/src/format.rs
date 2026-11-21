@@ -3,11 +3,12 @@
 
 use std::time::{Duration, SystemTime};
 
-use chrono::{DateTime, Local, NaiveDate, NaiveDateTime};
 use cockpit_protocol::{
     AgentStatus, AgentSummary, ClaudeRoute, Cores, CostUsd, Effort, McpScope, McpServerStatus,
     PermissionMode, SubagentStatus, Timestamp, UsageWindow,
 };
+use jiff::civil::{Date, DateTime};
+use jiff::tz::TimeZone;
 
 /// A model Claude Code accepts by its alias, for the model menu.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -53,16 +54,16 @@ const MODEL_SUFFIX: char = '[';
 /// A model id part this long is a release date, not a version number.
 const DATE_PART_LENGTH: usize = 8;
 
-/// chrono's format for a month's short name, as in "8 Nov".
+/// jiff's `strftime` format for a month's short name, as in "8 Nov".
 const SHORT_MONTH: &str = "%b";
 
-/// chrono's format for a weekday's name, as in "Monday".
+/// jiff's `strftime` format for a weekday's name, as in "Monday".
 const WEEKDAY: &str = "%A";
 
-/// chrono's format for a time to the minute, as in "09:05".
+/// jiff's `strftime` format for a time to the minute, as in "09:05".
 const TIME_TO_MINUTE: &str = "%H:%M";
 
-/// chrono's format for a time to the second, as in "09:05:42".
+/// jiff's `strftime` format for a time to the second, as in "09:05:42".
 const TIME_TO_SECOND: &str = "%H:%M:%S";
 
 /// The class of an idle agent whose background tasks still run.
@@ -441,47 +442,56 @@ pub fn minutes_until(moment: Timestamp, now: SystemTime) -> Option<u64> {
     Some(remaining.as_secs().div_ceil(60))
 }
 
-/// `None` past chrono's calendar, where its conversions from `SystemTime` and to local time panic.
-fn local(moment: Timestamp) -> Option<NaiveDateTime> {
+/// `None` past jiff's calendar, which ends in the year 9999.
+fn local(moment: Timestamp) -> Option<DateTime> {
     let millis = i64::try_from(moment.unix_millis()).ok()?;
-    let time = DateTime::from_timestamp_millis(millis)?.with_timezone(&Local);
-    time.naive_utc().checked_add_offset(*time.offset())
+    let moment = jiff::Timestamp::from_millisecond(millis).ok()?;
+    Some(TimeZone::system().to_datetime(moment))
 }
 
-fn local_now(now: SystemTime) -> NaiveDateTime {
-    DateTime::<Local>::from(now).naive_local()
+/// A clock past either end of jiff's calendar reads as that end.
+fn local_now(now: SystemTime) -> DateTime {
+    let now = jiff::Timestamp::try_from(now).unwrap_or(if now < SystemTime::UNIX_EPOCH {
+        jiff::Timestamp::MIN
+    } else {
+        jiff::Timestamp::MAX
+    });
+    TimeZone::system().to_datetime(now)
 }
 
 /// The local time of day, to the second: "14:07:11".
 pub fn time_of_day(moment: Timestamp) -> Option<String> {
-    Some(local(moment)?.format(TIME_TO_SECOND).to_string())
+    Some(local(moment)?.strftime(TIME_TO_SECOND).to_string())
 }
 
 /// The day `now` falls on, in this computer's time zone.
-pub fn local_day(now: SystemTime) -> NaiveDate {
+pub fn local_day(now: SystemTime) -> Date {
     local_now(now).date()
+}
+
+/// The local time of day at `now`, to the second: "14:07:11".
+pub fn local_clock(now: SystemTime) -> String {
+    local_now(now).strftime(TIME_TO_SECOND).to_string()
 }
 
 /// When a message was sent, under it in the chat: "13:38" today, "Yesterday 17:05", "8 Nov 09:12"
 /// this year, "8 Nov 2025 09:12" before.
-pub fn message_time(moment: Timestamp, today: NaiveDate) -> Option<String> {
+pub fn message_time(moment: Timestamp, today: Date) -> Option<String> {
     Some(message_time_on(local(moment)?, today))
 }
 
-fn message_time_on(moment: NaiveDateTime, today: NaiveDate) -> String {
-    use chrono::Datelike;
-
-    let time = moment.format(TIME_TO_MINUTE);
-    match (today - moment.date()).num_days() {
+fn message_time_on(moment: DateTime, today: Date) -> String {
+    let time = moment.strftime(TIME_TO_MINUTE);
+    match (today - moment.date()).get_days() {
         0 => time.to_string(),
         1 => format!("Yesterday {time}"),
         _ if moment.year() == today.year() => {
-            format!("{} {} {time}", moment.day(), moment.format(SHORT_MONTH))
+            format!("{} {} {time}", moment.day(), moment.strftime(SHORT_MONTH))
         }
         _ => format!(
             "{} {} {} {time}",
             moment.day(),
-            moment.format(SHORT_MONTH),
+            moment.strftime(SHORT_MONTH),
             moment.year()
         ),
     }
@@ -489,16 +499,14 @@ fn message_time_on(moment: NaiveDateTime, today: NaiveDate) -> String {
 
 /// The whole moment, for a tooltip: "Wednesday 12 Nov 2026, 13:38:05".
 pub fn full_time(moment: Timestamp) -> Option<String> {
-    use chrono::Datelike;
-
     let moment = local(moment)?;
     Some(format!(
         "{} {} {} {}, {}",
-        moment.format(WEEKDAY),
+        moment.strftime(WEEKDAY),
         moment.day(),
-        moment.format(SHORT_MONTH),
+        moment.strftime(SHORT_MONTH),
         moment.year(),
-        moment.format(TIME_TO_SECOND)
+        moment.strftime(TIME_TO_SECOND)
     ))
 }
 
@@ -516,15 +524,17 @@ pub fn reset_time(moment: Timestamp, now: SystemTime) -> Option<String> {
 }
 
 /// "at 16:00" the same day, "Monday at 09:00" within a week, "8 Nov at 09:00" later.
-fn clock_time(moment: NaiveDateTime, now: NaiveDateTime) -> String {
-    use chrono::Datelike;
-
-    let time = moment.format(TIME_TO_MINUTE);
-    let days = (moment.date() - now.date()).num_days();
+fn clock_time(moment: DateTime, now: DateTime) -> String {
+    let time = moment.strftime(TIME_TO_MINUTE);
+    let days = (moment.date() - now.date()).get_days();
     match days {
         0 => format!("at {time}"),
-        1..=6 => format!("{} at {time}", moment.format(WEEKDAY)),
-        _ => format!("{} {} at {time}", moment.day(), moment.format(SHORT_MONTH)),
+        1..=6 => format!("{} at {time}", moment.strftime(WEEKDAY)),
+        _ => format!(
+            "{} {} at {time}",
+            moment.day(),
+            moment.strftime(SHORT_MONTH)
+        ),
     }
 }
 
@@ -571,24 +581,22 @@ fn past(moment: Timestamp, now: SystemTime) -> Past {
     past_between(then, local_now(now), elapsed)
 }
 
-fn past_between(then: NaiveDateTime, now: NaiveDateTime, elapsed: Duration) -> Past {
-    use chrono::Datelike;
-
+fn past_between(then: DateTime, now: DateTime, elapsed: Duration) -> Past {
     let minutes = elapsed.as_secs() / 60;
-    let days = (now.date() - then.date()).num_days();
+    let days = (now.date() - then.date()).get_days();
     match (minutes, days) {
         (0, _) => Past::Now,
         (1..=59, _) => Past::Ago(format!("{minutes} min ago")),
         (_, 0) => Past::Ago(format!("{} h ago", minutes / 60)),
         (_, 1) => Past::Ago("yesterday".to_owned()),
         (_, 2..=6) => Past::Ago(format!("{days} days ago")),
-        _ => Past::Date(format!("{} {}", then.day(), then.format(SHORT_MONTH))),
+        _ => Past::Date(format!("{} {}", then.day(), then.strftime(SHORT_MONTH))),
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use chrono::Utc;
+    use jiff::civil;
 
     use super::*;
 
@@ -606,10 +614,8 @@ mod tests {
         assert_eq!(memory_of(6 * GIB, 16 * GIB), "6.0 / 16.0 GB");
     }
 
-    fn at(day: u32, hour: u32, minute: u32) -> NaiveDateTime {
-        NaiveDate::from_ymd_opt(2026, 11, day)
-            .and_then(|date| date.and_hms_opt(hour, minute, 0))
-            .unwrap()
+    fn at(day: i8, hour: i8, minute: i8) -> DateTime {
+        civil::date(2026, 11, day).at(hour, minute, 0, 0)
     }
 
     #[test]
@@ -728,9 +734,7 @@ mod tests {
     #[test]
     fn a_message_time_names_the_day_only_when_it_is_not_today() {
         let today = at(12, 13, 40).date();
-        let last_year = NaiveDate::from_ymd_opt(2025, 11, 8)
-            .and_then(|date| date.and_hms_opt(9, 12, 0))
-            .unwrap();
+        let last_year = civil::date(2025, 11, 8).at(9, 12, 0, 0);
 
         assert_eq!(message_time_on(at(12, 13, 38), today), "13:38");
         assert_eq!(message_time_on(at(11, 17, 5), today), "Yesterday 17:05");
@@ -792,15 +796,35 @@ mod tests {
     fn a_moment_past_the_calendar_reads_without_failing() {
         let now = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000);
         let far = Timestamp::from_unix_millis(u64::MAX);
-        let last = u64::try_from(DateTime::<Utc>::MAX_UTC.timestamp_millis()).unwrap();
+        let last_second = u64::try_from(jiff::Timestamp::MAX.as_second()).unwrap() * 1000;
 
         assert_eq!(reset_time(far, now), None);
         assert_eq!(ago(far, now), "now");
-        // East of UTC, the calendar's last moment is past it in local time.
         assert!(
-            reset_time(Timestamp::from_unix_millis(last), now)
-                .is_none_or(|text| text.starts_with("Resets"))
+            reset_time(Timestamp::from_unix_millis(last_second), now)
+                .is_some_and(|text| text.starts_with("Resets"))
         );
+    }
+
+    /// jiff's calendar ends in the year 9999, so a later moment has no local time.
+    #[test]
+    fn a_moment_after_the_year_9999_reads_as_unknown() {
+        let now = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000);
+        let last = u64::try_from(jiff::Timestamp::MAX.as_millisecond()).unwrap();
+        let after = Timestamp::from_unix_millis(last + 1);
+
+        assert_eq!(time_of_day(after), None);
+        assert_eq!(full_time(after), None);
+        assert_eq!(message_time(after, local_day(now)), None);
+        assert_eq!(reset_time(after, now), None);
+        assert_eq!(ago(after, now), "now");
+    }
+
+    #[test]
+    fn a_clock_after_the_year_9999_reads_as_its_last_day() {
+        let far = SystemTime::UNIX_EPOCH + Duration::from_secs(400_000_000_000);
+
+        assert_eq!(local_day(far).year(), 9999);
     }
 
     #[test]

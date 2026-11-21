@@ -15,20 +15,18 @@ use std::collections::VecDeque;
 use std::fmt::Display;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
-use chrono::Local;
 use cockpit_client::RequestError;
 use cockpit_protocol::{Method, ResponseBody};
 use dioxus::prelude::*;
 
 use crate::connection::Cockpit;
+use crate::format;
 use crate::state::AppState;
 
 /// The lines the box keeps, newest last.
 const KEPT_LINES: usize = 26;
-/// How a line shows the clock time.
-const CLOCK_FORMAT: &str = "%H:%M:%S";
 /// The longest gap between two ticks of the box's timer that is not a stall.
 const STALL: Duration = Duration::from_millis(120);
 const TICK: Duration = Duration::from_millis(40);
@@ -117,7 +115,7 @@ pub fn switched(title: &str) {
         log.switched = Some(Instant::now());
         log.switch.clear();
         log.painted = false;
-        let clock = Local::now().format(CLOCK_FORMAT);
+        let clock = format::local_clock(SystemTime::now());
         push(&mut log, format!("---- {clock} switch to {title}"));
     }
 }
@@ -141,7 +139,7 @@ pub fn connection(text: impl Display) {
     if !is_on() {
         return;
     }
-    let clock = Local::now().format(CLOCK_FORMAT);
+    let clock = format::local_clock(SystemTime::now());
     note(format_args!("{clock} {text}"));
 }
 

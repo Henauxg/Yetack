@@ -194,8 +194,8 @@ impl Release {
         }
         let version = ReleaseVersion::new(version.to_owned());
         let published = read.published_at.as_deref().and_then(|text| {
-            let moment = chrono::DateTime::parse_from_rfc3339(text).ok()?;
-            u64::try_from(moment.timestamp_millis())
+            let moment: jiff::Timestamp = text.parse().ok()?;
+            u64::try_from(moment.as_millisecond())
                 .ok()
                 .map(Timestamp::from_unix_millis)
         });

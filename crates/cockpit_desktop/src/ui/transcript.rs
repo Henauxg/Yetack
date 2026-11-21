@@ -7,13 +7,13 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime};
 
-use chrono::NaiveDate;
 use cockpit_protocol::{
     AgentId, AgentStatus, AnswerState, Approval, ApprovalAnswer, ApprovalDecision, EditTexts,
     ItemBody, ItemId, NoticeKind, SignInWait, Timestamp, ToolCall, ToolCallStatus, TranscriptItem,
     TurnEnd, TurnOutcome, UserMessage,
 };
 use dioxus::prelude::*;
+use jiff::civil::Date;
 use serde::Serialize;
 use serde_json::Value;
 
@@ -550,7 +550,7 @@ impl ChatView {
         state: &AppState,
         entry: &AgentEntry,
         drawn: Option<Drawn>,
-        today: NaiveDate,
+        today: Date,
         quoted: &BTreeSet<(AgentId, ItemId)>,
     ) -> Self {
         let agent = entry.id();
@@ -1946,7 +1946,7 @@ fn UserBubble(
 /// The user's messages whose time the next row shows: a message right before another one sent at
 /// the same minute. A run of messages sent together then reads as one, with its time under the
 /// last.
-fn grouped_times(firsts: &[&TranscriptItem], today: NaiveDate) -> BTreeSet<ItemId> {
+fn grouped_times(firsts: &[&TranscriptItem], today: Date) -> BTreeSet<ItemId> {
     let time = |item: &TranscriptItem| match &item.body {
         ItemBody::UserMessage(message) if item.parent.is_none() => message
             .sent_at

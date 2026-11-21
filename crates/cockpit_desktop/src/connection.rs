@@ -5,7 +5,6 @@ use std::collections::{BTreeMap, VecDeque};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime};
 
-use chrono::NaiveDate;
 use cockpit_client::{
     Backoff, RequestError, Requester, Session, SessionError, SessionUpdate, Transport,
 };
@@ -14,6 +13,8 @@ use cockpit_protocol::{AgentId, Catchup, Request, TerminalChange, TerminalUpdate
 use dioxus::desktop::DesktopContext;
 use dioxus::dioxus_core::spawn_forever;
 use dioxus::prelude::*;
+use jiff::civil::Date;
+use jiff::tz;
 use tokio::sync::mpsc;
 
 use crate::config::{DaemonConfig, MachineConfig, save_daemon, save_machines};
@@ -456,6 +457,8 @@ pub fn use_clock() -> Clock {
     use_future(move || async move {
         loop {
             tokio::time::sleep(TICK).await;
+            // jiff caches the system's time zone for 5 minutes.
+            tz::reset_system_time_zone_cache();
             now.set(SystemTime::now());
         }
     });
@@ -466,7 +469,7 @@ pub fn use_clock() -> Clock {
 /// The local day, which changes at midnight. A component that reads it renders again at midnight,
 /// and not on each tick of the clock.
 #[derive(Clone, Copy)]
-pub struct Today(pub Memo<NaiveDate>);
+pub struct Today(pub Memo<Date>);
 
 fn use_today(now: Signal<SystemTime>) -> Today {
     let today = use_memo(move || format::local_day(now()));

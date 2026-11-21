@@ -14,7 +14,6 @@ path = "src/main.rs"
 [dependencies]
 anyhow.workspace = true
 base64 = "0.22.1"
-chrono = { version = "0.4.42", default-features = false, features = ["clock", "std"] }
 cockpit_client.workspace = true
 cockpit_daemon.workspace = true
 cockpit_protocol.workspace = true
@@ -24,6 +23,9 @@ dioxus = { git = "https://github.com/Henauxg/dioxus-fork", rev = "32d8a256298e21
 futures-util = "0.3.31"
 # Reads the size of an image a message shows, with the formats dioxus-desktop already builds.
 image = { version = "0.25.10", default-features = false, features = ["gif", "jpeg", "png", "webp"] }
+# Local times in the system's time zone. Linux and macOS keep a time zone database in
+# /usr/share/zoneinfo. Windows has none, so the Windows build bundles a copy.
+jiff = { version = "1.0.1", default-features = false, features = ["std", "tz-system", "tzdb-bundle-platform", "tzdb-zoneinfo"] }
 # D-Bus on the app's tokio runtime: the default backend starts a thread per notification.
 notify-rust = { version = "4.18.2", default-features = false, features = ["z-with-tokio"] }
 pulldown-cmark = { version = "0.13.6", default-features = false }
