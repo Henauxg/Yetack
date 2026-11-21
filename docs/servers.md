@@ -4,7 +4,7 @@ The app installs and updates a server's daemon by itself: see "Add a server" in 
 
 ## What a server needs
 
-Linux on x86_64 or ARM (aarch64), SSH access with a key, and Claude Code signed in. For another CPU, build the daemon as [install-from-source.md](./install-from-source.md) says.
+Linux on x86_64 or ARM (aarch64), SSH access with a key, and Claude Code installed. For another CPU, build the daemon as [install-from-source.md](./install-from-source.md) says.
 
 ## In the config file
 

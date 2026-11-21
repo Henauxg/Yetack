@@ -26,7 +26,7 @@ Features:
 
 ## Install
 
-Each machine that runs agents needs [Claude Code](https://claude.com/claude-code): install it, then run `claude` once and sign in.
+Each machine that runs agents needs [Claude Code](https://claude.com/claude-code) installed.
 
 Download the app from the [releases page](https://github.com/Henauxg/yetack/releases):
 
@@ -39,7 +39,7 @@ Download the app from the [releases page](https://github.com/Henauxg/yetack/rele
 | NixOS, or Linux with Nix | See [docs/install.md](docs/install.md#with-nix) |
 | macOS (untested), or Linux on ARM | Build the app: [docs/install-from-source.md](docs/install-from-source.md) |
 
-The app tells you when a new release is out. The Windows app updates itself, and the other installs get the steps.
+The app signals each new release. The Windows app updates itself, and the other installs show the steps to update.
 
 ## First start
 
@@ -52,7 +52,7 @@ You can change it later in Settings › Local.
 
 ## Add a server
 
-A server needs Linux on x86_64 or ARM, SSH access with a key, and Claude Code signed in.
+A server needs Linux on x86_64 or ARM, SSH access with a key, and Claude Code installed.
 
 1. In the app, open **Machines** at the bottom left, and click **Add a server**.
 2. Type the **SSH host**, as you type it after `ssh`, and leave **Path of yetack on the server** empty.
