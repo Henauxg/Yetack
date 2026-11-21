@@ -15,7 +15,7 @@ A release has up to nine files:
 | `yetack.service` | The systemd user service that runs the daemon on a server |
 | `SHA256SUMS` | The checksum of each file |
 
-The Windows zip and app are built on a Windows machine, the other files on a Linux machine with Docker. A release can go out without them: the README sends Windows users to [install-from-source.md](./install-from-source.md) until a release has one, and the Windows app's update says the release has no Windows app.
+The Windows zip and app are built on Windows. The other files are built in Docker, on Linux or on Windows. A release can go out without them: the README sends Windows users to [install-from-source.md](./install-from-source.md) until a release has one, and the Windows app's update says the release has no Windows app.
 
 The release builds in Ubuntu 22.04, which has `libxdo.so.3`. Newer distributions renamed it `libxdo.so.4`, and a program built against `.so.3` does not start there. So the tarball and the `.rpm` carry their own libxdo, which Dioxus's menus link and the app never calls. The app's HTTPS requests go through rustls, with ring for its cryptography, and no OpenSSL. Both are compiled into the app, so their fixes reach users only with a Yetack release. CI runs `cargo deny check advisories` on each push and each Monday (`.github/workflows/advisories.yml`). When it reports an advisory for `rustls`, `rustls-webpki`, `rustls-platform-verifier` or `ring`, update the crate and make a release soon after, even one with nothing else in it.
 
@@ -54,15 +54,17 @@ Compress-Archive -Force -Path target\release\yetack-desktop.exe, target\release\
 Copy-Item target\release\yetack-desktop.exe "dist\yetack-desktop-$version-windows-x64.exe"
 ```
 
-Copy the zip and the app into `dist/` of the Linux machine's checkout.
+If you build the Linux files on another machine, copy the zip and the app into `dist/` of its checkout.
 
 ## 3. Build the Linux files
 
-On the Linux machine, with the tag checked out:
+On Linux, with the tag checked out:
 
 ```sh
 nix develop -c just release
 ```
+
+On Windows, start Docker Desktop, open Git Bash in the checkout of step 2, and run `just release`. The recipe is a shell script, and `just` finds no shell to run it from PowerShell.
 
 The recipe refuses a tree with uncommitted changes. It builds `HEAD` inside an Ubuntu 22.04 container ([contrib/release/Dockerfile](../contrib/release/Dockerfile), [contrib/release/build.sh](../contrib/release/build.sh)), writes the Linux files to `dist/`, and writes `SHA256SUMS` for every file there, the Windows zip and app included. It replaces the Linux files of an earlier run, keeps this version's zip and Windows app, and refuses to run while `dist/` holds any other file, such as an older zip.
 
@@ -75,6 +77,7 @@ The app inside the `.deb` knows the commit it was built from. Its "Update" butto
 1. Install the `.deb` on Ubuntu or Debian (`sudo apt install ./dist/yetack_0.1.0_amd64.deb`), start the app, and open Settings: the About section, at the end of the General tab, says "Version 0.1.0".
    Then install the `.rpm` on Fedora (`sudo dnf install ./dist/yetack-0.1.0-1.x86_64.rpm`), and the tarball on another distribution such as Arch (`./install.sh` in its folder), and check the same.
 2. Copy `dist/yetack-0.1.0-x86_64-linux` to a server and run it with `--version`. Do the same with `dist/yetack-0.1.0-aarch64-linux` on an ARM server, or in an ARM container (`docker run --rm --platform linux/arm64 -v "$PWD/dist:/dist" alpine /dist/yetack-0.1.0-aarch64-linux --version`).
+   From Git Bash on Windows, run the x86_64 daemon in WSL (`wsl ./dist/yetack-0.1.0-x86_64-linux --version`). The ARM container needs a Windows path, and `MSYS_NO_PATHCONV=1` so that Git Bash leaves the container's paths alone: `MSYS_NO_PATHCONV=1 docker run --rm --platform linux/arm64 -v "$(pwd -W)/dist:/dist" alpine /dist/yetack-0.1.0-aarch64-linux --version`.
 3. If there is a Windows zip, unzip it on Windows and start the app.
 
 ## 5. Publish
