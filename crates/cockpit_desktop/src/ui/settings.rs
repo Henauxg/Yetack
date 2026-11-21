@@ -13,6 +13,7 @@ use dioxus::prelude::*;
 use strum::VariantArray;
 
 use crate::connection::Cockpit;
+use crate::format;
 use crate::keymap::{self, Chord, Command, FixedShortcut, Group, Keymap, Refusal};
 use crate::prefs::{
     CommentPlacement, EscStop, FirstMark, GroupBy, NotificationLevel, PaneState, ProjectSplit,
@@ -24,14 +25,11 @@ use crate::state::{
     RefusedChord, SettingsTab, SettingsView, grouping, notification_levels, settings,
 };
 use crate::ui::app_update::AboutRelease;
-use crate::ui::code::{CopyButton, CopyLook};
 use crate::ui::grouping::{group_by_label, project_split_label};
 use crate::ui::icons::{Icon, IconKind};
 use crate::ui::notification_levels as levels_ui;
 use crate::ui::presence::{Presence, Shown, use_presence};
 use crate::ui::projects_tab::ProjectsTab;
-use crate::update_script::APP_VERSION;
-use crate::{APP_NAME, format};
 
 pub static APP_ICON: LazyLock<String> = LazyLock::new(|| {
     use base64::Engine;
@@ -366,21 +364,6 @@ fn GeneralTab(start_error: Option<String>) -> Element {
             }
             LocalSection { start_error }
             h3 { class: "settings-title", "About" }
-            div { class: "setting-row",
-                img { class: "about-icon", src: APP_ICON.as_str(), alt: "" }
-                div { class: "setting-text",
-                    span { class: "setting-label", "{APP_NAME}" }
-                    span { class: "setting-help",
-                        "Version "
-                        span { class: "mono", "{APP_VERSION}" }
-                    }
-                }
-                CopyButton {
-                    text: format!("{APP_NAME} {APP_VERSION}"),
-                    label: "Copy the app's version",
-                    look: CopyLook::Worded,
-                }
-            }
             AboutRelease {}
         }
     }

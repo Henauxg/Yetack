@@ -16,7 +16,7 @@ use super::app_state::AppState;
 use super::daemon_probe::LinuxCpu;
 use super::ui_state::Dialog;
 use crate::update_script::APP_VERSION;
-use crate::version_order;
+use crate::{format, version_order};
 
 /// The app's repository on GitHub, as `owner/name`. A macro, so that `concat!` builds its
 /// addresses.
@@ -383,12 +383,28 @@ impl UpdateRun {
     }
 }
 
+/// Where the release check stands, for the line under the app's version.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub enum CheckState {
+    /// No check ended since the app started.
+    #[default]
+    NotYet,
+    Running,
+    /// The last check got GitHub's answer, which named a newer release or not.
+    Answered {
+        newer: bool,
+    },
+    /// The last check failed, for this reason.
+    Failed(String),
+}
+
 /// What the app knows of its own releases, and the update under way.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AppUpdate {
     pub install: InstallKind,
     /// The newest release the last check found, when it is newer than this app.
     pub release: Option<Release>,
+    pub check: CheckState,
     /// The release whose sidebar note "Not now" hides until the app's next start. A newer one
     /// shows again.
     pub not_now: Option<ReleaseVersion>,
@@ -408,6 +424,7 @@ impl AppUpdate {
         Self {
             install: InstallKind::of_this_build(),
             release: None,
+            check: CheckState::NotYet,
             not_now: None,
             run: None,
             runs: 0,
@@ -453,11 +470,85 @@ pub fn found(state: &mut AppState, release: Release) {
     state.app_update.release = release.is_newer_than(APP_VERSION).then_some(release);
 }
 
-/// The newer release the app tells about: the check is on, and the user did not skip it.
+/// What asks for a check before its time of the day.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CheckAsk {
+    /// "Check now".
+    Now,
+    /// The setting turned on.
+    SettingOn,
+}
+
+/// "Check now", or a check of the day, starts.
+pub fn check_started(state: &mut AppState) {
+    state.app_update.check = CheckState::Running;
+}
+
+/// A check got GitHub's answer, `release`, at `now`. A check that "Check now" `asked` for keeps
+/// the release with the setting off. Any other keeps it only while the setting is on.
+pub fn answered(state: &mut AppState, release: Release, now: SystemTime, asked: Option<CheckAsk>) {
+    checked(state, now);
+    state.app_update.check = CheckState::Answered {
+        newer: release.is_newer_than(APP_VERSION),
+    };
+    if asked == Some(CheckAsk::Now) || state.prefs.updates.check {
+        found(state, release);
+    }
+}
+
+pub fn check_failed(state: &mut AppState, reason: String) {
+    state.app_update.check = CheckState::Failed(reason);
+}
+
+/// The line under the app's version in Settings' About.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CheckLine {
+    /// A check since the start found no newer release: "the latest" follows the version.
+    pub latest: bool,
+    /// "Checked 2 h ago.", "Checking for a new release…".
+    pub text: String,
+    pub failed: bool,
+}
+
+pub fn check_line(state: &AppState, now: SystemTime) -> CheckLine {
+    let (text, failed) = match &state.app_update.check {
+        CheckState::Running => ("Checking for a new release…".to_owned(), false),
+        CheckState::Failed(reason) => (format!("The check failed: {reason}."), true),
+        CheckState::NotYet | CheckState::Answered { .. } => {
+            let text = match state.prefs.updates.last_check {
+                Some(seconds) => {
+                    let moment = Timestamp::from_unix_millis(seconds.saturating_mul(1000));
+                    format!("Checked {}.", format::ago_in_sentence(moment, now))
+                }
+                None => "Not checked yet.".to_owned(),
+            };
+            (text, false)
+        }
+    };
+    CheckLine {
+        latest: state.app_update.check == CheckState::Answered { newer: false },
+        text,
+        failed,
+    }
+}
+
+/// What a screen reader says as the check's state changes. Unlike `check_line`, it holds no time,
+/// which would make it speak again each minute.
+pub fn check_spoken(state: &AppState) -> String {
+    match &state.app_update.check {
+        CheckState::NotYet => String::new(),
+        CheckState::Running => "Checking for a new release.".to_owned(),
+        CheckState::Answered { newer: false } => "This app is the latest release.".to_owned(),
+        CheckState::Answered { newer: true } => "A newer release is out.".to_owned(),
+        CheckState::Failed(reason) => format!("The check failed: {reason}."),
+    }
+}
+
+/// The newer release the app tells about, unless the user skipped it.
 pub fn offered(state: &AppState) -> Option<&Release> {
     let release = state.app_update.release.as_ref()?;
     let skipped = state.prefs.updates.skipped.as_ref() == Some(&release.version);
-    (state.prefs.updates.check && !skipped).then_some(release)
+    (!skipped).then_some(release)
 }
 
 /// The files of the update this app can run: it is the zip, and the release has its Windows
@@ -552,8 +643,12 @@ fn close_card(state: &mut AppState) {
     }
 }
 
+/// Turned off, the setting forgets the release it found, unless an update of it runs.
 pub fn set_check(state: &mut AppState, check: bool) {
     state.prefs.updates.check = check;
+    if !check && state.app_update.run.is_none() {
+        state.app_update.release = None;
+    }
 }
 
 /// An update that starts: its run and what it downloads.
@@ -1032,6 +1127,147 @@ mod tests {
 
         assert_eq!(offered(&state), None);
         assert_eq!(notice(&state), None);
+    }
+
+    #[test]
+    fn the_check_turned_off_keeps_the_release_of_an_update_under_way() {
+        let mut state = zip_state();
+        found(&mut state, release("999.0.0"));
+        start(&mut state).unwrap();
+
+        set_check(&mut state, false);
+
+        assert_eq!(
+            offered(&state).map(|release| release.version.as_str()),
+            Some("999.0.0")
+        );
+        assert!(matches!(
+            notice(&state),
+            Some(SidebarNotice::Progress { .. })
+        ));
+    }
+
+    #[test]
+    fn check_now_with_the_setting_off_offers_what_it_finds() {
+        let mut state = zip_state();
+        set_check(&mut state, false);
+
+        check_started(&mut state);
+        answered(
+            &mut state,
+            release("999.0.0"),
+            SystemTime::now(),
+            Some(CheckAsk::Now),
+        );
+
+        assert_eq!(
+            offered(&state).map(|release| release.version.as_str()),
+            Some("999.0.0")
+        );
+        assert_eq!(notice(&state), Some(SidebarNotice::Out(version("999.0.0"))));
+    }
+
+    #[test]
+    fn a_daily_check_ending_after_the_setting_turned_off_offers_nothing() {
+        let mut state = zip_state();
+        check_started(&mut state);
+        set_check(&mut state, false);
+
+        answered(&mut state, release("999.0.0"), SystemTime::now(), None);
+
+        assert_eq!(offered(&state), None);
+        assert!(!check_line(&state, SystemTime::now()).latest);
+    }
+
+    #[test]
+    fn a_check_the_setting_asked_for_offers_nothing_once_it_turned_off() {
+        let mut state = zip_state();
+        set_check(&mut state, true);
+        check_started(&mut state);
+        set_check(&mut state, false);
+
+        answered(
+            &mut state,
+            release("999.0.0"),
+            SystemTime::now(),
+            Some(CheckAsk::SettingOn),
+        );
+
+        assert_eq!(offered(&state), None);
+    }
+
+    #[test]
+    fn the_line_says_the_latest_only_after_a_check_that_found_nothing_newer() {
+        let now = SystemTime::now();
+        let mut state = zip_state();
+        let line = |state: &AppState| {
+            let line = check_line(state, now);
+            (line.latest, line.text)
+        };
+        assert_eq!(line(&state), (false, "Not checked yet.".to_owned()));
+
+        checked(&mut state, now - Duration::from_secs(5 * 60));
+        assert_eq!(line(&state), (false, "Checked 5 min ago.".to_owned()));
+
+        check_started(&mut state);
+        assert_eq!(
+            line(&state),
+            (false, "Checking for a new release…".to_owned())
+        );
+
+        answered(&mut state, release(APP_VERSION), now, Some(CheckAsk::Now));
+        assert_eq!(line(&state), (true, "Checked just now.".to_owned()));
+
+        answered(&mut state, release("999.0.0"), now, Some(CheckAsk::Now));
+        assert_eq!(line(&state), (false, "Checked just now.".to_owned()));
+    }
+
+    #[test]
+    fn a_screen_reader_hears_each_outcome_of_the_check() {
+        let now = SystemTime::now();
+        let mut state = zip_state();
+        let mut spoken = vec![check_spoken(&state)];
+
+        check_started(&mut state);
+        spoken.push(check_spoken(&state));
+        answered(&mut state, release(APP_VERSION), now, Some(CheckAsk::Now));
+        spoken.push(check_spoken(&state));
+        answered(&mut state, release("999.0.0"), now, Some(CheckAsk::Now));
+        spoken.push(check_spoken(&state));
+        check_failed(&mut state, "cannot reach GitHub".to_owned());
+        spoken.push(check_spoken(&state));
+
+        assert_eq!(
+            spoken,
+            [
+                "",
+                "Checking for a new release.",
+                "This app is the latest release.",
+                "A newer release is out.",
+                "The check failed: cannot reach GitHub.",
+            ]
+        );
+    }
+
+    #[test]
+    fn a_failed_check_shows_its_reason_until_the_next_answer() {
+        let now = SystemTime::now();
+        let mut state = zip_state();
+        check_started(&mut state);
+
+        check_failed(&mut state, "cannot reach GitHub".to_owned());
+        let failed = check_line(&state, now);
+        answered(&mut state, release(APP_VERSION), now, Some(CheckAsk::Now));
+        let answered = check_line(&state, now);
+
+        assert_eq!(
+            (failed.text.as_str(), failed.failed),
+            ("The check failed: cannot reach GitHub.", true)
+        );
+        assert_eq!(
+            (answered.text.as_str(), answered.failed),
+            ("Checked just now.", false)
+        );
     }
 
     #[test]

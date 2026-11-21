@@ -12,15 +12,16 @@ use strum::VariantArray;
 use crate::connection::{Clock, Cockpit};
 use crate::state::AppState;
 use crate::state::app_update::{
-    self, AppStep, InstallKind, NoteBlock, Release, Released, RunPhase, SidebarNotice, StepMark,
-    UpdateRun,
+    self, AppStep, CheckAsk, CheckState, InstallKind, NoteBlock, Release, Released, RunPhase,
+    SidebarNotice, StepMark, UpdateRun,
 };
 use crate::ui::accounts::CommandBox;
+use crate::ui::code::{CopyButton, CopyLook};
 use crate::ui::icons::{Icon, IconKind};
 use crate::ui::presence::{Presence, use_presence};
 use crate::ui::settings::APP_ICON;
 use crate::update_script::{APP_VERSION, app_commit};
-use crate::{format, self_update};
+use crate::{APP_NAME, format, self_update};
 
 const TITLE_ID: &str = "app-update-title";
 const CHECK_LABEL_ID: &str = "setting-release-check";
@@ -28,13 +29,13 @@ const CHECK_LABEL_ID: &str = "setting-release-check";
 /// What a restart does to the agents, as the offer and the ready card say it.
 const AGENTS_RESTART: &str = "Local's agents stop with the app and resume after the restart.";
 
-/// Asks the release check to look now: the setting turned on.
+/// Asks the release check to look now: "Check now", or the setting turned on.
 #[derive(Clone, Copy)]
-pub struct ReleaseChecks(Coroutine<()>);
+pub struct ReleaseChecks(Coroutine<CheckAsk>);
 
 /// Starts the release check, and provides what asks it to look now.
 pub fn use_release_checks(cockpit: Cockpit) -> ReleaseChecks {
-    let checks = use_coroutine(move |asked: UnboundedReceiver<()>| {
+    let checks = use_coroutine(move |asked: UnboundedReceiver<CheckAsk>| {
         self_update::check_releases(cockpit.state, asked)
     });
     use_context_provider(|| ReleaseChecks(checks))
@@ -180,27 +181,71 @@ pub fn ReleaseNotice() -> Element {
     }
 }
 
-/// Settings' About: the newer release with its buttons, and the setting of the check.
+/// Settings' About: the app's version with the last check and "Check now", the newer release with
+/// its buttons, and the setting of the check.
 #[component]
 pub fn AboutRelease() -> Element {
     let cockpit: Cockpit = use_context();
     let checks: ReleaseChecks = use_context();
     let Clock(now) = use_context::<Clock>();
-    let (offered, check) = {
+    let (offered, check, line, spoken, checking) = {
         let state = cockpit.state.read();
         (
             app_update::offered(&state).cloned(),
             state.prefs.updates.check,
+            app_update::check_line(&state, now()),
+            app_update::check_spoken(&state),
+            state.app_update.check == CheckState::Running,
         )
     };
     let shown = use_presence(offered);
     let set_check = move |on: bool| {
         cockpit.update(|state| app_update::set_check(state, on));
         if on && !check {
-            checks.0.send(());
+            checks.0.send(CheckAsk::SettingOn);
         }
     };
+    let check_now = move |_| {
+        cockpit.update(app_update::check_started);
+        checks.0.send(CheckAsk::Now);
+    };
     rsx! {
+        div { class: "setting-row",
+            img { class: "about-icon", src: APP_ICON.as_str(), alt: "" }
+            div { class: "setting-text",
+                span { class: "setting-label", "{APP_NAME}" }
+                span { class: "visually-hidden", role: "status", "{spoken}" }
+                span { class: "setting-help",
+                    "Version "
+                    span { class: "mono", "{APP_VERSION}" }
+                    if line.latest {
+                        ", the latest"
+                    }
+                    ". "
+                    span { class: if line.failed { "about-check-failed" } else { "" },
+                        "{line.text}"
+                    }
+                }
+            }
+            div { class: "about-actions",
+                button {
+                    class: "button small",
+                    disabled: checking,
+                    onclick: check_now,
+                    if checking {
+                        span { class: "spinner", aria_hidden: true }
+                    } else {
+                        Icon { kind: IconKind::Reconnect, size: 14 }
+                    }
+                    "Check now"
+                }
+                CopyButton {
+                    text: format!("{APP_NAME} {APP_VERSION}"),
+                    label: "Copy the app's version",
+                    look: CopyLook::Worded,
+                }
+            }
+        }
         if let Some(shown) = shown {
             div {
                 class: if shown.leaving { "release-row-fold leaving" } else { "release-row-fold" },

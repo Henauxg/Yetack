@@ -12239,7 +12239,21 @@ html.splitting .sidebar {
 .about-actions {
   flex: none;
   display: flex;
+  align-items: center;
   gap: 8px;
+}
+
+.about-actions .button:disabled {
+  opacity: 0.55;
+}
+
+/* At the width of the 14 px icon it replaces, so the button keeps its size. */
+.about-actions .spinner {
+  font-size: 14px;
+}
+
+.about-check-failed {
+  color: var(--amber);
 }
 
 .machine-trouble .link-button:not(:last-child) {

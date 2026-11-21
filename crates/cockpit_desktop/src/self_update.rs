@@ -23,8 +23,8 @@ use tokio::time::Instant;
 
 use crate::state::AppState;
 use crate::state::app_update::{
-    self, AppStep, CHECKSUMS_NAME, Checksums, DAY, InstallKind, MAX_DOWNLOAD_BYTES, Release,
-    ReleaseAsset, RunId, StartedRun, WindowsAssets,
+    self, AppStep, CHECKSUMS_NAME, CheckAsk, Checksums, DAY, InstallKind, MAX_DOWNLOAD_BYTES,
+    Release, ReleaseAsset, RunId, StartedRun, WindowsAssets,
 };
 use crate::state::daemon_probe::LinuxCpu;
 use crate::update_script::APP_VERSION;
@@ -72,6 +72,22 @@ pub enum CheckError {
     Answer(#[from] serde_json::Error),
     #[error("the check stopped: {0}")]
     Stopped(#[from] JoinError),
+}
+
+impl CheckError {
+    /// Why the check failed, as Settings' About says it after "The check failed: ".
+    pub fn reason(&self) -> String {
+        match self {
+            Self::Http(ureq::Error::StatusCode(code)) => {
+                format!("GitHub answered with error {code}")
+            }
+            Self::Http(ureq::Error::Timeout(_)) => "GitHub did not answer in time".to_owned(),
+            Self::Http(
+                ureq::Error::HostNotFound | ureq::Error::ConnectionFailed | ureq::Error::Io(_),
+            ) => "cannot reach GitHub".to_owned(),
+            Self::Http(_) | Self::Answer(_) | Self::Stopped(_) => self.to_string(),
+        }
+    }
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -157,10 +173,11 @@ pub async fn latest_release() -> Result<Release, CheckError> {
     tokio::task::spawn_blocking(fetch_latest).await?
 }
 
-/// Checks for a newer release after `app_update::first_check_delay`, then once a day, and at once
-/// when `asked` says the setting turned on. The demo makes one up and never touches the network.
-/// A failed check goes to the log, and the next round tries again.
-pub async fn check_releases(mut state: Signal<AppState>, mut asked: UnboundedReceiver<()>) {
+/// Checks for a newer release after `app_update::first_check_delay`, then once a day while the
+/// setting is on, and at once when `asked` says so: "Check now", or the setting turned on. The
+/// demo makes one up and never touches the network. A failed check goes to the log and to About,
+/// and the next round tries again.
+pub async fn check_releases(mut state: Signal<AppState>, mut asked: UnboundedReceiver<CheckAsk>) {
     use futures_util::StreamExt;
 
     let (demo, last_check) = {
@@ -174,36 +191,40 @@ pub async fn check_releases(mut state: Signal<AppState>, mut asked: UnboundedRec
     };
     let mut next = Instant::now() + first;
     loop {
-        tokio::select! {
-            () = tokio::time::sleep_until(next) => {}
-            ask = asked.next() => {
-                if ask.is_none() {
-                    return;
-                }
-            }
-        }
+        let mut ask = tokio::select! {
+            () = tokio::time::sleep_until(next) => None,
+            ask = asked.next() => match ask {
+                Some(ask) => Some(ask),
+                None => return,
+            },
+        };
         next = Instant::now() + DAY;
-        if !state.peek().prefs.updates.check {
+        if ask.is_none() && !state.peek().prefs.updates.check {
             continue;
         }
+        app_update::check_started(&mut state.write());
         let latest = if demo {
             Ok(demo::app_release())
         } else {
             latest_release().await
         };
         // The check that just ended answers the asks that came while it ran.
-        while asked.try_recv().is_ok() {}
-        let release = match latest {
-            Ok(release) => release,
+        while let Ok(more) = asked.try_recv() {
+            if more == CheckAsk::Now {
+                ask = Some(more);
+            }
+        }
+        let mut state = state.write();
+        match latest {
+            Ok(release) => {
+                tracing::info!("the latest release of the app is {}", release.version);
+                app_update::answered(&mut state, release, SystemTime::now(), ask);
+            }
             Err(error) => {
                 tracing::warn!("cannot check for a new release of the app: {error}");
-                continue;
+                app_update::check_failed(&mut state, error.reason());
             }
-        };
-        tracing::info!("the latest release of the app is {}", release.version);
-        let mut state = state.write();
-        app_update::checked(&mut state, SystemTime::now());
-        app_update::found(&mut state, release);
+        }
     }
 }
 
@@ -781,6 +802,34 @@ pub fn wait_for_exit(_pid: u32) {}
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_failed_check_names_its_reason_in_plain_words() {
+        let reason = |error: ureq::Error| CheckError::Http(error).reason();
+
+        assert_eq!(
+            reason(ureq::Error::StatusCode(403)),
+            "GitHub answered with error 403"
+        );
+        assert_eq!(reason(ureq::Error::HostNotFound), "cannot reach GitHub");
+        assert_eq!(reason(ureq::Error::ConnectionFailed), "cannot reach GitHub");
+        assert_eq!(
+            reason(ureq::Error::Io(io::ErrorKind::ConnectionReset.into())),
+            "cannot reach GitHub"
+        );
+        assert_eq!(
+            reason(ureq::Error::Timeout(ureq::Timeout::Global)),
+            "GitHub did not answer in time"
+        );
+        let answer = CheckError::from(Release::from_github("{}").unwrap_err());
+        assert!(
+            answer
+                .reason()
+                .starts_with("GitHub's answer does not read as a release: "),
+            "{}",
+            answer.reason()
+        );
+    }
 
     fn placement(folder: &Path) -> Placement {
         Placement {
