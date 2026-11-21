@@ -151,9 +151,10 @@ release:
                 exit 1 ;;
         esac
     done
-    # tar -m dates every file now: with the commit's dates, cargo would reuse the cached builds
-    # of a later commit.
-    git archive --format=tar HEAD | docker run --rm -i \
+    # Git for Windows writes CRLF line ends into an archive, as it does on checkout. The packages
+    # need LF. tar -m dates every file now: with the commit's dates, cargo would reuse the cached
+    # builds of a later commit.
+    git -c core.autocrlf=false -c core.eol=lf archive --format=tar HEAD | docker run --rm -i \
         -e YETACK_SOURCE_COMMIT="$(git rev-parse HEAD)" -e OWNER="$(id -u):$(id -g)" \
         -v "$dist:/out" \
         -v yetack-release-registry:/opt/cargo/registry \

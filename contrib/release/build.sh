@@ -16,6 +16,13 @@
 set -eu
 : "${YETACK_SOURCE_COMMIT:?}" "${OWNER:?}"
 
+# The packages' text files, such as the menu entry, need LF line ends. A CR comes from an archive
+# that converted them, such as `git archive` with Git for Windows' defaults.
+if grep -rlI --exclude-dir=target "$(printf '\r')" . >&2; then
+    echo "these files have CRLF line ends: make the archive with git -c core.autocrlf=false" >&2
+    exit 1
+fi
+
 version=$(cargo pkgid -p yetack | sed 's/.*[#@]//')
 musl=x86_64-unknown-linux-musl
 
