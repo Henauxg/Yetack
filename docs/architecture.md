@@ -220,6 +220,7 @@ The shutdown blocks, so the app calls it from a thread outside any runtime.
 
 The daemon is a set of tokio tasks that talk over channels. No state is shared behind a mutex.
 The **Hub** owns every agent's state, numbers and logs the events, and sends them to every client. Its module `transcript` is the only place that turns Claude Code messages into transcript items.
+The hub handles one input at a time, so a wait on an agent's folder on a mount that never answers would hold every agent and every client. Resolving a folder the app sends, checking an agent's folder and starting `claude` in it run in tasks (module `hub::start`), as the file and git requests do, and the hub carries on when the answer comes back as a `HubInput`. Opening a terminal still checks the agent's folder on the hub.
 A **Claude process** task owns each running `claude`. The **Server** checks each peer, and a **Connection** task serves each client.
 A client that reads too slowly is disconnected rather than buffered without bound. It reconnects with its last `Seq`.
 
@@ -238,6 +239,10 @@ A client that reads too slowly is disconnected rather than buffered without boun
   Never `--bare`: bare mode ignores the subscription login and needs an API key.
   The daemon resumes its agents as it starts with `CLAUDE_CODE_RESUME_INTERRUPTED_TURN=1`, so a turn its own stop cut off carries on. A user's resume, of an agent or a past session, goes without it, so a turn the user stopped stays stopped.
   Without a terminal, `claude` asks no trust question, and starts a repository's `.mcp.json` servers for any account. Choosing the folder in the app is what trusts it (see [Security](#security)).
+- Start: checking the folder and starting `claude` both wait on the folder, since `claude` must enter it. They run on a blocking thread with a 10-second limit, counted with the folder's other reads (module `blocking`). A start past the limit fails with `the folder <path> did not answer`, shown as any failed start is: in the transcript of an agent the daemon resumes as it starts, else in the request's answer.
+  `agent.start`, `agent.fork`, `agent.change_folder` and `sessions.resume` first resolve the folder the app or the session file names, in a task with the same limit.
+  A request that starts `claude` (`agent.start`, `agent.resume`, `agent.fork`, `agent.change_folder`, `sessions.resume`) answers once `claude` runs or fails. A new agent is listed only once its `claude` runs. An agent the daemon resumes as it starts shows as running from the first snapshot.
+  Meanwhile the agent's prompts wait in its queue, its control requests fail as for an exited agent, and a second start is refused. A second `sessions.resume` of the session a new agent starts on gets the first one's answer. A stop or a close gives the start up: each process has a generation, the stop moves the agent to the next one, and a process that starts for an older one is killed. The process task reports nothing until the hub runs it, so no line or exit of a process reaches the hub before the hub has the process.
 - Binary: `claude` from `PATH`, or `YETACK_CLAUDE`. On Windows, relative folders of `PATH` are skipped.
   A `.cmd` or `.bat`, such as an npm `claude.cmd`, runs through the system folder's `cmd.exe` with `/d /v:off /s /c`. An argument holding a quote, a `%`, a line break or a NUL is refused, since `cmd.exe` would read it. The child of `cmd.exe`, the real `claude`, counts as `claude` itself (`Launch::Interpreter`).
   Every program the daemon starts on Windows, and the client's `ssh`, starts with `CREATE_NO_WINDOW`: the app has no console to share.

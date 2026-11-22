@@ -3,14 +3,15 @@ use std::path::PathBuf;
 use std::time::Instant;
 
 use cockpit_protocol::{
-    AccountId, AccountState, AgentId, CostUsd, Frame, PermissionMode, Repository, Request,
-    ResponseResult, Seq, SignIn, SlashCommand, Snapshot, TerminalId, Timestamp,
+    AccountId, AccountState, AgentId, CostUsd, ErrorBody, Frame, PermissionMode, Repository,
+    Request, ResponseResult, Seq, SignIn, SlashCommand, Snapshot, TerminalId, Timestamp,
 };
 use tokio::sync::{mpsc, oneshot};
 
 use crate::blocking::BlockingError;
 use crate::hub::folders::ForkOf;
-use crate::process::ProcessEvent;
+use crate::hub::start::{FolderRequest, Start};
+use crate::process::{ProcessEvent, Spawned};
 use crate::sessions::FoundSession;
 use crate::store::DetailsFrame;
 
@@ -37,6 +38,8 @@ pub(crate) enum HubInput {
     /// `sessions.resume` found the session on disk, and read its transcript.
     SessionFound {
         found: Box<FoundSession>,
+        /// The session's folder, resolved off the hub: a new agent for the session starts there.
+        folder: Result<PathBuf, ErrorBody>,
         /// When the request came, from which a closed agent's choices count their time.
         asked_at: Instant,
         reply: Reply,
@@ -47,6 +50,18 @@ pub(crate) enum HubInput {
         accounts: Vec<AccountState>,
         logins: Vec<AccountLogin>,
         reply: Reply,
+    },
+    /// The folder the app sent with `agent.start`, `agent.fork` or `agent.change_folder`, resolved
+    /// off the hub.
+    FolderResolved {
+        folder: Result<PathBuf, ErrorBody>,
+        request: FolderRequest,
+        reply: Reply,
+    },
+    /// A task checked an agent's folder and started `claude` in it, or could not.
+    ProcessStarted {
+        start: Box<Start>,
+        started: Result<Spawned<ControlPurpose>, ErrorBody>,
     },
     /// `agent.fork` copied the session to the fork's folder, and read its transcript there.
     ForkCopied {

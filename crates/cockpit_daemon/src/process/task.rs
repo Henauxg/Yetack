@@ -1,7 +1,9 @@
 //! The task that owns one `claude` child process.
 
 use std::collections::HashMap;
+use std::fmt;
 use std::path::Path;
+use std::pin::Pin;
 use std::process::ExitStatus;
 use std::time::{Duration, SystemTime};
 
@@ -125,13 +127,38 @@ impl<T> ProcessHandle<T> {
     }
 }
 
-/// Starts `claude` and the task that owns it. Each event goes to `events` through `wrap`.
+/// A `claude` that runs, and the task that owns it, which waits for [`Spawned::run`]: no event
+/// reaches the hub before then. Dropping it kills `claude`.
+pub(crate) struct Spawned<T> {
+    handle: ProcessHandle<T>,
+    task: Pin<Box<dyn Future<Output = ()> + Send>>,
+}
+
+impl<T> Spawned<T> {
+    /// Runs the task, which reports `claude`'s lines and its exit from now on.
+    pub(crate) fn run(self) -> ProcessHandle<T> {
+        tokio::spawn(self.task);
+        self.handle
+    }
+}
+
+impl<T> fmt::Debug for Spawned<T> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("Spawned")
+            .field("pid", &self.handle.pid)
+            .finish_non_exhaustive()
+    }
+}
+
+/// Starts `claude`, and makes the task that owns it. Each event goes to `events` through `wrap`.
+/// It waits until `claude` runs in its folder, so a folder on a stuck mount holds it.
 pub(crate) fn spawn<T, M, W>(
     command: &ClaudeCommand,
     raw_log: Option<RawLog>,
     events: mpsc::Sender<M>,
     wrap: W,
-) -> Result<ProcessHandle<T>, ProcessError>
+) -> Result<Spawned<T>, ProcessError>
 where
     T: Send + 'static,
     M: Send + 'static,
@@ -164,7 +191,7 @@ fn start<T, M, W>(
     events: mpsc::Sender<M>,
     wrap: W,
     #[cfg(windows)] launch: Launch,
-) -> Result<ProcessHandle<T>, ProcessError>
+) -> Result<Spawned<T>, ProcessError>
 where
     T: Send + 'static,
     M: Send + 'static,
@@ -217,18 +244,23 @@ where
         events,
         wrap,
     };
-    tokio::spawn(task.run(
+    // Until it is polled, the future holds the task, whose drop kills `claude`.
+    let run = task.run(
         commands,
         LineReader::new(BufReader::new(stdout), MAX_LINE_BYTES),
         stderr_lines,
-    ));
-    Ok(ProcessHandle {
+    );
+    let handle = ProcessHandle {
         commands: commands_sender,
         pid,
         #[cfg(windows)]
         job: handle_job,
         #[cfg(windows)]
         launch,
+    };
+    Ok(Spawned {
+        handle,
+        task: Box::pin(run),
     })
 }
 
@@ -687,7 +719,8 @@ mod tests {
             events_sender,
             |event| event,
         )
-        .unwrap();
+        .unwrap()
+        .run();
 
         handle.control(ControlRequest::Initialize, 7).unwrap();
 
@@ -719,7 +752,8 @@ mod tests {
             events_sender,
             |event| event,
         )
-        .unwrap();
+        .unwrap()
+        .run();
 
         handle.control(ControlRequest::McpStatus, 1).unwrap();
 
@@ -743,7 +777,8 @@ mod tests {
             events_sender,
             |event| event,
         )
-        .unwrap();
+        .unwrap()
+        .run();
 
         handle.stop();
 

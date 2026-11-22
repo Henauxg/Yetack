@@ -12,6 +12,7 @@ mod input;
 mod order;
 mod requests;
 mod restore;
+mod start;
 mod state;
 mod terminals;
 

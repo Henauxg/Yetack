@@ -13,4 +13,4 @@ pub(crate) use claude_command::{ClaudeCommand, InterruptedTurn};
 #[cfg(windows)]
 pub(crate) use job::Job;
 pub use process_error::ProcessError;
-pub(crate) use task::{ControlFailure, ProcessEvent, ProcessHandle, spawn};
+pub(crate) use task::{ControlFailure, ProcessEvent, ProcessHandle, Spawned, spawn};

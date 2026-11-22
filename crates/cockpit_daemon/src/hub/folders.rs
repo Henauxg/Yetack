@@ -16,8 +16,9 @@ use cockpit_protocol::{
 use tokio::time;
 
 use crate::blocking::{self, Scope};
-use crate::hub::agents::{agent_folder, respond};
+use crate::hub::agents::respond;
 use crate::hub::input::{HubInput, Reply};
+use crate::hub::start::{AfterStart, FolderRequest, Opening};
 use crate::hub::state::Hub;
 use crate::hub::{errors, state};
 use crate::process::InterruptedTurn;
@@ -30,8 +31,8 @@ const FORK_TITLE_SUFFIX: &str = " (fork)";
 /// hundreds of megabytes.
 const COPY_TIME: Duration = Duration::from_secs(120);
 
-/// What a fork takes from the agent it forks, read when the request came, so that it still starts
-/// if that agent closes meanwhile.
+/// What a fork takes from the agent it forks, read before the copy, so that it still starts if
+/// that agent closes meanwhile.
 pub(crate) struct ForkOf {
     title: String,
     /// The original's folder, whose project holds the session.
@@ -54,8 +55,15 @@ pub(crate) struct PendingMove {
 }
 
 impl Hub {
-    pub(super) fn fork(&mut self, params: FolderParams, reply: Reply) {
-        let prepared = self.fork_of(&params).and_then(|fork| {
+    /// Resolves the fork's folder off the hub, then forks in [`Hub::fork_to`].
+    pub(super) fn fork(&self, params: FolderParams, reply: Reply) {
+        let request = FolderRequest::Fork(params.agent);
+        self.resolve_folder(params.folder, request, reply);
+    }
+
+    /// Copies the agent's session to `target`, resolved from the request's folder, in a task.
+    pub(super) fn fork_to(&mut self, id: AgentId, target: PathBuf, reply: Reply) {
+        let prepared = self.fork_of(id, target).and_then(|fork| {
             let account = self.account(fork.account)?;
             Ok((fork, account.folder))
         });
@@ -92,18 +100,17 @@ impl Hub {
             if let Err(unsent) = inputs.send(input).await
                 && let HubInput::ForkCopied { reply, .. } = unsent.0
             {
-                respond(reply, Err(stopping()));
+                respond(reply, Err(errors::stopping()));
             }
         });
     }
 
-    fn fork_of(&self, params: &FolderParams) -> Result<ForkOf, ErrorBody> {
-        let id = params.agent;
+    fn fork_of(&self, id: AgentId, target: PathBuf) -> Result<ForkOf, ErrorBody> {
         let record = &self.agent(id)?.record;
         Ok(ForkOf {
             title: fork_title(&record.title),
             folder: record.folder.clone(),
-            target: agent_folder(&params.folder)?,
+            target,
             session: record
                 .session
                 .clone()
@@ -115,23 +122,18 @@ impl Hub {
         })
     }
 
-    /// The session is in the fork's folder: the fork starts there, on top of the list.
+    /// The session is in the fork's folder: the fork starts there, and goes on top of the list
+    /// once `claude` runs.
     pub(super) fn fork_copied(
         &mut self,
         fork: ForkOf,
         found: Result<Box<FoundSession>, String>,
         reply: Reply,
     ) {
-        respond(reply, self.add_fork(fork, found));
-    }
-
-    fn add_fork(
-        &mut self,
-        fork: ForkOf,
-        found: Result<Box<FoundSession>, String>,
-    ) -> Result<ResponseBody, ErrorBody> {
-        let found = found.map_err(copy_failed)?;
-        let past = found.past;
+        let past = match found {
+            Ok(found) => found.past,
+            Err(error) => return respond(reply, Err(copy_failed(error))),
+        };
         let record = AgentRecord {
             id: self.next_agent,
             title: fork.title,
@@ -149,15 +151,19 @@ impl Hub {
             mark: Mark::Unmarked,
             resume_as: ResumeAs::Fork,
         };
-        let agent = self.add_agent(record, None, Some(past.items))?;
-        Ok(ResponseBody::AgentStarted { agent })
+        self.start_new_agent(record, Some(past.items), Opening::Fork, reply);
     }
 
-    /// Moves the agent at once when it is exited, or once its process exits: closing its stdin
-    /// lets `claude` end the session file first.
-    pub(super) fn change_folder(&mut self, params: FolderParams, reply: Reply) {
-        let id = params.agent;
-        let folder = match self.move_target(&params) {
+    /// Resolves the new folder off the hub, then moves the agent in [`Hub::move_to`].
+    pub(super) fn change_folder(&self, params: FolderParams, reply: Reply) {
+        let request = FolderRequest::Move(params.agent);
+        self.resolve_folder(params.folder, request, reply);
+    }
+
+    /// Moves the agent to `folder`, resolved from the request's, at once when it is exited, or
+    /// once its process exits: closing its stdin lets `claude` end the session file first.
+    pub(super) fn move_to(&mut self, id: AgentId, folder: PathBuf, reply: Reply) {
+        let folder = match self.move_target(id, folder) {
             Ok(Some(folder)) => folder,
             Ok(None) => return respond(reply, Ok(ResponseBody::Done)),
             Err(error) => return respond(reply, Err(error)),
@@ -184,14 +190,13 @@ impl Hub {
     }
 
     /// The folder the agent moves to, or `None` when it already runs there.
-    fn move_target(&self, params: &FolderParams) -> Result<Option<PathBuf>, ErrorBody> {
-        let id = params.agent;
+    fn move_target(&self, id: AgentId, folder: PathBuf) -> Result<Option<PathBuf>, ErrorBody> {
         let agent = self.agent(id)?;
-        let folder = agent_folder(&params.folder)?;
         if agent.record.session.is_none() {
             return Err(errors::no_session(id));
         }
-        if agent.moving.is_some() || (agent.process.is_some() && agent.view.is_busy()) {
+        let working = agent.process.is_some() && agent.view.is_busy();
+        if agent.moving.is_some() || agent.starting || working {
             return Err(errors::agent_working(id));
         }
         Ok((folder != agent.record.folder).then_some(folder))
@@ -241,13 +246,14 @@ impl Hub {
             if let Err(unsent) = inputs.send(input).await
                 && let HubInput::MoveCopied { reply, .. } = unsent.0
             {
-                respond(reply, Err(stopping()));
+                respond(reply, Err(errors::stopping()));
             }
         });
     }
 
     /// The session is in the new folder: the agent takes the folder, and runs again if it ran.
-    /// After a failed copy it keeps its folder, and runs again there.
+    /// After a failed copy it keeps its folder, and runs again there. The answer waits for
+    /// `claude` to run.
     pub(super) fn move_copied(
         &mut self,
         id: AgentId,
@@ -266,24 +272,18 @@ impl Hub {
             agent.view.set_folder(folder);
         }
         let restart = restart && agent.process.is_none();
-        let restarted = if restart {
-            self.start_process(id, InterruptedTurn::Leave)
-        } else {
-            Ok(())
-        };
-        if restart && let Some(agent) = self.agents.get_mut(&id) {
-            agent.view.resumed_by_user(state::now());
-        }
         if moved {
             self.read_repository(id);
         }
         self.save_agents();
         self.publish(id);
-        let result = copied
-            .map_err(copy_failed)
-            .and(restarted)
-            .map(|()| ResponseBody::Done);
-        respond(reply, result);
+        let copied = copied.map_err(copy_failed);
+        if restart {
+            let then = AfterStart::Move { copied, reply };
+            self.start_process(id, InterruptedTurn::Leave, then);
+        } else {
+            respond(reply, copied.map(|()| ResponseBody::Done));
+        }
     }
 }
 
@@ -302,17 +302,13 @@ fn copy_failed(error: String) -> ErrorBody {
     )
 }
 
-fn stopping() -> ErrorBody {
-    errors::internal("the daemon is stopping".to_owned())
-}
-
 #[cfg(test)]
 #[cfg(unix)]
 mod tests {
     use std::path::Path;
     use std::time::Duration;
 
-    use cockpit_protocol::{Repository, ResponseResult, StartParams};
+    use cockpit_protocol::{Repository, Request, ResponseResult, StartParams};
     use tokio::sync::{mpsc, oneshot};
 
     use super::*;
@@ -329,12 +325,14 @@ mod tests {
             .join(format!("{SESSION}.jsonl"))
     }
 
-    /// A hub whose `claude` waits on its stdin, with one running agent in `<temp>/app` on
-    /// `SESSION`, whose file is written there.
-    fn hub_with_agent(temp: &Path) -> (Hub, mpsc::Receiver<HubInput>, AgentId) {
-        let (mut hub, inputs) = Hub::for_tests_with_inputs(&temp.join("state"));
+    /// A hub whose `claude` reads its stdin and exits once it closes, with one running agent in
+    /// `<temp>/app` on `SESSION`, whose file is written there.
+    async fn hub_with_agent(temp: &Path) -> (Hub, mpsc::Receiver<HubInput>, AgentId) {
+        let (mut hub, mut inputs) = Hub::for_tests_with_inputs(&temp.join("state"));
         let claude = temp.join("claude-program");
-        write_script(&claude, "#!/bin/sh\nexec cat >/dev/null\n");
+        // Its output stays open: the daemon takes a closed output as the end of `claude`, and
+        // kills it 10 seconds later.
+        write_script(&claude, "#!/bin/sh\nwhile read -r line; do :; done\n");
         hub.config.claude_program = claude;
         let folder = temp.join("app");
         std::fs::create_dir_all(&folder).unwrap();
@@ -347,7 +345,9 @@ mod tests {
             prompt: None,
             account: AccountId::DEFAULT,
         };
-        let Ok(ResponseBody::AgentStarted { agent }) = hub.start_agent(start) else {
+        let Ok(ResponseBody::AgentStarted { agent }) =
+            hub.ask(&mut inputs, Request::AgentStart(start)).await
+        else {
             panic!("the agent did not start");
         };
         if let Some(started) = hub.agents.get_mut(&agent) {
@@ -361,28 +361,10 @@ mod tests {
         (hub, inputs, agent)
     }
 
-    /// Hands the hub what its tasks send it until the request has its answer.
-    async fn answer(
-        hub: &mut Hub,
-        inputs: &mut mpsc::Receiver<HubInput>,
-        mut answered: oneshot::Receiver<ResponseResult>,
-    ) -> Result<ResponseBody, ErrorBody> {
-        loop {
-            if let Ok(result) = answered.try_recv() {
-                return result.into_result();
-            }
-            let input = tokio::time::timeout(Duration::from_secs(10), inputs.recv())
-                .await
-                .expect("the hub got no input in time")
-                .expect("the hub's inputs closed");
-            hub.handle(input);
-        }
-    }
-
     #[tokio::test]
     async fn a_fork_starts_in_its_folder_on_a_copy_of_the_session() {
         let temp = tempfile::tempdir().unwrap();
-        let (mut hub, mut inputs, original) = hub_with_agent(temp.path());
+        let (mut hub, mut inputs, original) = hub_with_agent(temp.path()).await;
         let target = temp.path().join("app_fix");
         std::fs::create_dir_all(&target).unwrap();
         let (reply, answered) = oneshot::channel();
@@ -395,7 +377,7 @@ mod tests {
             reply,
         );
         let Ok(ResponseBody::AgentStarted { agent }) =
-            answer(&mut hub, &mut inputs, answered).await
+            hub.await_answer(&mut inputs, answered).await
         else {
             panic!("the fork did not start");
         };
@@ -421,7 +403,7 @@ mod tests {
     #[tokio::test]
     async fn a_move_stops_the_agent_and_runs_it_again_in_the_new_folder() {
         let temp = tempfile::tempdir().unwrap();
-        let (mut hub, mut inputs, agent) = hub_with_agent(temp.path());
+        let (mut hub, mut inputs, agent) = hub_with_agent(temp.path()).await;
         let target = temp.path().join("app_moved");
         std::fs::create_dir_all(&target).unwrap();
         let (reply, answered) = oneshot::channel();
@@ -433,7 +415,7 @@ mod tests {
             },
             reply,
         );
-        let result = answer(&mut hub, &mut inputs, answered).await;
+        let result = hub.await_answer(&mut inputs, answered).await;
 
         assert_eq!(result, Ok(ResponseBody::Done));
         let moved = &hub.agents[&agent];
@@ -451,7 +433,7 @@ mod tests {
     #[tokio::test]
     async fn a_moved_agent_gets_its_new_repository_read_off_the_hub() {
         let temp = tempfile::tempdir().unwrap();
-        let (mut hub, mut inputs, agent) = hub_with_agent(temp.path());
+        let (mut hub, mut inputs, agent) = hub_with_agent(temp.path()).await;
         let target = temp.path().join("shop");
         std::fs::create_dir_all(target.join(".git")).unwrap();
         std::fs::write(
@@ -467,7 +449,7 @@ mod tests {
             },
             reply,
         );
-        answer(&mut hub, &mut inputs, answered).await.unwrap();
+        hub.await_answer(&mut inputs, answered).await.unwrap();
 
         let repository = loop {
             if let Some(read) = &hub.agents[&agent].view.summary().repository {
@@ -496,7 +478,7 @@ mod tests {
     #[tokio::test]
     async fn an_agent_does_not_resume_while_it_moves() {
         let temp = tempfile::tempdir().unwrap();
-        let (mut hub, mut inputs, agent) = hub_with_agent(temp.path());
+        let (mut hub, mut inputs, agent) = hub_with_agent(temp.path()).await;
         let target = temp.path().join("app_moved");
         std::fs::create_dir_all(&target).unwrap();
         let (reply, mut answered) = oneshot::channel();
@@ -519,13 +501,18 @@ mod tests {
                 .unwrap();
             // The process exited, and the copy is done but not handled yet.
             if matches!(input, HubInput::MoveCopied { .. }) {
-                resumed_meanwhile = Some(hub.resume(agent));
+                let (reply, resumed) = oneshot::channel();
+                hub.resume(agent, ResponseBody::Done, reply);
+                resumed_meanwhile = Some(resumed);
             }
             hub.handle(input);
         };
 
         assert_eq!(result, Ok(ResponseBody::Done));
-        let refused = resumed_meanwhile.expect("the copy came back").unwrap_err();
+        let mut resumed = resumed_meanwhile.expect("the copy came back");
+        let ResponseResult::Error(refused) = resumed.try_recv().unwrap() else {
+            panic!("expected the resume to be refused");
+        };
         assert_eq!(refused.code, ErrorCode::AgentRunning);
         assert_eq!(hub.agents[&agent].record.folder, target);
         assert!(hub.agents[&agent].moving.is_none());
@@ -534,18 +521,22 @@ mod tests {
     #[tokio::test]
     async fn an_agent_without_a_session_or_a_folder_cannot_move() {
         let temp = tempfile::tempdir().unwrap();
-        let (mut hub, _inputs, agent) = hub_with_agent(temp.path());
-        let refused = |hub: &mut Hub, folder: PathBuf| {
-            let (reply, mut answered) = oneshot::channel();
-            hub.change_folder(FolderParams { agent, folder }, reply);
-            answered.try_recv().unwrap().into_result().unwrap_err().code
-        };
+        let (mut hub, mut inputs, agent) = hub_with_agent(temp.path()).await;
+        let change = |folder: PathBuf| Request::AgentChangeFolder(FolderParams { agent, folder });
 
-        let missing = refused(&mut hub, temp.path().join("nowhere"));
+        let missing = hub
+            .ask(&mut inputs, change(temp.path().join("nowhere")))
+            .await
+            .unwrap_err()
+            .code;
         if let Some(started) = hub.agents.get_mut(&agent) {
             started.record.session = None;
         }
-        let no_session = refused(&mut hub, temp.path().to_owned());
+        let no_session = hub
+            .ask(&mut inputs, change(temp.path().to_owned()))
+            .await
+            .unwrap_err()
+            .code;
 
         assert_eq!(missing, ErrorCode::NotFound);
         assert_eq!(no_session, ErrorCode::InvalidRequest);

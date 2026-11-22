@@ -836,7 +836,7 @@ impl AgentView {
 
     /// The prompts Claude will not read, since no process runs: each becomes a notice that keeps
     /// its text.
-    fn drop_waiting_prompts(&mut self) {
+    pub(crate) fn drop_waiting_prompts(&mut self) {
         let waiting = std::mem::take(&mut self.details.waiting_prompts);
         if waiting.is_empty() {
             return;

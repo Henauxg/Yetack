@@ -29,3 +29,15 @@ pub(crate) fn write_script(path: &Path, text: &str) {
         }
     }
 }
+
+/// Whether the process runs: it has not ended, and is no zombie left to reap.
+#[cfg(target_os = "linux")]
+pub(crate) fn runs(pid: u32) -> bool {
+    let Ok(stat) = std::fs::read_to_string(format!("/proc/{pid}/stat")) else {
+        return false;
+    };
+    let state = stat
+        .rsplit_once(')')
+        .and_then(|(_, rest)| rest.trim_start().chars().next());
+    state.is_some_and(|state| state != 'Z')
+}

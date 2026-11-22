@@ -17,22 +17,24 @@ use cockpit_protocol::{
 use tokio::runtime::Handle;
 use tokio::time;
 
-use crate::accounts::ClaudeEnv;
 use crate::blocking::{self, BlockingError, Scope};
 use crate::hub::input::{ControlPurpose, HubInput, Reply};
+use crate::hub::start::{AfterStart, FolderRequest, Opening};
 use crate::hub::state::{Agent, DetailsOut, Hub, QueuedPrompt};
-use crate::hub::{errors, state};
-use crate::process::{ClaudeCommand, InterruptedTurn, ProcessEvent};
+use crate::hub::{errors, start, state};
+use crate::process::{InterruptedTurn, ProcessEvent, Spawned};
 use crate::sessions::FoundSession;
-use crate::store::{AgentRecord, LogName, RawLog, ResumeAs};
+use crate::store::{AgentRecord, LogName, ResumeAs};
 use crate::transcript::prompts::TypedSetting;
-use crate::transcript::{AgentView, AnswerError, FollowUp, ProcessSession, prompts, words};
-use crate::{machine_load, read_file, repository, sessions};
+use crate::transcript::{AgentView, AnswerError, FollowUp, prompts, words};
+use crate::{repository, sessions};
 
 /// The longest model name a client may set: every summary carries it.
 const MODEL_MAX_CHARS: usize = 100;
 /// How long reading the repository of an agent's folder may take.
 const REPOSITORY_TIME: Duration = Duration::from_secs(10);
+/// The notice of an agent stopped while its `claude` started.
+const STOPPED_WHILE_STARTING: &str = "stopped before claude started";
 
 impl Hub {
     pub(super) fn start_restored_agents(&mut self) {
@@ -44,24 +46,43 @@ impl Hub {
                 .agents
                 .get(&id)
                 .is_some_and(|agent| agent.record.running);
-            if running && let Err(error) = self.start_process(id, InterruptedTurn::Resume) {
-                self.exited_at_start(id, &error.message);
+            if running {
+                // The first snapshot shows it running, as when `claude` started before the hub
+                // served any client.
+                if let Some(agent) = self.agents.get_mut(&id) {
+                    agent
+                        .view
+                        .process_started(start::process_session(&agent.record));
+                }
+                self.start_process(id, InterruptedTurn::Resume, AfterStart::Restored);
+                self.publish(id);
             }
-            self.publish(id);
         }
     }
 
-    pub(super) fn start_agent(&mut self, params: StartParams) -> Result<ResponseBody, ErrorBody> {
-        let title: Option<String> = params.title.as_deref().map(client_title).transpose()?;
-        if let Some(model) = &params.model {
-            check_model(model)?;
+    /// Checks what needs no file system, then resolves the folder off the hub. The agent starts
+    /// in [`Hub::start_agent_in`].
+    pub(super) fn start_agent(&mut self, mut params: StartParams, reply: Reply) {
+        let title = params.title.as_deref().map(client_title).transpose();
+        let model = params.model.as_deref().map(check_model).transpose();
+        match (title, model) {
+            (Ok(title), Ok(_)) => params.title = title,
+            (Err(error), _) | (_, Err(error)) => return respond(reply, Err(error)),
         }
-        let folder = agent_folder(&params.folder)?;
-        let account = self.account(params.account)?;
+        let folder = params.folder.clone();
+        self.resolve_folder(folder, FolderRequest::Start(params), reply);
+    }
+
+    /// Starts a new agent in `folder`, resolved from the request's.
+    pub(super) fn start_agent_in(&mut self, params: StartParams, folder: PathBuf, reply: Reply) {
+        let account = match self.account(params.account) {
+            Ok(account) => account,
+            Err(error) => return respond(reply, Err(error)),
+        };
         // A name the client gave goes into the Claude session too, as a rename does, so the
         // session keeps it after the agent closes, in the resume list and in `claude --resume`.
-        let named = title.is_some();
-        let title = title.unwrap_or_else(|| {
+        let named = params.title.is_some();
+        let title = params.title.unwrap_or_else(|| {
             cockpit_protocol::default_title(
                 params.prompt.as_ref().map(|prompt| prompt.text.as_str()),
                 &folder,
@@ -84,32 +105,23 @@ impl Hub {
             mark: Mark::Unmarked,
             resume_as: ResumeAs::Same,
         };
-        let agent = self.add_agent(record, None, None)?;
-        // Before the first message: the session has the name even if the agent stops before its
-        // first turn ends.
-        if named && let Some(started) = self.agents.get_mut(&agent) {
-            let text = prompts::rename_command(&started.record.title);
-            send_quiet_prompt(started, text);
-        }
-        if let Some(prompt) = params.prompt {
-            self.prompt(agent, prompt, PromptDelivery::Steer)?;
-        }
-        Ok(ResponseBody::AgentStarted { agent })
+        let opening = Opening::Start {
+            named,
+            prompt: params.prompt,
+        };
+        self.start_new_agent(record, None, opening, reply);
     }
 
-    /// Starts an agent's process, then lists the agent on top of the others. Nothing is listed
-    /// when `claude` cannot start. `past` is the transcript of the session the agent takes over,
-    /// which shows above its own items without any event: clients read it with `agent.history`.
+    /// Lists a new agent on top of the others, with the process that started for it. `past` is
+    /// the transcript of the session the agent takes over, which shows above its own items
+    /// without any event: clients read it with `agent.history`.
     pub(super) fn add_agent(
         &mut self,
         mut record: AgentRecord,
-        prompt: Option<Prompt>,
         past: Option<Vec<TranscriptItem>>,
-    ) -> Result<AgentId, ErrorBody> {
+        spawned: Spawned<ControlPurpose>,
+    ) {
         let id = record.id;
-        let next = id
-            .next()
-            .ok_or_else(|| errors::internal("no agent id is left".to_owned()))?;
         let mut places = cockpit_protocol::place_on_top(&self.places(), id);
         if let Some(index) = places.iter().position(|place| place.agent == id) {
             record.position = places.swap_remove(index).position;
@@ -132,22 +144,19 @@ impl Hub {
                 record,
                 view,
                 process: None,
-                generation: 0,
+                generation: start::FIRST_GENERATION,
+                starting: true,
                 queue: VecDeque::new(),
                 moving: None,
                 details_out: DetailsOut::default(),
             },
         );
-        if let Err(error) = self.start_process(id, InterruptedTurn::Leave) {
-            self.agents.remove(&id);
-            return Err(error);
-        }
-        self.next_agent = next;
+        self.attach(id, spawned);
         // The agents below the new one, renumbered when it found no room above them.
         self.set_places(&places);
         self.save_agents();
         let Some(agent) = self.agents.get_mut(&id) else {
-            return Err(errors::agent_not_found(id));
+            return;
         };
         agent.view.mark_published();
         let summary = agent.view.summary().clone();
@@ -156,83 +165,38 @@ impl Hub {
         for place in places {
             self.publish(place.agent);
         }
-        if let Some(prompt) = prompt {
-            self.prompt(id, prompt, PromptDelivery::Steer)?;
-        }
-        Ok(id)
     }
 
-    /// Starts `claude` for an agent and asks for its commands. The error says why it cannot
-    /// start: `NotFound` when the agent's folder is gone, else `ClaudeFailed`.
-    pub(super) fn start_process(
-        &mut self,
-        id: AgentId,
-        interrupted_turn: InterruptedTurn,
-    ) -> Result<(), ErrorBody> {
-        let raw_path = self.raw_log_path(id);
-        let account_id = self
-            .agents
-            .get(&id)
-            .map(|agent| agent.record.account)
-            .ok_or(errors::agent_not_found(id))?;
-        let account = self.account(account_id).map_err(|_| {
-            ErrorBody::new(
-                ErrorCode::ClaudeFailed,
-                format!("the agent's account {} no longer exists", account_id.get()),
-            )
-        })?;
-        let Some(agent) = self.agents.get_mut(&id) else {
-            return Err(errors::agent_not_found(id));
-        };
-        let record = &agent.record;
-        check_folder(&record.folder)?;
-        let command = ClaudeCommand {
-            program: self.config.claude_program.clone(),
-            folder: record.folder.clone(),
-            model: record.model.clone(),
-            mode: record.mode.map(words::mode_to_claude),
-            effort: record.effort.and_then(words::effort_word),
-            resume: record.session.clone(),
-            resume_as: record.resume_as,
-            interrupted_turn,
-            env: ClaudeEnv::new(&account),
-        };
-        let raw_log = RawLog::open(&raw_path)
-            .inspect_err(|error| {
-                tracing::warn!(error = %errors::chain(error), "cannot open the raw log");
-            })
-            .ok();
-        let generation = agent.generation.wrapping_add(1);
-        let handle = crate::process::spawn(&command, raw_log, self.inputs.clone(), move |event| {
-            HubInput::Process {
-                agent: id,
-                generation,
-                event,
+    /// What a new agent does once it is listed, before its request's answer.
+    pub(super) fn open_agent(&mut self, id: AgentId, opening: Opening) -> Result<(), ErrorBody> {
+        match opening {
+            Opening::Start { named, prompt } => {
+                // Before the first message: the session has the name even if the agent stops
+                // before its first turn ends.
+                if named && let Some(started) = self.agents.get_mut(&id) {
+                    let text = prompts::rename_command(&started.record.title);
+                    send_quiet_prompt(started, text);
+                }
+                if let Some(prompt) = prompt {
+                    self.prompt(id, prompt, PromptDelivery::Steer)?;
+                }
             }
-        })
-        .map_err(|error| ErrorBody::new(ErrorCode::ClaudeFailed, errors::chain(&error)))?;
-        if let Err(purpose) = handle.control(ControlRequest::Initialize, ControlPurpose::Initialize)
-        {
-            purpose.fail(errors::agent_exited(id));
-        }
-        agent.generation = generation;
-        agent.record.process = handle.pid().and_then(machine_load::record_process);
-        agent.process = Some(handle);
-        match command.resume {
-            Some(session) => {
-                agent.view.process_started(ProcessSession::Resumed);
-                self.read_restored_cost(id, generation, account.folder, session);
+            Opening::Session => {
+                if let Some(agent) = self.agents.get(&id)
+                    && let Some(session) = &agent.record.session
+                {
+                    self.closed_choices.forget(session, agent.record.account);
+                }
             }
-            None => agent.view.process_started(ProcessSession::New),
+            Opening::Fork => {}
         }
-        self.save_agents();
         Ok(())
     }
 
     /// Reads the cost Claude Code restores from the session file, in a task, for the first turn's
     /// cost.
     /// `folder` is the agent's account's, which holds the session file.
-    fn read_restored_cost(
+    pub(super) fn read_restored_cost(
         &self,
         id: AgentId,
         generation: u32,
@@ -327,7 +291,7 @@ impl Hub {
         self.publish(id);
     }
 
-    fn exited_at_start(&mut self, id: AgentId, error: &str) {
+    pub(super) fn exited_at_start(&mut self, id: AgentId, error: &str) {
         if let Some(agent) = self.agents.get_mut(&id) {
             tracing::warn!(agent = id.get(), error, "cannot start claude");
             agent
@@ -431,7 +395,8 @@ impl Hub {
         self.continue_move(id);
     }
 
-    /// Sends a prompt now, or queues it while the agent works, as `delivery` asks.
+    /// Sends a prompt now, or queues it while the agent works, as `delivery` asks. While `claude`
+    /// starts, every prompt waits in the queue.
     pub(super) fn prompt(
         &mut self,
         id: AgentId,
@@ -442,9 +407,10 @@ impl Hub {
             .agents
             .get_mut(&id)
             .ok_or(errors::agent_not_found(id))?;
-        let Some(process) = agent.process.as_ref().filter(|_| agent.record.running) else {
+        let process = agent.process.as_ref().filter(|_| agent.record.running);
+        if process.is_none() && !agent.starting {
             return Err(errors::agent_exited(id));
-        };
+        }
         let line = prompts::prompt_line(&prompt)
             .ok_or_else(|| errors::internal("cannot encode the prompt".to_owned()))?;
         let mark = agent.record.mark.after_prompt();
@@ -453,24 +419,28 @@ impl Hub {
         agent.view.set_mark(mark);
         let busy = agent.view.is_busy() || !agent.queue.is_empty();
         let steers = delivery == PromptDelivery::Steer && !is_slash_command(&prompt.text);
-        if !busy {
-            agent.view.add_prompt(&prompt, state::now());
-            process.write(line);
-            record_changed |= record_typed_setting(agent, &prompt.text);
-        } else if steers {
-            agent
-                .view
-                .add_waiting_prompt(&prompt, WaitingState::Sent, state::now());
-            process.write(line);
-        } else {
-            let id = agent
-                .view
-                .add_waiting_prompt(&prompt, WaitingState::Queued, state::now());
-            agent.queue.push_back(QueuedPrompt {
-                id: Some(id),
-                line,
-                prompt,
-            });
+        match process {
+            Some(process) if !busy => {
+                agent.view.add_prompt(&prompt, state::now());
+                process.write(line);
+                record_changed |= record_typed_setting(agent, &prompt.text);
+            }
+            Some(process) if steers => {
+                agent
+                    .view
+                    .add_waiting_prompt(&prompt, WaitingState::Sent, state::now());
+                process.write(line);
+            }
+            Some(_) | None => {
+                let id = agent
+                    .view
+                    .add_waiting_prompt(&prompt, WaitingState::Queued, state::now());
+                agent.queue.push_back(QueuedPrompt {
+                    id: Some(id),
+                    line,
+                    prompt,
+                });
+            }
         }
         if record_changed {
             self.save_agents();
@@ -592,12 +562,26 @@ impl Hub {
         Ok(ResponseBody::Done)
     }
 
-    /// Closes the process's stdin; the agent shows as exited once the process ends.
+    /// Closes the process's stdin; the agent shows as exited once the process ends. A stop while
+    /// `claude` starts gives the start up.
     pub(super) fn stop(&mut self, id: AgentId) -> Result<ResponseBody, ErrorBody> {
         let agent = self
             .agents
             .get_mut(&id)
             .ok_or(errors::agent_not_found(id))?;
+        if agent.starting {
+            // The process of that start, if it comes, finds another generation and is killed.
+            agent.generation = agent.generation.wrapping_add(1);
+            agent.starting = false;
+            agent.queue.clear();
+            agent
+                .view
+                .process_exited(STOPPED_WHILE_STARTING.to_owned(), state::now());
+            agent.record.running = false;
+            self.save_agents();
+            self.publish(id);
+            return Ok(ResponseBody::Done);
+        }
         let Some(process) = &agent.process else {
             return Err(errors::agent_exited(id));
         };
@@ -607,31 +591,40 @@ impl Hub {
         Ok(ResponseBody::Done)
     }
 
-    pub(super) fn resume(&mut self, id: AgentId) -> Result<ResponseBody, ErrorBody> {
-        let agent = self
-            .agents
-            .get_mut(&id)
-            .ok_or(errors::agent_not_found(id))?;
-        if agent.process.is_some() {
-            return Err(errors::agent_running(id));
+    /// Starts the exited agent again. `reply` gets `answer` once `claude` runs.
+    pub(super) fn resume(&mut self, id: AgentId, answer: ResponseBody, reply: Reply) {
+        let Some(agent) = self.agents.get(&id) else {
+            return respond(reply, Err(errors::agent_not_found(id)));
+        };
+        if agent.process.is_some() || agent.starting {
+            return respond(reply, Err(errors::agent_running(id)));
         }
         // A move starts it again in its new folder once the session is there.
         if agent.moving.is_some() {
-            return Err(errors::agent_working(id));
+            return respond(reply, Err(errors::agent_working(id)));
         }
-        self.start_process(id, InterruptedTurn::Leave)?;
-        if let Some(agent) = self.agents.get_mut(&id) {
-            agent.record.running = true;
-            agent.view.resumed_by_user(state::now());
+        let then = AfterStart::Resume { answer, reply };
+        self.start_process(id, InterruptedTurn::Leave, then);
+    }
+
+    /// Answers `sessions.resume` for the agent that has the session, which runs again unless it
+    /// runs or starts.
+    pub(super) fn resume_for_session(&mut self, id: AgentId, reply: Reply) {
+        let answer = ResponseBody::AgentStarted { agent: id };
+        let exited = self
+            .agents
+            .get(&id)
+            .is_some_and(|agent| agent.process.is_none() && !agent.starting);
+        if exited {
+            self.resume(id, answer, reply);
+        } else {
+            respond(reply, Ok(answer));
         }
-        self.save_agents();
-        self.publish(id);
-        Ok(ResponseBody::Done)
     }
 
     pub(super) fn remove(&mut self, id: AgentId) -> Result<ResponseBody, ErrorBody> {
         let agent = self.agents.get(&id).ok_or(errors::agent_not_found(id))?;
-        if agent.process.is_some() {
+        if agent.process.is_some() || agent.starting {
             return Err(errors::agent_running(id));
         }
         self.discard(id);
@@ -659,15 +652,19 @@ impl Hub {
         if let Err(error) = self.logs.remove(LogName::Agent(id)) {
             tracing::warn!(error = %errors::chain(&error), "cannot delete an agent's log");
         }
+        self.remove_raw_log(id);
+        // The agent's events left with its log: a client that saw less cannot replay.
+        self.replay_floor = self.last_seq;
+        self.save_agents();
+        self.emit(LogName::Daemon, Event::AgentRemoved { agent: id });
+    }
+
+    pub(super) fn remove_raw_log(&self, id: AgentId) {
         if let Err(error) = std::fs::remove_file(self.raw_log_path(id))
             && error.kind() != io::ErrorKind::NotFound
         {
             tracing::warn!(%error, "cannot delete an agent's raw log");
         }
-        // The agent's events left with its log: a client that saw less cannot replay.
-        self.replay_floor = self.last_seq;
-        self.save_agents();
-        self.emit(LogName::Daemon, Event::AgentRemoved { agent: id });
     }
 
     /// Effort has no control request: `/effort <level>` goes as a prompt the transcript does not
@@ -730,30 +727,39 @@ impl Hub {
         }
     }
 
-    /// A past session becomes an agent, with the choices of an agent closed with it a moment
-    /// before `asked_at`, or the agent that has it resumes.
-    pub(super) fn resume_session(&mut self, found: FoundSession, asked_at: Instant, reply: Reply) {
-        respond(reply, self.agent_for_session(found, asked_at));
-    }
-
-    fn agent_for_session(
+    /// A past session becomes an agent in `folder`, resolved from the session's, with the choices
+    /// of an agent closed with it a moment before `asked_at`. The agent that has the session
+    /// resumes instead, and the new agent that starts on it answers once it runs.
+    pub(super) fn resume_session(
         &mut self,
         found: FoundSession,
+        folder: Result<PathBuf, ErrorBody>,
         asked_at: Instant,
-    ) -> Result<ResponseBody, ErrorBody> {
+        reply: Reply,
+    ) {
         let FoundSession { session, past } = found;
-        let account = self.account(session.account)?;
+        let account = match self.account(session.account) {
+            Ok(account) => account,
+            Err(error) => return respond(reply, Err(error)),
+        };
         if let Some(agent) = self.agent_with_session(&session.id, account.id) {
-            if self
-                .agents
-                .get(&agent)
-                .is_some_and(|found| found.process.is_none())
-            {
-                self.resume(agent)?;
-            }
-            return Ok(ResponseBody::AgentStarted { agent });
+            return self.resume_for_session(agent, reply);
         }
-        let folder = agent_folder(&session.folder)?;
+        // A fork names the session it forks until its `claude` reports its own.
+        let starting = self.new_agents.values_mut().find(|starting| {
+            let record = &starting.record;
+            record.session.as_ref() == Some(&session.id)
+                && record.account == account.id
+                && record.resume_as == ResumeAs::Same
+        });
+        if let Some(starting) = starting {
+            starting.also_waiting.push(reply);
+            return;
+        }
+        let folder = match folder {
+            Ok(folder) => folder,
+            Err(error) => return respond(reply, Err(error)),
+        };
         let choices = self.closed_choices.find(&session.id, account.id, asked_at);
         let record = AgentRecord {
             id: self.next_agent,
@@ -772,9 +778,7 @@ impl Hub {
             mark: Mark::Unmarked,
             resume_as: ResumeAs::Same,
         };
-        let agent = self.add_agent(record, None, Some(past.items))?;
-        self.closed_choices.forget(&session.id, account.id);
-        Ok(ResponseBody::AgentStarted { agent })
+        self.start_new_agent(record, Some(past.items), Opening::Session, reply);
     }
 
     /// The agent that has the session of the account's folder.
@@ -830,25 +834,26 @@ fn take_queued(agent: &mut Agent, prompt: PromptId) -> Result<QueuedPrompt, Erro
         })
 }
 
-/// Sends a prompt the transcript does not show, such as `/effort high`, now or after the current
-/// turn. An agent without a process gets nothing.
+/// Sends a prompt the transcript does not show, such as `/effort high`, now, after the current
+/// turn, or once `claude` runs. An exited agent gets nothing.
 fn send_hidden_prompt(agent: &mut Agent, text: String) {
-    let Some(process) = &agent.process else {
+    if agent.process.is_none() && !agent.starting {
         return;
-    };
+    }
     let line = InputLine::prompt(text.clone());
-    if agent.view.is_busy() || !agent.queue.is_empty() {
-        agent.queue.push_back(QueuedPrompt {
+    match &agent.process {
+        Some(process) if !agent.view.is_busy() && agent.queue.is_empty() => {
+            process.write(line);
+            agent.view.hidden_prompt_sent(text);
+        }
+        Some(_) | None => agent.queue.push_back(QueuedPrompt {
             id: None,
             line,
             prompt: Prompt {
                 text,
                 images: Vec::new(),
             },
-        });
-    } else {
-        process.write(line);
-        agent.view.hidden_prompt_sent(text);
+        }),
     }
 }
 
@@ -903,51 +908,6 @@ pub(super) fn initial_summary(record: &AgentRecord) -> AgentSummary {
     }
 }
 
-/// An existing folder, absolute, with its symlinks resolved. On Windows it keeps the form a user
-/// writes, `C:\work` and not `\\?\C:\work`: Claude Code records the session under it, and the
-/// recent folders show it.
-pub(super) fn agent_folder(folder: &Path) -> Result<PathBuf, ErrorBody> {
-    if !folder.is_absolute() {
-        return Err(errors::invalid(format!(
-            "the folder {} is not absolute",
-            folder.display()
-        )));
-    }
-    let resolved = read_file::canonical(folder).map_err(|error| {
-        ErrorBody::new(
-            ErrorCode::NotFound,
-            format!("cannot open the folder {}: {error}", folder.display()),
-        )
-    })?;
-    if !resolved.is_dir() {
-        return Err(errors::invalid(format!(
-            "{} is not a folder",
-            folder.display()
-        )));
-    }
-    Ok(resolved)
-}
-
-/// Refuses a folder that is gone, as after a rename, with `NotFound`, so that a client can offer
-/// to move the agent. Windows would only say that the directory name is not valid.
-fn check_folder(folder: &Path) -> Result<(), ErrorBody> {
-    match std::fs::metadata(folder) {
-        Ok(metadata) if metadata.is_dir() => Ok(()),
-        Ok(_) => Err(ErrorBody::new(
-            ErrorCode::NotFound,
-            format!("{} is no longer a folder", folder.display()),
-        )),
-        Err(error) if error.kind() == io::ErrorKind::NotFound => Err(ErrorBody::new(
-            ErrorCode::NotFound,
-            format!("the folder {} no longer exists", folder.display()),
-        )),
-        Err(error) => Err(ErrorBody::new(
-            ErrorCode::ClaudeFailed,
-            format!("cannot open the folder {}: {error}", folder.display()),
-        )),
-    }
-}
-
 pub(super) fn check_model(model: &str) -> Result<(), ErrorBody> {
     check_length("model name", model, MODEL_MAX_CHARS)
 }
@@ -976,102 +936,90 @@ fn check_length(what: &str, text: &str, max_chars: usize) -> Result<(), ErrorBod
 
 #[cfg(test)]
 mod tests {
-    #[cfg(unix)]
-    use cockpit_protocol::{PastSession, Timestamp};
+    use cockpit_protocol::{AgentParams, ItemBody, PastSession, Request, Timestamp};
+    use tokio::sync::{mpsc, oneshot};
 
-    #[cfg(unix)]
     use crate::sessions::SessionPast;
-    #[cfg(unix)]
-    use crate::store::PastFile;
+    use crate::store::{AgentsFile, PastFile, StateDir};
     #[cfg(unix)]
     use crate::test_script;
 
     use super::*;
 
-    #[test]
-    fn a_folder_must_exist_and_be_absolute() {
-        let temp = tempfile::tempdir().unwrap();
-        let file = temp.path().join("file.txt");
-        std::fs::write(&file, "x").unwrap();
+    const SESSION: &str = "11111111-2222-3333-4444-555555555555";
 
-        assert!(agent_folder(temp.path()).is_ok());
-        let relative = agent_folder(Path::new("work")).unwrap_err();
-        let missing = agent_folder(&temp.path().join("missing")).unwrap_err();
-        let not_a_folder = agent_folder(&file).unwrap_err();
-
-        assert_eq!(relative.code, ErrorCode::InvalidRequest);
-        assert_eq!(missing.code, ErrorCode::NotFound);
-        assert_eq!(not_a_folder.code, ErrorCode::InvalidRequest);
+    fn start_params(folder: &Path) -> StartParams {
+        StartParams {
+            folder: folder.to_owned(),
+            title: None,
+            model: None,
+            effort: None,
+            mode: None,
+            prompt: None,
+            account: AccountId::DEFAULT,
+        }
     }
 
-    /// Titles and model names go into every snapshot, which must stay under the framing maximum.
-    #[test]
-    fn a_title_or_a_model_name_too_long_is_refused() {
-        use cockpit_protocol::SetModelParams;
-        use tokio::sync::oneshot;
-
-        let temp = tempfile::tempdir().unwrap();
-        let mut hub = Hub::for_tests(&temp.path().join("state"));
-        let mut start = |title: usize, model: usize| {
-            let params = StartParams {
-                folder: temp.path().to_owned(),
-                title: Some("t".repeat(title)),
-                model: Some("m".repeat(model)),
-                effort: None,
-                mode: None,
-                prompt: None,
-                account: AccountId::DEFAULT,
-            };
-            hub.start_agent(params).unwrap_err().code
-        };
-
-        let long_title = start(MAX_TITLE_CHARS + 1, 1);
-        let long_model = start(1, MODEL_MAX_CHARS + 1);
-        // The test's `claude` cannot start: the request got past the checks.
-        let longest = start(MAX_TITLE_CHARS, MODEL_MAX_CHARS);
-        let (reply, mut answer) = oneshot::channel();
-        let set_model = SetModelParams {
-            agent: AgentId::new(1),
-            model: "m".repeat(MODEL_MAX_CHARS + 1),
-        };
-        hub.set_model(set_model, reply);
-
-        assert_eq!(long_title, ErrorCode::InvalidRequest);
-        assert_eq!(long_model, ErrorCode::InvalidRequest);
-        assert_eq!(longest, ErrorCode::ClaudeFailed);
-        let ResponseResult::Error(refused) = answer.try_recv().unwrap() else {
-            panic!("expected the model name to be refused");
-        };
-        assert_eq!(refused.code, ErrorCode::InvalidRequest);
+    fn prompt(text: &str) -> Prompt {
+        Prompt {
+            text: text.to_owned(),
+            images: Vec::new(),
+        }
     }
 
-    /// The agent's folder was renamed since it ran: the resume names the folder with `NotFound`,
-    /// so that the app offers to move the agent, and the agent stays exited.
-    #[test]
-    fn an_agent_whose_folder_is_gone_does_not_resume() {
-        use cockpit_protocol::Timestamp;
+    /// The notices of the agent's transcript, with their details, in order.
+    fn notices(view: &AgentView) -> Vec<(String, Option<String>)> {
+        view.items()
+            .iter()
+            .filter_map(|item| match &item.body {
+                ItemBody::Notice { text, detail, .. } => Some((text.clone(), detail.clone())),
+                _ => None,
+            })
+            .collect()
+    }
 
-        use crate::store::{AgentsFile, StateDir};
+    /// A hub whose `claude` reads its stdin and says nothing, and the inputs its tasks send it.
+    #[cfg(unix)]
+    fn quiet_hub(temp: &Path) -> (Hub, mpsc::Receiver<HubInput>) {
+        let (mut hub, inputs) = Hub::for_tests_with_inputs(&temp.join("state"));
+        let claude = temp.join("claude");
+        test_script::write_script(&claude, "#!/bin/sh\nexec cat >/dev/null\n");
+        hub.config.claude_program = claude;
+        (hub, inputs)
+    }
 
-        let temp = tempfile::tempdir().unwrap();
-        let state_dir = temp.path().join("state");
-        let state = StateDir::create(&state_dir).unwrap();
+    /// Starts an agent in `folder`, handing the hub its inputs until it answers.
+    #[cfg(unix)]
+    async fn started(
+        hub: &mut Hub,
+        inputs: &mut mpsc::Receiver<HubInput>,
+        folder: &Path,
+    ) -> AgentId {
+        match hub
+            .ask(inputs, Request::AgentStart(start_params(folder)))
+            .await
+        {
+            Ok(ResponseBody::AgentStarted { agent }) => agent,
+            other => panic!("the agent did not start: {other:?}"),
+        }
+    }
+
+    /// A state folder at `state_dir` with one agent, 1, on [`SESSION`] in `folder`.
+    fn state_with_agent(state_dir: &Path, folder: &Path, running: bool) -> AgentId {
+        let state = StateDir::create(state_dir).unwrap();
         let agent = AgentId::new(1);
-        let gone = temp.path().join("renamed-project");
         AgentsFile {
             next_agent: AgentId::new(2),
             replay_floor: None,
             agents: vec![AgentRecord {
                 id: agent,
                 title: "Fix the cart".to_owned(),
-                folder: gone.clone(),
-                session: Some(ClaudeSessionId::new(
-                    "11111111-2222-3333-4444-555555555555".to_owned(),
-                )),
+                folder: folder.to_owned(),
+                session: Some(ClaudeSessionId::new(SESSION.to_owned())),
                 model: None,
                 effort: None,
                 mode: None,
-                running: false,
+                running,
                 started_at: Timestamp::from_unix_millis(0),
                 past: None,
                 position: Position::default(),
@@ -1083,31 +1031,17 @@ mod tests {
         }
         .save(&state.agents_file())
         .unwrap();
-        let mut hub = Hub::for_tests(&state_dir);
-
-        let refused = hub.resume(agent).unwrap_err();
-
-        assert_eq!(refused.code, ErrorCode::NotFound);
-        assert_eq!(
-            refused.message,
-            format!("the folder {} no longer exists", gone.display())
-        );
-        assert!(hub.agents[&agent].process.is_none());
-        assert!(!hub.agents[&agent].record.running);
+        agent
     }
 
-    /// A session file's `cwd` is what `claude` wrote, or anything a process of the user wrote.
-    #[cfg(unix)]
-    #[test]
-    fn a_past_session_needs_a_folder_an_agent_can_start_in() {
-        let temp = tempfile::tempdir().unwrap();
-        let mut hub = Hub::for_tests(temp.path());
-        let id = ClaudeSessionId::new("11111111-2222-3333-4444-555555555555".to_owned());
-        let session = |folder: &str| FoundSession {
+    /// The past session [`SESSION`] in `folder`, found on disk.
+    fn past_session(folder: &Path) -> FoundSession {
+        let id = ClaudeSessionId::new(SESSION.to_owned());
+        FoundSession {
             session: PastSession {
                 id: id.clone(),
                 title: "Fix the cart".to_owned(),
-                folder: PathBuf::from(folder),
+                folder: folder.to_owned(),
                 last_activity: Timestamp::from_unix_millis(0),
                 turns: 1,
                 account: AccountId::DEFAULT,
@@ -1115,51 +1049,799 @@ mod tests {
             past: SessionPast {
                 items: Vec::new(),
                 file: PastFile {
-                    session: id.clone(),
+                    session: id,
                     bytes: 0,
                 },
             },
+        }
+    }
+
+    fn ask_resume(hub: &mut Hub, agent: AgentId) -> oneshot::Receiver<ResponseResult> {
+        let (reply, answered) = oneshot::channel();
+        hub.request(Request::AgentResume(AgentParams { agent }), reply);
+        answered
+    }
+
+    async fn next_input(inputs: &mut mpsc::Receiver<HubInput>) -> HubInput {
+        tokio::time::timeout(Duration::from_secs(10), inputs.recv())
+            .await
+            .expect("an input came in time")
+            .expect("the hub's inputs are open")
+    }
+
+    /// Hands the hub its inputs until a start of `claude` comes back, which it returns unhandled.
+    async fn next_start(hub: &mut Hub, inputs: &mut mpsc::Receiver<HubInput>) -> HubInput {
+        loop {
+            let input = next_input(inputs).await;
+            if matches!(input, HubInput::ProcessStarted { .. }) {
+                return input;
+            }
+            hub.handle(input);
+        }
+    }
+
+    /// Whether `check` holds within 10 seconds.
+    #[cfg(unix)]
+    async fn eventually(check: impl Fn() -> bool) -> bool {
+        for _ in 0..1000 {
+            if check() {
+                return true;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        false
+    }
+
+    /// Titles and model names go into every snapshot, which must stay under the framing maximum.
+    #[tokio::test]
+    async fn a_title_or_a_model_name_too_long_is_refused() {
+        use cockpit_protocol::SetModelParams;
+
+        let temp = tempfile::tempdir().unwrap();
+        let (mut hub, mut inputs) = Hub::for_tests_with_inputs(&temp.path().join("state"));
+        let params = |title: usize, model: usize| {
+            Request::AgentStart(StartParams {
+                title: Some("t".repeat(title)),
+                model: Some("m".repeat(model)),
+                ..start_params(temp.path())
+            })
         };
 
-        let relative = hub
-            .agent_for_session(session("work"), Instant::now())
-            .unwrap_err();
-        let missing = hub
-            .agent_for_session(session("/nonexistent/yetack/work"), Instant::now())
+        let long_title = hub.ask(&mut inputs, params(MAX_TITLE_CHARS + 1, 1)).await;
+        let long_model = hub.ask(&mut inputs, params(1, MODEL_MAX_CHARS + 1)).await;
+        // The test's `claude` cannot start: the request got past the checks.
+        let longest = hub
+            .ask(&mut inputs, params(MAX_TITLE_CHARS, MODEL_MAX_CHARS))
+            .await;
+        let (reply, mut answer) = oneshot::channel();
+        let set_model = SetModelParams {
+            agent: AgentId::new(1),
+            model: "m".repeat(MODEL_MAX_CHARS + 1),
+        };
+        hub.set_model(set_model, reply);
+
+        assert_eq!(long_title.unwrap_err().code, ErrorCode::InvalidRequest);
+        assert_eq!(long_model.unwrap_err().code, ErrorCode::InvalidRequest);
+        assert_eq!(longest.unwrap_err().code, ErrorCode::ClaudeFailed);
+        assert!(hub.agents.is_empty() && hub.new_agents.is_empty());
+        let ResponseResult::Error(refused) = answer.try_recv().unwrap() else {
+            panic!("expected the model name to be refused");
+        };
+        assert_eq!(refused.code, ErrorCode::InvalidRequest);
+    }
+
+    /// The agent's folder was renamed since it ran: the resume names the folder with `NotFound`,
+    /// so that the app offers to move the agent, and the agent stays exited.
+    #[tokio::test]
+    async fn an_agent_whose_folder_is_gone_does_not_resume() {
+        let temp = tempfile::tempdir().unwrap();
+        let state_dir = temp.path().join("state");
+        let gone = temp.path().join("renamed-project");
+        let agent = state_with_agent(&state_dir, &gone, false);
+        let (mut hub, mut inputs) = Hub::for_tests_with_inputs(&state_dir);
+
+        let answered = ask_resume(&mut hub, agent);
+        let refused = hub.await_answer(&mut inputs, answered).await.unwrap_err();
+
+        assert_eq!(refused.code, ErrorCode::NotFound);
+        assert_eq!(
+            refused.message,
+            format!("the folder {} no longer exists", gone.display())
+        );
+        let exited = &hub.agents[&agent];
+        assert!(exited.process.is_none() && !exited.starting);
+        assert!(!exited.record.running);
+    }
+
+    /// A session file's `cwd` is what `claude` wrote, or anything a process of the user wrote.
+    #[tokio::test]
+    async fn a_past_session_needs_a_folder_an_agent_can_start_in() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut hub = Hub::for_tests(&temp.path().join("state"));
+        let relative = PathBuf::from("work");
+        let missing = temp.path().join("missing").join("work");
+
+        let mut codes = Vec::new();
+        for folder in [relative, missing] {
+            let resolved = start::resolve(folder.clone()).await;
+            let (reply, mut answered) = oneshot::channel();
+            hub.resume_session(past_session(&folder), resolved, Instant::now(), reply);
+            match answered.try_recv() {
+                Ok(ResponseResult::Error(error)) => codes.push(error.code),
+                other => panic!("expected the folder to be refused, got {other:?}"),
+            }
+        }
+
+        assert_eq!(codes, [ErrorCode::InvalidRequest, ErrorCode::NotFound]);
+        assert!(hub.agents.is_empty() && hub.new_agents.is_empty());
+    }
+
+    /// Holds reads of `folder` until the daemon refuses the next one at once, as on a mount that
+    /// never answers. Dropping what it returns lets the held reads end.
+    async fn hold_folder(folder: &Path) -> Vec<std::sync::mpsc::Sender<()>> {
+        let mut releases = Vec::new();
+        loop {
+            let (release, held) = std::sync::mpsc::channel::<()>();
+            let deadline = time::Instant::now() + Duration::from_millis(20);
+            let late = blocking::run(deadline, Scope::Folder(folder), move || held.recv()).await;
+            if matches!(late, Err(BlockingError::Held)) {
+                return releases;
+            }
+            releases.push(release);
+        }
+    }
+
+    /// A folder on a mount that never answers holds its reads: earlier ones never ended. The
+    /// restored agent, its resume and a new agent there fail in time, and the hub goes on.
+    #[tokio::test]
+    async fn a_start_in_a_folder_that_does_not_answer_fails() {
+        let temp = tempfile::tempdir().unwrap();
+        let state_dir = temp.path().join("state");
+        let folder = temp.path().join("app");
+        std::fs::create_dir_all(&folder).unwrap();
+        let releases = hold_folder(&folder).await;
+        let agent = state_with_agent(&state_dir, &folder, true);
+        let (mut hub, mut inputs) = Hub::for_tests_with_inputs(&state_dir);
+
+        hub.start_restored_agents();
+        let restored = next_start(&mut hub, &mut inputs).await;
+        hub.handle(restored);
+        let resumed = ask_resume(&mut hub, agent);
+        let resumed = hub.await_answer(&mut inputs, resumed).await;
+        let new = hub
+            .ask(&mut inputs, Request::AgentStart(start_params(&folder)))
+            .await;
+        // Lets the held threads end, so that the test's runtime can shut down.
+        drop(releases);
+
+        let not_answered = format!("the folder {} did not answer", folder.display());
+        let shown = format!("cannot start claude: {not_answered}");
+        let restored = &hub.agents[&agent];
+        assert!(restored.process.is_none() && !restored.starting);
+        assert!(restored.record.running, "the next daemon starts it again");
+        assert!(restored.view.items().iter().any(|item| matches!(
+            &item.body,
+            ItemBody::Notice { text, .. } if *text == shown
+        )));
+        for refused in [resumed, new] {
+            let refused = refused.unwrap_err();
+            assert_eq!(refused.code, ErrorCode::Timeout);
+            assert_eq!(refused.message, not_answered);
+        }
+        assert_eq!(hub.agents.len(), 1, "the new agent is not listed");
+    }
+
+    /// The folder the app sends resolves in time, but the folder it leads to does not answer: the
+    /// start of `claude` there fails in time, and nothing is listed.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_new_agent_whose_resolved_folder_does_not_answer_fails() {
+        let temp = tempfile::tempdir().unwrap();
+        let folder = temp.path().join("app");
+        std::fs::create_dir_all(&folder).unwrap();
+        let link = temp.path().join("link");
+        std::os::unix::fs::symlink(&folder, &link).unwrap();
+        let resolved = std::fs::canonicalize(&folder).unwrap();
+        let releases = hold_folder(&resolved).await;
+        let (mut hub, mut inputs) = quiet_hub(temp.path());
+
+        let refused = hub
+            .ask(&mut inputs, Request::AgentStart(start_params(&link)))
+            .await;
+        drop(releases);
+
+        let refused = refused.unwrap_err();
+        assert_eq!(refused.code, ErrorCode::Timeout);
+        assert_eq!(
+            refused.message,
+            format!("the folder {} did not answer", resolved.display())
+        );
+        assert!(hub.agents.is_empty() && hub.new_agents.is_empty());
+    }
+
+    /// The daemon stops while starts run: each request still gets an answer.
+    #[tokio::test]
+    async fn a_start_answers_when_the_daemon_stops_meanwhile() {
+        async fn answer(answered: oneshot::Receiver<ResponseResult>) -> ResponseResult {
+            tokio::time::timeout(Duration::from_secs(10), answered)
+                .await
+                .expect("the request was answered in time")
+                .expect("the request kept its reply")
+        }
+
+        let temp = tempfile::tempdir().unwrap();
+        let state_dir = temp.path().join("state");
+        let folder = temp.path().join("app");
+        std::fs::create_dir_all(&folder).unwrap();
+        let agent = state_with_agent(&state_dir, &folder, false);
+        let (mut hub, mut inputs) = Hub::for_tests_with_inputs(&state_dir);
+        let (reply, starting) = oneshot::channel();
+        hub.request(Request::AgentStart(start_params(&folder)), reply);
+        let resolved = next_input(&mut inputs).await;
+        // The test's runtime has one thread: no task runs before the receiver is dropped.
+        let (reply, resolving) = oneshot::channel();
+        hub.request(Request::AgentStart(start_params(&folder)), reply);
+        hub.handle(resolved);
+        let resuming = ask_resume(&mut hub, agent);
+
+        drop(inputs);
+
+        let stopping = ResponseResult::Error(errors::stopping());
+        assert_eq!(answer(resolving).await, stopping);
+        assert_eq!(answer(starting).await, stopping);
+        assert_eq!(answer(resuming).await, stopping);
+    }
+
+    /// A removal while `claude` starts would leave the start without its agent, and a move would
+    /// start `claude` in the folder the agent leaves.
+    #[tokio::test]
+    async fn a_remove_or_a_move_while_claude_starts_is_refused() {
+        let temp = tempfile::tempdir().unwrap();
+        let state_dir = temp.path().join("state");
+        let folder = temp.path().join("app");
+        let target = temp.path().join("elsewhere");
+        std::fs::create_dir_all(&folder).unwrap();
+        std::fs::create_dir_all(&target).unwrap();
+        let agent = state_with_agent(&state_dir, &folder, false);
+        let (mut hub, mut inputs) = Hub::for_tests_with_inputs(&state_dir);
+
+        let mut resumed = ask_resume(&mut hub, agent);
+        let removed = hub.remove(agent);
+        let (reply, mut moved) = oneshot::channel();
+        hub.move_to(agent, target, reply);
+        let start = next_start(&mut hub, &mut inputs).await;
+        hub.handle(start);
+
+        assert_eq!(removed.unwrap_err().code, ErrorCode::AgentRunning);
+        let ResponseResult::Error(refused) = moved.try_recv().unwrap() else {
+            panic!("expected the move to be refused");
+        };
+        assert_eq!(refused.code, ErrorCode::AgentRunning);
+        assert_eq!(hub.agents[&agent].record.folder, folder);
+        assert!(resumed.try_recv().is_ok(), "the resume answered");
+    }
+
+    /// An agent the daemon resumes as it starts shows as running from the first snapshot, as
+    /// when `claude` started before the hub served any client.
+    #[tokio::test]
+    async fn a_restored_agent_shows_as_running_while_claude_starts() {
+        let temp = tempfile::tempdir().unwrap();
+        let state_dir = temp.path().join("state");
+        let folder = temp.path().join("app");
+        std::fs::create_dir_all(&folder).unwrap();
+        let agent = state_with_agent(&state_dir, &folder, true);
+        let (mut hub, mut inputs) = Hub::for_tests_with_inputs(&state_dir);
+
+        hub.start_restored_agents();
+        let while_starting: Vec<AgentStatus> = hub
+            .snapshot()
+            .agents
+            .iter()
+            .map(|summary| summary.status)
+            .collect();
+        let start = next_start(&mut hub, &mut inputs).await;
+        hub.handle(start);
+
+        assert_eq!(while_starting, [AgentStatus::Idle]);
+        // The test's `claude` cannot start.
+        let failed = hub.agents[&agent].view.summary();
+        assert_eq!(failed.status, AgentStatus::Exited);
+    }
+
+    /// `agent.start` answers once `claude` runs. Until then, nothing is listed.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_start_answers_once_claude_runs() {
+        let temp = tempfile::tempdir().unwrap();
+        let (mut hub, mut inputs) = quiet_hub(temp.path());
+        let (client, mut frames) = mpsc::channel(16);
+        hub.clients.push(client);
+        let (reply, mut answered) = oneshot::channel();
+
+        hub.request(Request::AgentStart(start_params(temp.path())), reply);
+        let at_once = answered.try_recv().is_ok();
+        let resolved = next_input(&mut inputs).await;
+        let is_resolved = matches!(resolved, HubInput::FolderResolved { .. });
+        hub.handle(resolved);
+        let waiting = (
+            answered.try_recv().is_ok(),
+            hub.agents.len(),
+            hub.new_agents.len(),
+        );
+        let started = next_input(&mut inputs).await;
+        let is_started = matches!(started, HubInput::ProcessStarted { .. });
+        hub.handle(started);
+
+        assert!(!at_once, "the folder is resolved off the hub first");
+        assert!(is_resolved && is_started);
+        assert_eq!(
+            waiting,
+            (false, 0, 1),
+            "the agent waits for claude, unlisted"
+        );
+        let Ok(ResponseResult::Ok(ResponseBody::AgentStarted { agent })) = answered.try_recv()
+        else {
+            panic!("expected the agent to start");
+        };
+        assert!(hub.agents[&agent].process.is_some());
+        assert!(hub.new_agents.is_empty());
+        let mut sent = Vec::new();
+        while let Ok(frame) = frames.try_recv() {
+            sent.push(String::from_utf8_lossy(frame.as_bytes()).into_owned());
+        }
+        assert!(
+            sent.iter()
+                .any(|event| event.contains(r#""type":"agent_added""#)),
+            "{sent:?}"
+        );
+    }
+
+    /// `accounts.remove` does not see an agent before it is listed: the new agent's start finds
+    /// its account gone, and nothing is listed.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_new_agent_whose_account_goes_while_claude_starts_is_not_listed() {
+        use cockpit_protocol::{AccountAddParams, CredentialSource};
+
+        let temp = tempfile::tempdir().unwrap();
+        let (mut hub, mut inputs) = quiet_hub(temp.path());
+        let (reply, added) = oneshot::channel();
+        let work = AccountAddParams {
+            name: "Work".to_owned(),
+            folder: Some(temp.path().join("work-claude")),
+            credentials: CredentialSource::SignIn,
+        };
+        hub.accounts_add(work, reply);
+        let Ok(ResponseResult::Ok(ResponseBody::Account(work))) = added.await else {
+            panic!("expected the account to be added");
+        };
+        let (reply, mut answered) = oneshot::channel();
+        let params = StartParams {
+            account: work.account.id,
+            ..start_params(temp.path())
+        };
+
+        hub.request(Request::AgentStart(params), reply);
+        let start = next_start(&mut hub, &mut inputs).await;
+        let removed = hub.accounts_remove(work.account.id);
+        hub.handle(start);
+
+        assert_eq!(removed, Ok(ResponseBody::Done));
+        let ResponseResult::Error(refused) = answered.try_recv().unwrap() else {
+            panic!("expected the start to fail");
+        };
+        assert_eq!(refused.code, ErrorCode::ClaudeFailed);
+        assert!(
+            refused.message.contains("no longer exists"),
+            "{}",
+            refused.message
+        );
+        assert!(hub.agents.is_empty() && hub.new_agents.is_empty());
+        assert!(!hub.raw_log_path(AgentId::new(1)).exists());
+    }
+
+    /// The `claude` that starts has the model the agent had: a model recorded meanwhile would
+    /// show on an agent that does not run it.
+    #[tokio::test]
+    async fn a_model_change_while_claude_starts_is_refused() {
+        use cockpit_protocol::SetModelParams;
+
+        let temp = tempfile::tempdir().unwrap();
+        let state_dir = temp.path().join("state");
+        let folder = temp.path().join("app");
+        std::fs::create_dir_all(&folder).unwrap();
+        let agent = state_with_agent(&state_dir, &folder, false);
+        let (mut hub, mut inputs) = Hub::for_tests_with_inputs(&state_dir);
+
+        let mut resumed = ask_resume(&mut hub, agent);
+        let (reply, mut changed) = oneshot::channel();
+        let set_model = SetModelParams {
+            agent,
+            model: "opus".to_owned(),
+        };
+        hub.set_model(set_model, reply);
+        let start = next_start(&mut hub, &mut inputs).await;
+        hub.handle(start);
+
+        let ResponseResult::Error(refused) = changed.try_recv().unwrap() else {
+            panic!("expected the model change to be refused");
+        };
+        assert_eq!(refused.code, ErrorCode::AgentExited);
+        assert_eq!(hub.agents[&agent].record.model, None);
+        assert!(resumed.try_recv().is_ok(), "the resume answered");
+    }
+
+    /// A second start would run a second `claude` on the session.
+    #[tokio::test]
+    async fn a_resume_while_claude_starts_is_refused() {
+        let temp = tempfile::tempdir().unwrap();
+        let state_dir = temp.path().join("state");
+        let folder = temp.path().join("app");
+        std::fs::create_dir_all(&folder).unwrap();
+        let agent = state_with_agent(&state_dir, &folder, false);
+        let (mut hub, mut inputs) = Hub::for_tests_with_inputs(&state_dir);
+
+        let mut first = ask_resume(&mut hub, agent);
+        let mut second = ask_resume(&mut hub, agent);
+        let first_waits = first.try_recv().is_err();
+        let start = next_start(&mut hub, &mut inputs).await;
+        hub.handle(start);
+
+        assert!(first_waits, "the first resume waits for claude");
+        let ResponseResult::Error(refused) = second.try_recv().unwrap() else {
+            panic!("expected the second resume to be refused");
+        };
+        assert_eq!(refused.code, ErrorCode::AgentRunning);
+        // The test's `claude` cannot start: the first resume says so.
+        let ResponseResult::Error(failed) = first.try_recv().unwrap() else {
+            panic!("expected the first resume to fail");
+        };
+        assert_eq!(failed.code, ErrorCode::ClaudeFailed);
+    }
+
+    /// The resume answers once its start comes back, and the agent is gone by then.
+    #[tokio::test]
+    async fn a_close_while_claude_starts_answers_the_resume() {
+        let temp = tempfile::tempdir().unwrap();
+        let state_dir = temp.path().join("state");
+        let folder = temp.path().join("app");
+        std::fs::create_dir_all(&folder).unwrap();
+        let agent = state_with_agent(&state_dir, &folder, false);
+        let (mut hub, mut inputs) = Hub::for_tests_with_inputs(&state_dir);
+
+        let mut resumed = ask_resume(&mut hub, agent);
+        let closed = hub.close(agent);
+        let start = next_start(&mut hub, &mut inputs).await;
+        hub.handle(start);
+
+        assert_eq!(closed, Ok(ResponseBody::Done));
+        let ResponseResult::Error(gone) = resumed.try_recv().unwrap() else {
+            panic!("expected the resume to find no agent");
+        };
+        assert_eq!(gone.code, ErrorCode::NotFound);
+        assert!(hub.agents.is_empty());
+    }
+
+    /// Two resumes of a past session that has no agent, as after a double click: the second waits
+    /// for the agent the first starts, so that the session does not run twice.
+    #[tokio::test]
+    async fn a_second_resume_of_a_session_gets_the_answer_of_the_first() {
+        let temp = tempfile::tempdir().unwrap();
+        let (mut hub, mut inputs) = Hub::for_tests_with_inputs(&temp.path().join("state"));
+        let folder = temp.path().to_owned();
+        let (first, mut first_answer) = oneshot::channel();
+        let (second, mut second_answer) = oneshot::channel();
+
+        hub.resume_session(
+            past_session(&folder),
+            Ok(folder.clone()),
+            Instant::now(),
+            first,
+        );
+        hub.resume_session(
+            past_session(&folder),
+            Ok(folder.clone()),
+            Instant::now(),
+            second,
+        );
+        let second_waits = second_answer.try_recv().is_err();
+        let start = next_start(&mut hub, &mut inputs).await;
+        hub.handle(start);
+        let more_starts = inputs.try_recv().is_ok();
+
+        assert!(second_waits, "the second resume waits for the first");
+        assert!(!more_starts, "one claude starts");
+        // The test's `claude` cannot start: both resumes say so.
+        let first = first_answer.try_recv().unwrap();
+        let ResponseResult::Error(failed) = &first else {
+            panic!("expected the first resume to fail");
+        };
+        assert_eq!(failed.code, ErrorCode::ClaudeFailed);
+        assert_eq!(second_answer.try_recv().unwrap(), first);
+        assert!(hub.new_agents.is_empty());
+    }
+
+    /// The second resume of a session, asked while the first starts it, gets the agent the first
+    /// lists, as when it is asked after.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_second_resume_of_a_session_gets_the_agent_the_first_starts() {
+        let temp = tempfile::tempdir().unwrap();
+        let (mut hub, mut inputs) = quiet_hub(temp.path());
+        let folder = temp.path().to_owned();
+        let (first, mut first_answer) = oneshot::channel();
+        let (second, mut second_answer) = oneshot::channel();
+
+        hub.resume_session(
+            past_session(&folder),
+            Ok(folder.clone()),
+            Instant::now(),
+            first,
+        );
+        hub.resume_session(
+            past_session(&folder),
+            Ok(folder.clone()),
+            Instant::now(),
+            second,
+        );
+        let start = next_start(&mut hub, &mut inputs).await;
+        hub.handle(start);
+
+        let started = ResponseResult::Ok(ResponseBody::AgentStarted {
+            agent: AgentId::new(1),
+        });
+        assert_eq!(first_answer.try_recv().unwrap(), started);
+        assert_eq!(second_answer.try_recv().unwrap(), started);
+        assert_eq!(hub.agents.len(), 1);
+    }
+
+    /// A fork names the session it forks until its `claude` reports its own: it takes no session
+    /// over, so the session still resumes meanwhile.
+    #[tokio::test]
+    async fn a_starting_fork_does_not_hold_back_the_session_it_forks() {
+        let temp = tempfile::tempdir().unwrap();
+        let (mut hub, mut inputs) = Hub::for_tests_with_inputs(&temp.path().join("state"));
+        let folder = temp.path().to_owned();
+        let fork = AgentRecord {
+            id: AgentId::new(7),
+            title: "Fix the cart (fork)".to_owned(),
+            folder: folder.clone(),
+            session: Some(ClaudeSessionId::new(SESSION.to_owned())),
+            model: None,
+            effort: None,
+            mode: None,
+            running: true,
+            started_at: Timestamp::from_unix_millis(0),
+            past: None,
+            position: Position::default(),
+            process: None,
+            account: AccountId::DEFAULT,
+            mark: Mark::Unmarked,
+            resume_as: ResumeAs::Fork,
+        };
+        let starting = start::StartingAgent {
+            record: fork,
+            also_waiting: Vec::new(),
+        };
+        hub.new_agents.insert(AgentId::new(7), starting);
+        let (reply, mut answered) = oneshot::channel();
+
+        hub.resume_session(
+            past_session(&folder),
+            Ok(folder.clone()),
+            Instant::now(),
+            reply,
+        );
+        let start = next_start(&mut hub, &mut inputs).await;
+        hub.handle(start);
+
+        // The test's `claude` cannot start: the resume got past the check.
+        let ResponseResult::Error(failed) = answered.try_recv().unwrap() else {
+            panic!("expected the resume to fail");
+        };
+        assert_eq!(failed.code, ErrorCode::ClaudeFailed);
+    }
+
+    /// The process that a stopped start brings late is killed, and the next start's runs.
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn a_late_start_of_an_old_generation_is_killed() {
+        use cockpit_protocol::ProcessId;
+
+        let temp = tempfile::tempdir().unwrap();
+        let state_dir = temp.path().join("state");
+        let folder = temp.path().join("app");
+        std::fs::create_dir_all(&folder).unwrap();
+        let agent = state_with_agent(&state_dir, &folder, false);
+        let (mut hub, mut inputs) = Hub::for_tests_with_inputs(&state_dir);
+        let claude = temp.path().join("claude");
+        // `write_script` runs it once without arguments, in the test's working folder.
+        test_script::write_script(
+            &claude,
+            "#!/bin/sh\n[ $# -gt 0 ] && echo $$ >> claude.pids\nwhile read -r line; do :; done\n",
+        );
+        hub.config.claude_program = claude;
+        let pids_file = folder.join("claude.pids");
+        let pids = || -> Vec<u32> {
+            let text = std::fs::read_to_string(&pids_file).unwrap_or_default();
+            text.lines().filter_map(|line| line.parse().ok()).collect()
+        };
+
+        let mut stopped = ask_resume(&mut hub, agent);
+        let late = next_start(&mut hub, &mut inputs).await;
+        assert!(eventually(|| pids().len() == 1).await);
+        hub.stop(agent).unwrap();
+        let mut resumed = ask_resume(&mut hub, agent);
+        let current = next_start(&mut hub, &mut inputs).await;
+        assert!(eventually(|| pids().len() == 2).await);
+        hub.handle(late);
+        let attached_late = hub.agents[&agent].process.is_some();
+        hub.handle(current);
+
+        let [late_pid, current_pid] = pids()[..] else {
+            panic!("expected two processes");
+        };
+        assert!(!attached_late);
+        let attached = hub.agents[&agent]
+            .process
+            .as_ref()
+            .and_then(|process| process.pid());
+        assert_eq!(attached.map(ProcessId::get), Some(current_pid));
+        assert!(
+            eventually(|| !test_script::runs(late_pid)).await,
+            "the late process was killed"
+        );
+        assert!(test_script::runs(current_pid));
+        // Each resume answers once, with what its start did.
+        assert_eq!(
+            stopped.try_recv().unwrap(),
+            ResponseResult::Ok(ResponseBody::Done)
+        );
+        assert_eq!(
+            resumed.try_recv().unwrap(),
+            ResponseResult::Ok(ResponseBody::Done)
+        );
+    }
+
+    /// A prompt sent while `claude` starts waits in the queue, and goes to `claude` once it runs.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_prompt_sent_while_claude_starts_reaches_it() {
+        let temp = tempfile::tempdir().unwrap();
+        let state_dir = temp.path().join("state");
+        let folder = temp.path().join("app");
+        std::fs::create_dir_all(&folder).unwrap();
+        let agent = state_with_agent(&state_dir, &folder, false);
+        let (mut hub, mut inputs) = Hub::for_tests_with_inputs(&state_dir);
+        let claude = temp.path().join("claude");
+        // Its output stays open: the daemon stops writing to a `claude` whose output ended.
+        let script =
+            "#!/bin/sh\nwhile read -r line; do printf '%s\\n' \"$line\" >> claude.stdin; done\n";
+        test_script::write_script(&claude, script);
+        hub.config.claude_program = claude;
+
+        let mut resumed = ask_resume(&mut hub, agent);
+        let sent = hub.prompt(agent, prompt("Fix the cart total"), PromptDelivery::Steer);
+        let waiting: Vec<(String, WaitingState)> = hub.agents[&agent]
+            .view
+            .details()
+            .waiting_prompts
+            .iter()
+            .map(|waiting| (waiting.text.clone(), waiting.state))
+            .collect();
+        let start = next_start(&mut hub, &mut inputs).await;
+        hub.handle(start);
+
+        assert_eq!(sent, Ok(ResponseBody::Done));
+        assert_eq!(
+            waiting,
+            [("Fix the cart total".to_owned(), WaitingState::Queued)]
+        );
+        assert_eq!(
+            resumed.try_recv().unwrap(),
+            ResponseResult::Ok(ResponseBody::Done)
+        );
+        let view = &hub.agents[&agent].view;
+        assert!(view.details().waiting_prompts.is_empty());
+        assert!(view.items().iter().any(|item| matches!(
+            &item.body,
+            ItemBody::UserMessage(message) if message.text == "Fix the cart total"
+        )));
+        let stdin = folder.join("claude.stdin");
+        let received = || {
+            std::fs::read_to_string(&stdin).is_ok_and(|text| text.contains("Fix the cart total"))
+        };
+        assert!(eventually(received).await, "claude got the prompt");
+    }
+
+    /// A stop while `claude` starts gives the start up: the agent stays stopped, and the prompt
+    /// that waited shows as not sent.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_stop_while_claude_starts_gives_the_start_up() {
+        let temp = tempfile::tempdir().unwrap();
+        let state_dir = temp.path().join("state");
+        let folder = temp.path().join("app");
+        std::fs::create_dir_all(&folder).unwrap();
+        let agent = state_with_agent(&state_dir, &folder, false);
+        let (mut hub, mut inputs) = Hub::for_tests_with_inputs(&state_dir);
+        let claude = temp.path().join("claude");
+        test_script::write_script(&claude, "#!/bin/sh\nexec cat >/dev/null\n");
+        hub.config.claude_program = claude;
+
+        let mut resumed = ask_resume(&mut hub, agent);
+        hub.prompt(agent, prompt("Then run the tests"), PromptDelivery::Queue)
+            .unwrap();
+        let stopped = hub.stop(agent);
+        let start = next_start(&mut hub, &mut inputs).await;
+        hub.handle(start);
+        let refused = hub
+            .prompt(agent, prompt("One more thing"), PromptDelivery::Steer)
             .unwrap_err();
 
-        assert_eq!(relative.code, ErrorCode::InvalidRequest);
-        assert_eq!(missing.code, ErrorCode::NotFound);
-        assert!(hub.agents.is_empty());
+        assert_eq!(stopped, Ok(ResponseBody::Done));
+        let stopped = &hub.agents[&agent];
+        assert!(stopped.process.is_none() && !stopped.starting);
+        assert!(!stopped.record.running);
+        assert!(stopped.queue.is_empty());
+        assert!(stopped.view.details().waiting_prompts.is_empty());
+        assert_eq!(
+            notices(&stopped.view),
+            [
+                (STOPPED_WHILE_STARTING.to_owned(), None),
+                (
+                    "Message not sent".to_owned(),
+                    Some("Then run the tests".to_owned())
+                ),
+            ]
+        );
+        assert_eq!(refused.code, ErrorCode::AgentExited);
+        assert_eq!(
+            resumed.try_recv().unwrap(),
+            ResponseResult::Ok(ResponseBody::Done)
+        );
+        let saved = AgentsFile::load(&hub.state.agents_file()).unwrap();
+        assert!(saved.agents.iter().all(|record| !record.running));
+    }
+
+    /// A restored agent whose `claude` cannot start says why before the prompt that waited shows
+    /// as not sent, as an exit does.
+    #[tokio::test]
+    async fn a_restored_agent_that_cannot_start_says_why_before_the_prompt_not_sent() {
+        let temp = tempfile::tempdir().unwrap();
+        let state_dir = temp.path().join("state");
+        let folder = temp.path().join("app");
+        std::fs::create_dir_all(&folder).unwrap();
+        let agent = state_with_agent(&state_dir, &folder, true);
+        let (mut hub, mut inputs) = Hub::for_tests_with_inputs(&state_dir);
+
+        hub.start_restored_agents();
+        hub.prompt(agent, prompt("Fix the cart total"), PromptDelivery::Steer)
+            .unwrap();
+        let start = next_start(&mut hub, &mut inputs).await;
+        hub.handle(start);
+
+        let shown = notices(&hub.agents[&agent].view);
+        let [(cause, None), not_sent] = &shown[..] else {
+            panic!("expected the cause and the prompt not sent: {shown:?}");
+        };
+        assert!(cause.starts_with("cannot start claude: "), "{cause}");
+        assert_eq!(
+            *not_sent,
+            (
+                "Message not sent".to_owned(),
+                Some("Fix the cart total".to_owned())
+            )
+        );
     }
 
     /// A close takes out a running agent at once, with its log, and tells the clients.
     #[cfg(unix)]
     #[tokio::test]
     async fn a_close_removes_a_running_agent_and_its_log() {
-        use std::fs::Permissions;
-        use std::os::unix::fs::PermissionsExt;
-
-        use tokio::sync::mpsc;
-
         let temp = tempfile::tempdir().unwrap();
-        let mut hub = Hub::for_tests(&temp.path().join("state"));
-        let claude = temp.path().join("claude");
-        std::fs::write(&claude, "#!/bin/sh\nexec cat >/dev/null\n").unwrap();
-        std::fs::set_permissions(&claude, Permissions::from_mode(0o755)).unwrap();
-        hub.config.claude_program = claude;
-        let start = StartParams {
-            folder: temp.path().to_owned(),
-            title: None,
-            model: None,
-            effort: None,
-            mode: None,
-            prompt: None,
-            account: AccountId::DEFAULT,
-        };
-        let Ok(ResponseBody::AgentStarted { agent }) = hub.start_agent(start) else {
-            panic!("the agent did not start");
-        };
+        let (mut hub, mut inputs) = quiet_hub(temp.path());
+        let agent = started(&mut hub, &mut inputs, temp.path()).await;
         let log = hub.logs.path(LogName::Agent(agent));
         let (client, mut frames) = mpsc::channel(16);
         hub.clients.push(client);
@@ -1171,7 +1853,7 @@ mod tests {
         assert_eq!(again.code, ErrorCode::NotFound);
         assert!(hub.agents.is_empty());
         assert!(!log.exists());
-        let saved = crate::store::AgentsFile::load(&hub.state.agents_file()).unwrap();
+        let saved = AgentsFile::load(&hub.state.agents_file()).unwrap();
         assert!(saved.agents.is_empty());
         let frame = frames.try_recv().unwrap();
         let sent = String::from_utf8_lossy(frame.as_bytes()).into_owned();
@@ -1184,31 +1866,13 @@ mod tests {
     #[tokio::test]
     async fn a_stopping_agent_takes_no_prompt() {
         let temp = tempfile::tempdir().unwrap();
-        let mut hub = Hub::for_tests(&temp.path().join("state"));
-        let claude = temp.path().join("claude");
-        test_script::write_script(&claude, "#!/bin/sh\nexec cat >/dev/null\n");
-        hub.config.claude_program = claude;
-        let start = StartParams {
-            folder: temp.path().to_owned(),
-            title: None,
-            model: None,
-            effort: None,
-            mode: None,
-            prompt: None,
-            account: AccountId::DEFAULT,
-        };
-        let Ok(ResponseBody::AgentStarted { agent }) = hub.start_agent(start) else {
-            panic!("the agent did not start");
-        };
+        let (mut hub, mut inputs) = quiet_hub(temp.path());
+        let agent = started(&mut hub, &mut inputs, temp.path()).await;
         let items_before = hub.agents[&agent].view.items().len();
 
         hub.stop(agent).unwrap();
-        let prompt = Prompt {
-            text: "one more thing".to_owned(),
-            images: Vec::new(),
-        };
         let refused = hub
-            .prompt(agent, prompt, PromptDelivery::Steer)
+            .prompt(agent, prompt("one more thing"), PromptDelivery::Steer)
             .unwrap_err();
 
         assert_eq!(refused.code, ErrorCode::AgentExited);
@@ -1220,24 +1884,10 @@ mod tests {
     #[tokio::test]
     async fn a_mark_is_saved_and_a_prompt_clears_it() {
         let temp = tempfile::tempdir().unwrap();
-        let mut hub = Hub::for_tests(&temp.path().join("state"));
-        let claude = temp.path().join("claude");
-        test_script::write_script(&claude, "#!/bin/sh\nexec cat >/dev/null\n");
-        hub.config.claude_program = claude;
-        let start = StartParams {
-            folder: temp.path().to_owned(),
-            title: None,
-            model: None,
-            effort: None,
-            mode: None,
-            prompt: None,
-            account: AccountId::DEFAULT,
-        };
-        let Ok(ResponseBody::AgentStarted { agent }) = hub.start_agent(start) else {
-            panic!("the agent did not start");
-        };
+        let (mut hub, mut inputs) = quiet_hub(temp.path());
+        let agent = started(&mut hub, &mut inputs, temp.path()).await;
         let saved = |hub: &Hub| {
-            let file = crate::store::AgentsFile::load(&hub.state.agents_file()).unwrap();
+            let file = AgentsFile::load(&hub.state.agents_file()).unwrap();
             file.agents
                 .iter()
                 .any(|record| record.mark == Mark::ToHandle)
@@ -1249,11 +1899,8 @@ mod tests {
         })
         .unwrap();
         let marked = (hub.agents[&agent].view.summary().mark, saved(&hub));
-        let prompt = Prompt {
-            text: "go on".to_owned(),
-            images: Vec::new(),
-        };
-        hub.prompt(agent, prompt, PromptDelivery::Steer).unwrap();
+        hub.prompt(agent, prompt("go on"), PromptDelivery::Steer)
+            .unwrap();
         let unknown = hub
             .mark(MarkParams {
                 agent: AgentId::new(9),
@@ -1272,33 +1919,16 @@ mod tests {
     #[tokio::test]
     async fn a_kept_mark_stays_through_a_prompt() {
         let temp = tempfile::tempdir().unwrap();
-        let mut hub = Hub::for_tests(&temp.path().join("state"));
-        let claude = temp.path().join("claude");
-        test_script::write_script(&claude, "#!/bin/sh\nexec cat >/dev/null\n");
-        hub.config.claude_program = claude;
-        let start = StartParams {
-            folder: temp.path().to_owned(),
-            title: None,
-            model: None,
-            effort: None,
-            mode: None,
-            prompt: None,
-            account: AccountId::DEFAULT,
-        };
-        let Ok(ResponseBody::AgentStarted { agent }) = hub.start_agent(start) else {
-            panic!("the agent did not start");
-        };
+        let (mut hub, mut inputs) = quiet_hub(temp.path());
+        let agent = started(&mut hub, &mut inputs, temp.path()).await;
         hub.mark(MarkParams {
             agent,
             mark: Mark::ToHandleKept,
         })
         .unwrap();
-        let prompt = Prompt {
-            text: "go on".to_owned(),
-            images: Vec::new(),
-        };
 
-        hub.prompt(agent, prompt, PromptDelivery::Steer).unwrap();
+        hub.prompt(agent, prompt("go on"), PromptDelivery::Steer)
+            .unwrap();
 
         assert_eq!(hub.agents[&agent].view.summary().mark, Mark::ToHandleKept);
         assert_eq!(hub.agents[&agent].record.mark, Mark::ToHandleKept);
@@ -1308,31 +1938,11 @@ mod tests {
     #[cfg(unix)]
     #[tokio::test]
     async fn a_stop_that_releases_the_sent_prompts_starts_the_queued_one() {
-        use cockpit_protocol::ItemBody;
         use serde_json::json;
-        use tokio::sync::oneshot;
 
         let temp = tempfile::tempdir().unwrap();
-        let mut hub = Hub::for_tests(&temp.path().join("state"));
-        let claude = temp.path().join("claude");
-        test_script::write_script(&claude, "#!/bin/sh\nexec cat >/dev/null\n");
-        hub.config.claude_program = claude;
-        let start = StartParams {
-            folder: temp.path().to_owned(),
-            title: None,
-            model: None,
-            effort: None,
-            mode: None,
-            prompt: None,
-            account: AccountId::DEFAULT,
-        };
-        let Ok(ResponseBody::AgentStarted { agent }) = hub.start_agent(start) else {
-            panic!("the agent did not start");
-        };
-        let prompt = |text: &str| Prompt {
-            text: text.to_owned(),
-            images: Vec::new(),
-        };
+        let (mut hub, mut inputs) = quiet_hub(temp.path());
+        let agent = started(&mut hub, &mut inputs, temp.path()).await;
         hub.prompt(agent, prompt("First"), PromptDelivery::Steer)
             .unwrap();
         hub.prompt(agent, prompt("Lost"), PromptDelivery::Steer)
@@ -1369,27 +1979,17 @@ mod tests {
     #[cfg(unix)]
     #[tokio::test]
     async fn a_new_agent_takes_the_repository_of_another_agent_in_its_folder() {
-        use tokio::sync::mpsc;
-
         let temp = tempfile::tempdir().unwrap();
-        let mut hub = Hub::for_tests(&temp.path().join("state"));
-        let claude = temp.path().join("claude");
-        test_script::write_script(&claude, "#!/bin/sh\nexec cat >/dev/null\n");
-        hub.config.claude_program = claude;
+        let (mut hub, mut inputs) = quiet_hub(temp.path());
         let folder = temp.path().join("shop");
         std::fs::create_dir_all(&folder).unwrap();
-        let start = || StartParams {
-            folder: folder.clone(),
-            title: None,
-            model: None,
-            effort: None,
-            mode: None,
-            prompt: None,
-            account: AccountId::DEFAULT,
-        };
-        let Ok(ResponseBody::AgentStarted { agent: first }) = hub.start_agent(start()) else {
-            panic!("the first agent did not start");
-        };
+        let first = started(&mut hub, &mut inputs, &folder).await;
+        // The first agent's own read finds no repository: it comes back before the test gives
+        // the agent one.
+        while !hub.repository_reads.is_empty() {
+            let input = next_input(&mut inputs).await;
+            hub.handle(input);
+        }
         let shop = Repository::from_remote("github.com/acme/shop");
         if let Some(agent) = hub.agents.get_mut(&first) {
             agent.view.set_repository(Some(shop.clone()));
@@ -1397,9 +1997,7 @@ mod tests {
         let (client, mut frames) = mpsc::channel(16);
         hub.clients.push(client);
 
-        let Ok(ResponseBody::AgentStarted { agent: second }) = hub.start_agent(start()) else {
-            panic!("the second agent did not start");
-        };
+        let second = started(&mut hub, &mut inputs, &folder).await;
 
         assert_eq!(hub.agents[&second].view.summary().repository, Some(shop));
         let mut added = None;
@@ -1420,9 +2018,9 @@ mod tests {
     /// comes back.
     #[tokio::test]
     async fn a_restored_agent_keeps_its_repository_until_its_folder_is_read() {
-        use cockpit_protocol::{EventRecord, Frame, Seq, ServerMessage, Timestamp};
+        use cockpit_protocol::{EventRecord, Frame, Seq, ServerMessage};
 
-        use crate::store::{AgentsFile, EventLogs, StateDir};
+        use crate::store::EventLogs;
 
         let temp = tempfile::tempdir().unwrap();
         let folder = temp.path().join("shop");
@@ -1495,10 +2093,6 @@ mod tests {
     /// Many agents in a folder on a mount that does not answer would otherwise hold a thread each.
     #[tokio::test]
     async fn the_agents_of_one_folder_share_one_read_of_its_repository() {
-        use cockpit_protocol::Timestamp;
-
-        use crate::store::{AgentsFile, StateDir};
-
         let temp = tempfile::tempdir().unwrap();
         let folder = temp.path().join("shop");
         std::fs::create_dir_all(folder.join(".git")).unwrap();

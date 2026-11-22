@@ -62,26 +62,32 @@ mod tests {
 
     use cockpit_protocol::{
         AccountId, ClaudeSessionId, Effort, ErrorCode, Mark, PastSession, PermissionMode, Position,
-        RenameParams, ResponseResult, StartParams, Timestamp,
+        RenameParams, Request, StartParams, Timestamp,
     };
     use tokio::sync::{mpsc, oneshot};
 
     use super::*;
+    use crate::hub::HubInput;
     use crate::hub::closed_choices::KEPT_FOR;
     use crate::sessions::{FoundSession, SessionPast};
     use crate::store::{AgentRecord, AgentsFile, PastFile, ResumeAs, StateDir};
     use crate::test_script;
 
-    /// A hub whose `claude` reads its stdin and says nothing.
-    fn hub(folder: &Path) -> Hub {
-        let mut hub = Hub::for_tests(&folder.join("state"));
+    /// A hub whose `claude` reads its stdin and says nothing, and the inputs its tasks send it.
+    fn hub(folder: &Path) -> (Hub, mpsc::Receiver<HubInput>) {
+        let (mut hub, inputs) = Hub::for_tests_with_inputs(&folder.join("state"));
         let claude = folder.join("claude");
         test_script::write_script(&claude, "#!/bin/sh\nexec cat >/dev/null\n");
         hub.config.claude_program = claude;
-        hub
+        (hub, inputs)
     }
 
-    fn start(hub: &mut Hub, folder: &Path, title: &str) -> AgentId {
+    async fn start(
+        hub: &mut Hub,
+        inputs: &mut mpsc::Receiver<HubInput>,
+        folder: &Path,
+        title: &str,
+    ) -> AgentId {
         let params = StartParams {
             folder: folder.to_owned(),
             title: Some(title.to_owned()),
@@ -91,10 +97,24 @@ mod tests {
             prompt: None,
             account: AccountId::DEFAULT,
         };
-        match hub.start_agent(params) {
+        match hub.ask(inputs, Request::AgentStart(params)).await {
             Ok(ResponseBody::AgentStarted { agent }) => agent,
             other => panic!("the agent did not start: {other:?}"),
         }
+    }
+
+    /// Resumes the past session [`SESSION`] in `folder`, handing the hub its inputs until it
+    /// answers.
+    async fn resume_session(
+        hub: &mut Hub,
+        inputs: &mut mpsc::Receiver<HubInput>,
+        folder: &Path,
+        asked_at: Instant,
+    ) -> Result<ResponseBody, ErrorBody> {
+        let (reply, answered) = oneshot::channel();
+        let found = past_session(folder);
+        hub.resume_session(found, Ok(folder.to_owned()), asked_at, reply);
+        hub.await_answer(inputs, answered).await
     }
 
     fn order(hub: &Hub) -> Vec<u32> {
@@ -118,9 +138,9 @@ mod tests {
     #[tokio::test]
     async fn a_new_agent_goes_on_top_and_a_move_publishes_the_moved_agent_alone() {
         let temp = tempfile::tempdir().unwrap();
-        let mut hub = hub(temp.path());
+        let (mut hub, mut inputs) = hub(temp.path());
         for title in ["First", "Second", "Third"] {
-            start(&mut hub, temp.path(), title);
+            start(&mut hub, &mut inputs, temp.path(), title).await;
         }
         let after_start = order(&hub);
         let (client, mut frames) = mpsc::channel(16);
@@ -153,9 +173,9 @@ mod tests {
     #[tokio::test]
     async fn an_agent_moves_to_the_bottom_and_back() {
         let temp = tempfile::tempdir().unwrap();
-        let mut hub = hub(temp.path());
+        let (mut hub, mut inputs) = hub(temp.path());
         for title in ["First", "Second", "Third"] {
-            start(&mut hub, temp.path(), title);
+            start(&mut hub, &mut inputs, temp.path(), title).await;
         }
 
         hub.move_agent(move_params(3, None)).unwrap();
@@ -172,9 +192,9 @@ mod tests {
     #[tokio::test]
     async fn a_rename_or_a_stop_does_not_move_an_agent() {
         let temp = tempfile::tempdir().unwrap();
-        let mut hub = hub(temp.path());
+        let (mut hub, mut inputs) = hub(temp.path());
         for title in ["First", "Second"] {
-            start(&mut hub, temp.path(), title);
+            start(&mut hub, &mut inputs, temp.path(), title).await;
         }
         let before = hub.places();
 
@@ -268,8 +288,8 @@ mod tests {
     #[tokio::test]
     async fn a_resume_asked_too_late_starts_without_the_choices() {
         let temp = tempfile::tempdir().unwrap();
-        let mut hub = hub(temp.path());
-        let first = start(&mut hub, temp.path(), "First");
+        let (mut hub, mut inputs) = hub(temp.path());
+        let first = start(&mut hub, &mut inputs, temp.path(), "First").await;
         if let Some(agent) = hub.agents.get_mut(&first) {
             agent.record.session = Some(ClaudeSessionId::new(SESSION.to_owned()));
             agent.record.mode = Some(PermissionMode::Auto);
@@ -280,7 +300,9 @@ mod tests {
             .checked_add(KEPT_FOR + Duration::from_secs(1))
             .unwrap_or(now);
 
-        hub.resume_session(past_session(temp.path()), late, oneshot::channel().0);
+        resume_session(&mut hub, &mut inputs, temp.path(), late)
+            .await
+            .unwrap();
         let back = hub.agents.values().next().map(|agent| agent.record.mode);
 
         assert_eq!(back, Some(None));
@@ -291,8 +313,8 @@ mod tests {
     #[tokio::test]
     async fn a_closed_agents_session_comes_back_with_its_choices() {
         let temp = tempfile::tempdir().unwrap();
-        let mut hub = hub(temp.path());
-        let first = start(&mut hub, temp.path(), "First");
+        let (mut hub, mut inputs) = hub(temp.path());
+        let first = start(&mut hub, &mut inputs, temp.path(), "First").await;
         if let Some(agent) = hub.agents.get_mut(&first) {
             agent.record.session = Some(ClaudeSessionId::new(SESSION.to_owned()));
             agent.record.model = Some("opus[1m]".to_owned());
@@ -302,16 +324,13 @@ mod tests {
         hub.close(first).unwrap();
         let claude = hub.config.claude_program.clone();
         hub.config.claude_program = temp.path().join("no-claude");
-        let (reply, mut failed) = oneshot::channel();
-        hub.resume_session(past_session(temp.path()), Instant::now(), reply);
+        let failed = resume_session(&mut hub, &mut inputs, temp.path(), Instant::now()).await;
         hub.config.claude_program = claude;
 
-        hub.resume_session(
-            past_session(temp.path()),
-            Instant::now(),
-            oneshot::channel().0,
-        );
-        assert!(matches!(failed.try_recv(), Ok(ResponseResult::Error(_))));
+        resume_session(&mut hub, &mut inputs, temp.path(), Instant::now())
+            .await
+            .unwrap();
+        assert!(failed.is_err(), "{failed:?}");
         let back = hub.agents.values().next().map(|agent| &agent.record);
 
         assert_eq!(
@@ -328,16 +347,15 @@ mod tests {
     #[tokio::test]
     async fn a_resumed_past_session_goes_on_top() {
         let temp = tempfile::tempdir().unwrap();
-        let mut hub = hub(temp.path());
-        start(&mut hub, temp.path(), "First");
-        let (reply, mut answer) = oneshot::channel();
+        let (mut hub, mut inputs) = hub(temp.path());
+        start(&mut hub, &mut inputs, temp.path(), "First").await;
 
-        hub.resume_session(past_session(temp.path()), Instant::now(), reply);
+        let answer = resume_session(&mut hub, &mut inputs, temp.path(), Instant::now()).await;
 
         let started = ResponseBody::AgentStarted {
             agent: AgentId::new(2),
         };
-        assert_eq!(answer.try_recv().unwrap(), ResponseResult::Ok(started));
+        assert_eq!(answer, Ok(started));
         assert_eq!(order(&hub), [2, 1]);
     }
 }

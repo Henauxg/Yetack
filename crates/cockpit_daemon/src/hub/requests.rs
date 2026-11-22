@@ -18,7 +18,7 @@ use crate::daemon_config::HOME_ENV;
 use crate::git::GitError;
 use crate::hub::input::{ControlPurpose, HubInput, Reply};
 use crate::hub::state::{Agent, Hub};
-use crate::hub::{agents, errors, history};
+use crate::hub::{agents, errors, history, start};
 use crate::machine_load::AgentRoot;
 use crate::read_file::{Content, Found};
 use crate::sessions::AccountFolder;
@@ -41,7 +41,7 @@ struct FileAccess {
 impl Hub {
     pub(super) fn request(&mut self, request: Request, reply: Reply) {
         match request {
-            Request::AgentStart(params) => agents::respond(reply, self.start_agent(params)),
+            Request::AgentStart(params) => self.start_agent(params, reply),
             Request::AgentPrompt(params) => agents::respond(
                 reply,
                 self.prompt(params.agent, params.prompt, params.delivery),
@@ -57,7 +57,7 @@ impl Hub {
                 ControlPurpose::Interrupt(reply),
             ),
             Request::AgentStop(params) => agents::respond(reply, self.stop(params.agent)),
-            Request::AgentResume(params) => agents::respond(reply, self.resume(params.agent)),
+            Request::AgentResume(params) => self.resume(params.agent, ResponseBody::Done, reply),
             Request::AgentRemove(params) => agents::respond(reply, self.remove(params.agent)),
             Request::AgentClose(params) => agents::respond(reply, self.close(params.agent)),
             Request::AgentHistory(params) => agents::respond(reply, self.history(params)),
@@ -419,23 +419,15 @@ impl Hub {
         });
     }
 
-    /// Finds the session on disk and reads its transcript in a task, which hands them back to the
-    /// hub before the agent exists.
+    /// Finds the session on disk, reads its transcript and resolves its folder in a task, which
+    /// hands them back to the hub before the agent exists.
     fn sessions_resume(&mut self, params: SessionResumeParams, reply: Reply) {
         let account = match self.account(params.account) {
             Ok(account) => account,
             Err(error) => return agents::respond(reply, Err(error)),
         };
         if let Some(agent) = self.agent_with_session(&params.session, account.id) {
-            if self
-                .agents
-                .get(&agent)
-                .is_some_and(|found| found.process.is_none())
-                && let Err(error) = self.resume(agent)
-            {
-                return agents::respond(reply, Err(error));
-            }
-            return agents::respond(reply, Ok(ResponseBody::AgentStarted { agent }));
+            return self.resume_for_session(agent, reply);
         }
         let folder = AccountFolder {
             account: account.id,
@@ -452,18 +444,17 @@ impl Hub {
             let found = finding.await;
             match found {
                 Ok(Some(found)) => {
+                    let folder = start::resolve(found.session.folder.clone()).await;
                     let input = HubInput::SessionFound {
                         found: Box::new(found),
+                        folder,
                         asked_at,
                         reply,
                     };
                     if let Err(unsent) = inputs.send(input).await
                         && let HubInput::SessionFound { reply, .. } = unsent.0
                     {
-                        agents::respond(
-                            reply,
-                            Err(errors::internal("the daemon is stopping".to_owned())),
-                        );
+                        agents::respond(reply, Err(errors::stopping()));
                     }
                 }
                 Ok(None) => agents::respond(

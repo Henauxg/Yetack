@@ -9,8 +9,12 @@ use cockpit_protocol::{
     AccountId, AccountPlanUsage, AgentDetails, AgentId, Event, EventRecord, Frame, PlanUsage,
     Prompt, PromptId, Seq, ServerMessage, SignIn, Snapshot, Timestamp,
 };
+#[cfg(test)]
+use cockpit_protocol::{ErrorBody, Request, ResponseBody, ResponseResult};
 use tokio::runtime::Handle;
 use tokio::sync::mpsc;
+#[cfg(test)]
+use tokio::sync::oneshot;
 use tokio::time::MissedTickBehavior;
 
 use crate::daemon_config::DaemonConfig;
@@ -18,6 +22,7 @@ use crate::hub::closed_choices::ClosedChoices;
 use crate::hub::folders::PendingMove;
 use crate::hub::input::{ControlPurpose, HubInput, Joined, Registration};
 use crate::hub::restore::Restored;
+use crate::hub::start::StartingAgent;
 use crate::hub::terminals::Terminals;
 use crate::machine_load::LoadSampler;
 use crate::process::ProcessHandle;
@@ -67,6 +72,8 @@ pub(crate) struct Hub {
     /// The agents' folders whose repository a task reads: one task per folder, however many
     /// agents it holds.
     pub(super) repository_reads: BTreeSet<PathBuf>,
+    /// The new agents whose first `claude` starts. Each is listed once it runs.
+    pub(super) new_agents: BTreeMap<AgentId, StartingAgent>,
 }
 
 pub(super) struct Agent {
@@ -77,6 +84,9 @@ pub(super) struct Agent {
     pub(super) process: Option<ProcessHandle<ControlPurpose>>,
     /// Counts the agent's processes, so that a late event of an old one is ignored.
     pub(super) generation: u32,
+    /// A task starts `claude` for the agent, as process `generation`. Prompts wait in `queue`
+    /// until it runs.
+    pub(super) starting: bool,
     /// Prompts held while the agent works, sent one per turn.
     pub(super) queue: VecDeque<QueuedPrompt>,
     /// The folder `agent.change_folder` moves the agent to once its process exits.
@@ -205,6 +215,7 @@ impl Hub {
                     view,
                     process: None,
                     generation: 0,
+                    starting: false,
                     queue: VecDeque::new(),
                     moving: None,
                     details_out: DetailsOut {
@@ -233,6 +244,7 @@ impl Hub {
             terminals: Terminals::default(),
             closed_choices: ClosedChoices::default(),
             repository_reads: BTreeSet::new(),
+            new_agents: BTreeMap::new(),
         }
     }
 
@@ -285,9 +297,16 @@ impl Hub {
             } => self.process_event(agent, generation, event),
             HubInput::SessionFound {
                 found,
+                folder,
                 asked_at,
                 reply,
-            } => self.resume_session(*found, asked_at, reply),
+            } => self.resume_session(*found, folder, asked_at, reply),
+            HubInput::FolderResolved {
+                folder,
+                request,
+                reply,
+            } => self.folder_resolved(folder, request, reply),
+            HubInput::ProcessStarted { start, started } => self.process_started(*start, started),
             HubInput::ForkCopied { fork, found, reply } => self.fork_copied(*fork, found, reply),
             HubInput::MoveCopied {
                 agent,
@@ -560,6 +579,37 @@ impl Hub {
         };
         let (inputs, received) = mpsc::channel(16);
         (Self::new(state, config, restored, inputs), received)
+    }
+
+    /// Hands the hub what its tasks send it until `answered` has its answer.
+    #[cfg(test)]
+    pub(super) async fn await_answer(
+        &mut self,
+        inputs: &mut mpsc::Receiver<HubInput>,
+        mut answered: oneshot::Receiver<ResponseResult>,
+    ) -> Result<ResponseBody, ErrorBody> {
+        loop {
+            if let Ok(result) = answered.try_recv() {
+                return result.into_result();
+            }
+            let input = tokio::time::timeout(Duration::from_secs(10), inputs.recv())
+                .await
+                .expect("the hub got no input in time")
+                .expect("the hub's inputs closed");
+            self.handle(input);
+        }
+    }
+
+    /// Sends `request` to the hub, then hands the hub what its tasks send it until it answers.
+    #[cfg(test)]
+    pub(super) async fn ask(
+        &mut self,
+        inputs: &mut mpsc::Receiver<HubInput>,
+        request: Request,
+    ) -> Result<ResponseBody, ErrorBody> {
+        let (reply, answered) = oneshot::channel();
+        self.request(request, reply);
+        self.await_answer(inputs, answered).await
     }
 }
 

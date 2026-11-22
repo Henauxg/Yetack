@@ -46,6 +46,11 @@ pub(super) fn internal(message: String) -> ErrorBody {
     ErrorBody::new(ErrorCode::Internal, message)
 }
 
+/// The answer of a request whose task finished after the hub stopped.
+pub(super) fn stopping() -> ErrorBody {
+    internal("the daemon is stopping".to_owned())
+}
+
 pub(super) fn control_failed(agent: AgentId, failure: ControlFailure) -> ErrorBody {
     match failure {
         ControlFailure::Refused(message) => ErrorBody::new(ErrorCode::ClaudeFailed, message),

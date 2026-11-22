@@ -242,7 +242,8 @@ impl Hub {
         self.publish(id);
     }
 
-    /// Asks the running `claude`, or records the model for the next start.
+    /// Asks the running `claude`, or records the model for the next start. While `claude` starts,
+    /// the request fails as other control requests do: the start has the model it had.
     pub(super) fn set_model(&mut self, params: SetModelParams, reply: Reply) {
         if let Err(error) = agents::check_model(&params.model) {
             agents::respond(reply, Err(error));
@@ -253,7 +254,7 @@ impl Hub {
             agents::respond(reply, Err(errors::agent_not_found(id)));
             return;
         };
-        if agent.process.is_some() {
+        if agent.process.is_some() || agent.starting {
             let request = ControlRequest::SetModel {
                 model: Some(params.model.clone()),
             };
@@ -275,14 +276,15 @@ impl Hub {
         agents::respond(reply, Ok(ResponseBody::Done));
     }
 
-    /// Asks the running `claude`, or records the mode for the next start.
+    /// Asks the running `claude`, or records the mode for the next start. While `claude` starts,
+    /// the request fails as other control requests do.
     pub(super) fn set_mode(&mut self, params: SetModeParams, reply: Reply) {
         let id = params.agent;
         let Some(agent) = self.agents.get_mut(&id) else {
             agents::respond(reply, Err(errors::agent_not_found(id)));
             return;
         };
-        if agent.process.is_some() {
+        if agent.process.is_some() || agent.starting {
             let request = ControlRequest::SetPermissionMode {
                 mode: words::mode_to_claude(params.mode),
             };
