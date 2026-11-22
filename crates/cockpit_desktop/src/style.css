@@ -8188,6 +8188,9 @@ html.splitting * {
 }
 
 .tree-section {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
   margin: 8px 8px 4px;
   padding-top: 8px;
   border-top: 1px solid var(--line-soft);
@@ -8195,6 +8198,24 @@ html.splitting * {
   letter-spacing: 0.04em;
   text-transform: uppercase;
   color: var(--dim);
+}
+
+/* Two classes, so that the `.link-button` rules further down do not win. */
+.tree-section .tree-section-clear {
+  font-size: 11px;
+  letter-spacing: 0;
+  text-transform: none;
+  color: var(--dim);
+  text-decoration-color: transparent;
+  transition:
+    color var(--motion-hover),
+    text-decoration-color var(--motion-hover);
+}
+
+.tree-section .tree-section-clear:hover,
+.tree-section .tree-section-clear:focus-visible {
+  color: var(--text);
+  text-decoration-color: currentColor;
 }
 
 .tree-note {
@@ -8362,7 +8383,7 @@ html.splitting * {
    that a selection of the file, its copy and its find leave it out. On a line longer than the
    view, it stays at the view's right edge. */
 .line-blame {
-  flex: none;
+  display: inline-block;
   position: sticky;
   right: 0;
   font-family: var(--sans);
@@ -8389,6 +8410,24 @@ html.splitting * {
 
 .line-blame:hover {
   color: var(--dim);
+}
+
+/* A wrapped line keeps its width: the blame takes none and runs past the line's last character,
+   cut at the edge when the last row is full. Taking room would wrap the line once more and push
+   the lines below. */
+.file-body.wrap .diff-row {
+  overflow-x: clip;
+}
+
+.file-body.wrap .line-blame,
+.file-body.wrap .diff-row:hover .line-blame {
+  width: 0;
+  padding: 0;
+  background: none;
+}
+
+.file-body.wrap .line-blame::before {
+  margin-left: 16px;
 }
 
 /* The card of a blamed line's commit, under the pointer, kept inside the window. */

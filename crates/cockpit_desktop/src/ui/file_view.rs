@@ -759,6 +759,7 @@ fn FileContent(
 ) -> Element {
     let hover = use_signal(|| None::<BlameHover>);
     let on_card = use_signal(|| false);
+    let entered = use_signal(|| None::<u64>);
     let language = Language::from_path(&path);
     let marks = line_marks(line, update.as_ref());
     if mode == ViewMode::Diff {
@@ -796,6 +797,7 @@ fn FileContent(
                     commit,
                     hover,
                     on_card,
+                    entered,
                 })
                 .collect()
         } else {

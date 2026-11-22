@@ -224,9 +224,10 @@ pub fn diff_line(
                     "{segment.text}"
                 }
             }
-        }
-        if let Some(blame) = blame {
-            {blame.render()}
+            // In the text, so that it follows the last character even when the line wraps.
+            if let Some(blame) = blame {
+                {blame.render()}
+            }
         }
     };
     if !is_marked {

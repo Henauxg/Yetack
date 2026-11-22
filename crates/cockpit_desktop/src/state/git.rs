@@ -1092,6 +1092,7 @@ mod tests {
                 }),
                 stale: false,
                 reading: false,
+                gone: None,
             },
         );
         let page = |path: &str, kind| github_file_page(&entry, Path::new(path), kind);

@@ -26,6 +26,8 @@ use crate::ui::splitter::FILES_PANE_ID;
 
 /// The search field, which keeps its text per agent.
 const SEARCH_ID: &str = "files-search";
+/// The tree, which takes the focus back from a control that leaves it.
+const TREE_ID: &str = "files-tree";
 
 /// How long typing pauses before the search runs.
 const SEARCH_PAUSE: Duration = Duration::from_millis(300);
@@ -47,7 +49,7 @@ pub fn FilesPane() -> Element {
     };
     let agent = entry.id();
     let folder = entry.summary.folder.clone();
-    let footprint = file_tree::footprint(entry);
+    let footprint = file_tree::footprint_of(&state, entry);
     let rows = file_tree::rows(&entry.tree, &folder, &footprint);
     let filter = entry.tree.filter;
     let highlighted = entry.tree.highlighted.clone();
@@ -121,6 +123,7 @@ pub fn FilesPane() -> Element {
                 FilterChip { agent, filter: TreeFilter::Read, chosen: filter, label: format!("Read {read}") }
             }
             div {
+                id: TREE_ID,
                 class: "files-tree scroll",
                 role: "tree",
                 "data-own-keys": true,
@@ -288,7 +291,25 @@ fn TreeRowView(agent: AgentId, row: TreeRow, highlighted: bool, shown: bool) -> 
     match row.kind {
         RowKind::Section => {
             return rsx! {
-                div { class: "tree-section", role: "presentation", "{row.name}" }
+                div { class: "tree-section",
+                    span { "{row.name}" }
+                    button {
+                        class: "link-button tree-section-clear",
+                        title: "Hide these folders until the agent works in one again",
+                        onclick: move |_| {
+                            cockpit.update(|state| file_tree::clear_outside(state, agent));
+                            // The button leaves with the section.
+                            bridge::focus_element(TREE_ID.to_owned());
+                        },
+                        // The tree's keys would take Enter for its highlighted row.
+                        onkeydown: move |event: KeyboardEvent| {
+                            if event.key() == Key::Enter {
+                                event.stop_propagation();
+                            }
+                        },
+                        "Clear"
+                    }
+                }
             };
         }
         RowKind::Loading => {

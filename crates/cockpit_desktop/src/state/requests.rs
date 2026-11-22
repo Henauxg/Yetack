@@ -13,6 +13,7 @@ use cockpit_protocol::{
 use super::app_state::{AgentEntry, AppState, FileRead, Loadable, MachineState, Reread};
 use super::chat_images::ImageKey;
 use super::drafts::{Draft, Drafts};
+use super::file_tree::Gone;
 use super::git::GitPurpose;
 use super::page_copy::CopyId;
 use super::projects::{self, ProjectKey};
@@ -27,7 +28,7 @@ use super::{
 };
 use crate::machine::MachineId;
 use crate::path_style;
-use crate::prefs::AccountColor;
+use crate::prefs::{AccountColor, ClearedFolders};
 
 /// The most transcript items one history request asks for.
 pub const HISTORY_PAGE: u16 = 100;
@@ -332,6 +333,7 @@ pub fn needed_requests(state: &mut AppState) -> Vec<Outgoing> {
         return requests;
     };
     let files_pane_open = file_tree::pane_open(state, agent);
+    let cleared = file_tree::cleared(state, agent).cloned();
     let open_file = state.ui.file_view(agent).map(|view| view.path.clone());
     let Some(entry) = state.agents.get_mut(&agent) else {
         return requests;
@@ -372,21 +374,39 @@ pub fn needed_requests(state: &mut AppState) -> Vec<Outgoing> {
         }
     }
     if files_pane_open {
-        tree_requests(entry, agent, &mut requests);
+        tree_requests(entry, agent, cleared.as_ref(), &mut requests);
     }
     chat_images::requests(entry, agent, &mut requests);
     requests.extend(git::requests(state, agent));
     requests
 }
 
-/// The files pane's listings and search, when not asked for yet or when a listing is stale.
-fn tree_requests(entry: &mut AgentEntry, agent: AgentId, requests: &mut Vec<Outgoing>) {
-    let footprint = file_tree::footprint(entry);
-    let folders = file_tree::shown_folders(&entry.tree, &entry.summary.folder, &footprint);
-    for folder in folders {
+/// The files pane's listings and search, when not asked for yet or when a listing is stale. The
+/// folders of "Also worked in" are also listed while closed, to tell whether they still exist
+/// (`file_tree::roots_to_check`).
+fn tree_requests(
+    entry: &mut AgentEntry,
+    agent: AgentId,
+    cleared: Option<&ClearedFolders>,
+    requests: &mut Vec<Outgoing>,
+) {
+    let footprint = file_tree::footprint(entry, cleared);
+    let folder = &entry.summary.folder;
+    let mut folders: Vec<(PathBuf, bool)> =
+        file_tree::shown_folders(&entry.tree, folder, &footprint)
+            .into_iter()
+            .map(|shown| (shown, false))
+            .collect();
+    for root in file_tree::roots_to_check(&entry.tree, folder, &footprint) {
+        match folders.iter_mut().find(|(shown, _)| *shown == root) {
+            Some((_, check)) => *check = true,
+            None => folders.push((root, true)),
+        }
+    }
+    for (folder, check) in folders {
         let listing = entry.tree.listings.entry(folder.clone()).or_default();
         let first = listing.entries == Loadable::NotRequested;
-        if listing.reading || !(first || listing.stale) {
+        if listing.reading || !(first || listing.stale || check) {
             continue;
         }
         listing.stale = false;
@@ -761,11 +781,23 @@ pub fn apply_response(
             {
                 listing.reading = false;
                 match result {
-                    Ok(ResponseBody::Directory(found)) => listing.entries = Loadable::Loaded(found),
-                    other if !matches!(listing.entries, Loadable::Loaded(_)) => {
-                        listing.entries = Failure::from_result(other).into_loadable();
+                    Ok(ResponseBody::Directory(found)) => {
+                        listing.entries = Loadable::Loaded(found);
+                        listing.gone = None;
                     }
-                    _ => {}
+                    other => {
+                        let failure = Failure::from_result(other);
+                        // A lost connection says nothing of the folder.
+                        if failure.not_found {
+                            let after = entry.transcript.last_id();
+                            listing.gone = Some(Gone { after });
+                        } else if !failure.transient {
+                            listing.gone = None;
+                        }
+                        if !matches!(listing.entries, Loadable::Loaded(_)) {
+                            listing.entries = failure.into_loadable();
+                        }
+                    }
                 }
             }
         }

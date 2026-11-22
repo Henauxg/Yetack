@@ -14,7 +14,7 @@ use std::path::{Path, PathBuf};
 
 use cockpit_protocol::{
     AgentId, ChangedFile, Completeness, DirListing, EntryKind, FileChange, GitIgnore, ItemBody,
-    ToolCallStatus, TranscriptItem,
+    ItemId, ToolCallStatus, TranscriptItem,
 };
 use serde_json::Value;
 
@@ -26,7 +26,7 @@ use super::git::{self, Step};
 use super::ui_state::{FileSearch, Popover, ViewMode};
 use crate::machine::MachineId;
 use crate::path_style::PathStyle;
-use crate::prefs::{self, PaneState};
+use crate::prefs::{self, ClearedFolders, PaneState};
 
 /// The rows a filter keeps.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -64,6 +64,17 @@ pub struct Listing {
     pub stale: bool,
     /// A listing is on its way. Another waits for it, so that an older answer never comes last.
     pub reading: bool,
+    /// The daemon said the folder does not exist, as a worktree removed since the agent worked in
+    /// it: "Also worked in" leaves it out.
+    pub gone: Option<Gone>,
+}
+
+/// When the daemon said a folder does not exist. The folder shows again, and lists again, once a
+/// chat item after `after` has read or written a file in it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Gone {
+    /// The agent's last chat item then. `None` when it had none.
+    pub after: Option<ItemId>,
 }
 
 /// What the agent did to the files, by absolute path.
@@ -138,14 +149,176 @@ impl RowKind {
 }
 
 /// What `entry` changed and read, from its details and its transcript, and what differs from
-/// the last commit in its checkouts.
-pub fn footprint(entry: &AgentEntry) -> Footprint {
+/// the last commit in its checkouts, as the files pane shows it: without the folders outside the
+/// agent's that no longer exist or that `cleared` hides, until a later chat item works in them.
+pub fn footprint(entry: &AgentEntry, cleared: Option<&ClearedFolders>) -> Footprint {
     let Changes { changed, git } = changes(entry);
-    Footprint {
+    let mut footprint = Footprint {
         changed,
         read: read_files(entry.transcript.items()),
         git,
+    };
+    let gone_marks = entry
+        .tree
+        .listings
+        .values()
+        .filter_map(|listing| listing.gone.map(|gone| gone.after));
+    // The earliest mark: the chat items after it tell which folders the agent worked in since.
+    let earliest: Option<Option<ItemId>> = cleared
+        .map(|cleared| cleared.after)
+        .into_iter()
+        .chain(gone_marks)
+        .min();
+    let Some(since) = earliest else {
+        return footprint;
+    };
+    let folder = &entry.summary.folder;
+    let style = PathStyle::of(folder);
+    let key = |path: &Path| style.key(&path.to_string_lossy());
+    let cleared_keys: HashSet<String> = cleared
+        .into_iter()
+        .flat_map(|cleared| &cleared.folders)
+        .map(|root| key(root))
+        .collect();
+    let last_touched: HashMap<String, ItemId> =
+        touched_roots(folder, entry.transcript.items_after(since));
+    // Hidden until a chat item after `mark` touches a file in it.
+    let hidden_since = |root_key: &str, mark: Option<ItemId>| {
+        last_touched
+            .get(root_key)
+            .is_none_or(|touched| Some(*touched) <= mark)
+    };
+    let hidden: HashSet<String> = outside_roots(folder, &footprint)
+        .into_iter()
+        .map(|root| (key(&root), root))
+        .filter(|(root_key, root)| {
+            let gone = entry
+                .tree
+                .listings
+                .get(root)
+                .and_then(|listing| listing.gone)
+                .is_some_and(|gone| hidden_since(root_key, gone.after));
+            let cleared = cleared.is_some_and(|cleared| {
+                cleared_keys.contains(root_key) && hidden_since(root_key, cleared.after)
+            });
+            gone || cleared
+        })
+        .map(|(root_key, _)| root_key)
+        .collect();
+    if hidden.is_empty() {
+        return footprint;
     }
+    let folder_text = folder.to_string_lossy();
+    // A file right in a folder above the agent's lists under that folder, which holds the agent's
+    // folder too: the agent's own files stay.
+    let shown = |path: &PathBuf| {
+        style
+            .strip_prefix(&path.to_string_lossy(), &folder_text)
+            .is_some()
+            || !hidden.contains(&key(&outside_root(folder, path)))
+    };
+    footprint.changed.retain(|path, _| shown(path));
+    footprint.read.retain(shown);
+    footprint.git.retain(|path, _| shown(path));
+    footprint
+}
+
+/// The folders `agent`'s "Also worked in" no longer lists.
+pub fn cleared(state: &AppState, agent: AgentId) -> Option<&ClearedFolders> {
+    let machine = state.daemon_machine(agent)?;
+    state
+        .prefs
+        .files_pane
+        .cleared(machine, MachineId::daemon_agent(agent))
+}
+
+/// [`footprint`] of `agent`, with the folders the user cleared.
+pub fn footprint_of(state: &AppState, entry: &AgentEntry) -> Footprint {
+    footprint(entry, cleared(state, entry.id()))
+}
+
+/// Clears "Also worked in": its folders no longer show until a later chat item reads or changes a
+/// file in one.
+pub fn clear_outside(state: &mut AppState, agent: AgentId) {
+    let Some(entry) = state.agents.get(&agent) else {
+        return;
+    };
+    let Some(machine) = state.daemon_machine(agent).map(str::to_owned) else {
+        return;
+    };
+    let all = footprint(entry, None);
+    // A folder cleared before stays hidden, though its files may have left the app's copy of
+    // the chat.
+    let mut folders = cleared(state, agent)
+        .map(|before| before.folders.clone())
+        .unwrap_or_default();
+    folders.extend(outside_roots(&entry.summary.folder, &all));
+    let cleared = ClearedFolders {
+        folders,
+        after: entry.transcript.last_id(),
+    };
+    if let Some(entry) = state.agents.get_mut(&agent) {
+        entry.tree.menu = None;
+    }
+    state
+        .prefs
+        .files_pane
+        .set_cleared(&machine, MachineId::daemon_agent(agent), cleared);
+}
+
+/// The folders of "Also worked in" to list whether they are open or not, since a listing tells
+/// whether a folder still exists: those never listed, those the daemon said were gone that the
+/// agent worked in since, and the gone ones a refresh asks about.
+pub fn roots_to_check(tree: &FileTree, folder: &Path, footprint: &Footprint) -> Vec<PathBuf> {
+    let mut roots: Vec<PathBuf> = outside_roots(folder, footprint)
+        .into_iter()
+        .filter(|root| match tree.listings.get(root) {
+            None => true,
+            Some(listing) => listing.gone.is_some() && !listing.reading,
+        })
+        .collect();
+    for (path, listing) in &tree.listings {
+        let asked = listing.gone.is_some() && listing.entries == Loadable::NotRequested;
+        if asked && !listing.reading && !roots.contains(path) {
+            roots.push(path.clone());
+        }
+    }
+    roots
+}
+
+/// The folders "Also worked in" lists the files that the ended tool calls among `items` read or
+/// wrote under, by [`PathStyle::key`], each with the last item that touched it. A call that still
+/// runs may not have made its folder yet, so a listing then would find the folder gone.
+fn touched_roots<'items>(
+    folder: &Path,
+    items: impl Iterator<Item = &'items TranscriptItem>,
+) -> HashMap<String, ItemId> {
+    let style = PathStyle::of(folder);
+    let folder_text = folder.to_string_lossy();
+    let mut roots = HashMap::new();
+    for item in items {
+        let (ItemBody::ToolCall(call) | ItemBody::Subagent(call)) = &item.body else {
+            continue;
+        };
+        if call.status == ToolCallStatus::Running {
+            continue;
+        }
+        let path = FILE_FIELDS
+            .iter()
+            .find_map(|field| match call.input.get(field) {
+                Some(Value::String(path)) => Some(path),
+                _ => None,
+            });
+        if let Some(path) = path
+            && style.is_absolute(path)
+            && style.strip_prefix(path, &folder_text).is_none()
+        {
+            let root = outside_root(folder, Path::new(path));
+            // The items come in order: the last one stays.
+            roots.insert(style.key(&root.to_string_lossy()), item.id);
+        }
+    }
+    roots
 }
 
 /// The changed files, with their line counts.
@@ -378,7 +551,13 @@ pub fn can_show(state: &AppState, agent: AgentId, path: &Path) -> bool {
     };
     let folder = &entry.summary.folder;
     let full = PathStyle::of(folder).resolve(&folder.to_string_lossy(), &path.to_string_lossy());
-    root_showing(&entry.tree, folder, &footprint(entry), Path::new(&full)).is_some()
+    root_showing(
+        &entry.tree,
+        folder,
+        &footprint_of(state, entry),
+        Path::new(&full),
+    )
+    .is_some()
 }
 
 struct Builder<'tree> {
@@ -850,8 +1029,10 @@ pub fn toggle_folder(state: &mut AppState, agent: AgentId, row: &TreeRow) {
 
 /// Closes the folders of every view: those opened under "All", and those that start open.
 pub fn collapse_all(state: &mut AppState, agent: AgentId) {
+    let cleared = cleared(state, agent).cloned();
     if let Some(entry) = state.agents.get_mut(&agent) {
-        let starting_open = starting_open(&entry.summary.folder, &footprint(entry));
+        let starting_open =
+            starting_open(&entry.summary.folder, &footprint(entry, cleared.as_ref()));
         entry.tree.expanded.clear();
         entry.tree.closed.extend(starting_open);
     }
@@ -896,9 +1077,23 @@ fn starting_open(folder: &Path, footprint: &Footprint) -> BTreeSet<PathBuf> {
 
 /// Lists every folder again, as they show. A search keeps its files: typing again searches again.
 pub fn refresh(tree: &mut FileTree) {
+    list_again(tree);
+    // Only a refresh asks again whether the folders that were gone exist: an agent's step does
+    // not, so that a dozen removed worktrees do not list after each of its commands.
+    for listing in tree.listings.values_mut() {
+        if listing.gone.is_some() {
+            listing.entries = Loadable::NotRequested;
+        }
+    }
+}
+
+/// Marks the listings to read again while they show. A failed listing starts again, but for a
+/// folder the daemon said was gone: [`roots_to_check`] would list it even while hidden.
+fn list_again(tree: &mut FileTree) {
     for listing in tree.listings.values_mut() {
         match listing.entries {
             Loadable::Loaded(_) | Loadable::Loading => listing.stale = true,
+            Loadable::Failed(_) if listing.gone.is_some() => listing.stale = true,
             Loadable::Failed(_) => listing.entries = Loadable::NotRequested,
             Loadable::NotRequested => {}
         }
@@ -916,7 +1111,7 @@ pub fn item_finished(state: &mut AppState, agent: AgentId, item: &TranscriptItem
     };
     match call.status {
         ToolCallStatus::Done if call.edit.is_some() || bash => {
-            refresh(&mut entry.tree);
+            list_again(&mut entry.tree);
             let step = if bash { Step::Command } else { Step::Edit };
             git::step_finished(entry, step);
         }
@@ -941,7 +1136,11 @@ pub fn set_search(state: &mut AppState, agent: AgentId, text: &str) {
 /// The rows of `agent`'s tree as the pane shows them.
 pub fn shown_rows(state: &AppState, agent: AgentId) -> Vec<TreeRow> {
     state.agents.get(&agent).map_or_else(Vec::new, |entry| {
-        rows(&entry.tree, &entry.summary.folder, &footprint(entry))
+        rows(
+            &entry.tree,
+            &entry.summary.folder,
+            &footprint_of(state, entry),
+        )
     })
 }
 
@@ -1156,13 +1355,14 @@ pub fn reveal(state: &mut AppState, agent: AgentId) {
     let Some(shown) = state.ui.file_view(agent).map(|view| view.path.clone()) else {
         return;
     };
+    let cleared = cleared(state, agent).cloned();
     let Some(entry) = state.agents.get_mut(&agent) else {
         return;
     };
     let folder = entry.summary.folder.clone();
     let style = PathStyle::of(&folder);
     let full = PathBuf::from(style.resolve(&folder.to_string_lossy(), &shown.to_string_lossy()));
-    let marks = footprint(entry);
+    let marks = footprint(entry, cleared.as_ref());
     let Some(root) = root_showing(&entry.tree, &folder, &marks, &full) else {
         return;
     };
@@ -1291,13 +1491,15 @@ pub fn forget_pane(state: &mut AppState, agent: AgentId) {
 
 #[cfg(test)]
 mod tests {
+    use cockpit_client::RequestError;
     use cockpit_protocol::{
-        AgentDetails, AgentStatus, CheckoutKind, DirEntry, EntryLink, ItemId, Method, ResponseBody,
-        ToolCall,
+        AgentDetails, AgentStatus, CheckoutKind, DirEntry, EntryLink, ErrorBody, ErrorCode, ItemId,
+        Method, ResponseBody, ToolCall,
     };
     use serde_json::json;
 
     use super::*;
+    use crate::state::Purpose;
 
     const FOLDER: &str = "/work/app";
 
@@ -1322,6 +1524,7 @@ mod tests {
                 }),
                 stale: false,
                 reading: false,
+                gone: None,
             },
         )
     }
@@ -1931,6 +2134,7 @@ mod tests {
                 entries: Loadable::Failed("outside every checkout".to_owned()),
                 stale: false,
                 reading: false,
+                gone: None,
             },
         );
         let (path, listing) = listing(
@@ -1964,7 +2168,7 @@ mod tests {
 
     fn collapsible(state: &AppState, agent: AgentId) -> bool {
         let entry = &state.agents[&agent];
-        can_collapse(&entry.tree, &entry.summary.folder, &footprint(entry))
+        can_collapse(&entry.tree, &entry.summary.folder, &footprint(entry, None))
     }
 
     /// A click on the first row of `path`, as the pane makes it.
@@ -2305,6 +2509,7 @@ mod tests {
                 ),
                 stale: false,
                 reading: false,
+                gone: None,
             },
         );
         let footprint = Footprint {
@@ -2404,6 +2609,447 @@ mod tests {
         (state, agent)
     }
 
+    /// A finished `Read` of `path`.
+    fn read_item(id: u32, path: &str) -> TranscriptItem {
+        TranscriptItem {
+            id: ItemId::new(id),
+            parent: None,
+            body: ItemBody::ToolCall(ToolCall {
+                tool: READ_TOOL.to_owned(),
+                summary: path.to_owned(),
+                input: json!({ "file_path": path }),
+                status: ToolCallStatus::Done,
+                output: None,
+                exit_code: None,
+                edit: None,
+            }),
+        }
+    }
+
+    /// A finished Bash call, which lists the shown folders again.
+    fn command_item(id: u32) -> TranscriptItem {
+        TranscriptItem {
+            id: ItemId::new(id),
+            parent: None,
+            body: ItemBody::ToolCall(ToolCall {
+                tool: BASH_TOOL.to_owned(),
+                summary: "cargo fmt".to_owned(),
+                input: json!({ "command": "cargo fmt" }),
+                status: ToolCallStatus::Done,
+                output: None,
+                exit_code: Some(0),
+                edit: None,
+            }),
+        }
+    }
+
+    /// The folders the files pane asks the daemon to list now.
+    fn tree_listings(state: &mut AppState) -> Vec<PathBuf> {
+        crate::state::needed_requests(state)
+            .into_iter()
+            .filter_map(|outgoing| match outgoing.purpose {
+                Purpose::TreeListing { folder, .. } => Some(folder),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn list_failed(state: &mut AppState, agent: AgentId, folder: &Path, code: ErrorCode) {
+        crate::state::apply_response(
+            state,
+            &mut Drafts::default(),
+            Method::AgentListDir,
+            Purpose::TreeListing {
+                agent,
+                folder: folder.to_owned(),
+            },
+            Err(RequestError::Failed(ErrorBody::new(
+                code,
+                format!("{} cannot be listed", folder.display()),
+            ))),
+            MachineId::THIS,
+        );
+    }
+
+    /// The names of the folders under "Also worked in".
+    fn outside_rows(state: &AppState, agent: AgentId) -> Vec<String> {
+        shown_rows(state, agent)
+            .into_iter()
+            .skip_while(|row| row.kind != RowKind::Section)
+            .filter(|row| row.depth == 0 && row.kind.is_entry())
+            .map(|row| row.name)
+            .collect()
+    }
+
+    #[test]
+    fn clearing_a_folder_above_the_agents_keeps_the_agents_own_files() {
+        let (mut state, agent) = listed_agent();
+        let own = PathBuf::from("/work/project-1/src/lib.rs");
+        let entry = state.agents.get_mut(&agent).unwrap();
+        entry.details = Loadable::Loaded(AgentDetails {
+            changed_files: vec![ChangedFile {
+                path: own.clone(),
+                lines_added: 2,
+                lines_removed: 1,
+            }],
+            ..AgentDetails::default()
+        });
+        entry.transcript.append(read_item(1, "/work/notes.md"));
+
+        let before = outside_rows(&state, agent);
+        clear_outside(&mut state, agent);
+        let kept = footprint_of(&state, &state.agents[&agent]);
+        let transcript = &mut state.agents.get_mut(&agent).unwrap().transcript;
+        transcript.append(read_item(2, "/work/project-1/src/lib.rs"));
+        let after_own_read = outside_rows(&state, agent);
+        let transcript = &mut state.agents.get_mut(&agent).unwrap().transcript;
+        transcript.append(read_item(3, "/work/other/a.md"));
+        let after_other_read = outside_rows(&state, agent);
+
+        assert_eq!(before, ["work/"]);
+        assert!(kept.changed.contains_key(&own), "{kept:?}");
+        assert!(kept.read.is_empty(), "{kept:?}");
+        assert!(
+            after_own_read.is_empty(),
+            "a read in the agent's own folder brings back no folder: {after_own_read:?}"
+        );
+        assert_eq!(
+            after_other_read,
+            ["other/"],
+            "a folder under the cleared one shows on its own"
+        );
+    }
+
+    #[test]
+    fn on_windows_a_cleared_folder_matches_whatever_its_case_and_separators() {
+        let (mut state, agent) = listed_agent();
+        let entry = state.agents.get_mut(&agent).unwrap();
+        entry.summary.folder = PathBuf::from(r"C:\work\app");
+        entry.transcript.append(read_item(1, r"C:\Work\Other\a.md"));
+        let machine = state.daemon_machine(agent).unwrap().to_owned();
+        state.prefs.files_pane.set_cleared(
+            &machine,
+            MachineId::daemon_agent(agent),
+            ClearedFolders {
+                folders: BTreeSet::from([PathBuf::from("c:/work/other")]),
+                after: Some(ItemId::new(1)),
+            },
+        );
+
+        let cleared_rows = outside_rows(&state, agent);
+        let transcript = &mut state.agents.get_mut(&agent).unwrap().transcript;
+        transcript.append(read_item(2, "c:/WORK/APP/src/lib.rs"));
+        let after_own_read = outside_rows(&state, agent);
+        let transcript = &mut state.agents.get_mut(&agent).unwrap().transcript;
+        transcript.append(read_item(3, r"c:\work\OTHER\b.md"));
+        let back = outside_rows(&state, agent);
+
+        assert!(cleared_rows.is_empty(), "{cleared_rows:?}");
+        assert!(after_own_read.is_empty(), "{after_own_read:?}");
+        assert!(!back.is_empty(), "a read in it brings it back");
+    }
+
+    #[test]
+    fn clearing_again_keeps_a_folder_cleared_before_hidden() {
+        let (mut state, agent) = listed_agent();
+        let transcript = &mut state.agents.get_mut(&agent).unwrap().transcript;
+        transcript.append(read_item(1, "/work/other/a.md"));
+        clear_outside(&mut state, agent);
+        let transcript = &mut state.agents.get_mut(&agent).unwrap().transcript;
+        transcript.append(read_item(2, "/opt/tools/config.toml"));
+        // The oldest item leaves the app's copy, as in a long chat.
+        transcript.trim(1);
+
+        let listed = outside_rows(&state, agent);
+        clear_outside(&mut state, agent);
+        // Scrolling up loads it again.
+        let transcript = &mut state.agents.get_mut(&agent).unwrap().transcript;
+        transcript.append(read_item(1, "/work/other/a.md"));
+        let rows = outside_rows(&state, agent);
+
+        assert_eq!(listed, ["opt/"]);
+        assert!(rows.is_empty(), "{rows:?}");
+    }
+
+    #[test]
+    fn a_closed_folder_that_cannot_be_listed_is_not_listed_again_on_each_step() {
+        let (mut state, agent) = agent_beside_other();
+        let other = PathBuf::from("/work/other");
+        let command = command_item(1);
+        toggle_pane(&mut state);
+
+        let asked = tree_listings(&mut state);
+        list_failed(&mut state, agent, &other, ErrorCode::FileUnreadable);
+        item_finished(&mut state, agent, &command);
+        let asked_after_step = tree_listings(&mut state);
+
+        assert!(asked.contains(&other), "{asked:?}");
+        assert!(
+            !asked_after_step.contains(&other),
+            "listed once: {asked_after_step:?}"
+        );
+    }
+
+    #[test]
+    fn a_folder_that_no_longer_exists_leaves_also_worked_in() {
+        let (mut state, agent) = agent_beside_other();
+        let other = PathBuf::from("/work/other");
+        toggle_pane(&mut state);
+        let rows_before = shown(&shown_rows(&state, agent));
+
+        let asked = tree_listings(&mut state);
+        let asked_again = tree_listings(&mut state);
+        list_failed(&mut state, agent, &other, ErrorCode::NotFound);
+
+        assert!(
+            rows_before.contains(&format!("# {OUTSIDE_SECTION}")),
+            "{rows_before:?}"
+        );
+        assert_eq!(asked, [other], "its listing tells whether it exists");
+        assert!(asked_again.is_empty(), "it lists once");
+        let rows = shown(&shown_rows(&state, agent));
+        assert!(
+            !rows.iter().any(|row| row.contains(OUTSIDE_SECTION)),
+            "{rows:?}"
+        );
+        assert!(
+            footprint_of(&state, &state.agents[&agent])
+                .changed
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn a_gone_folder_is_asked_about_again_on_a_refresh_or_once_the_agent_works_in_it() {
+        let (mut state, agent) = agent_beside_other();
+        let other = PathBuf::from("/work/other");
+        let command = command_item(1);
+        toggle_pane(&mut state);
+        tree_listings(&mut state);
+        list_failed(&mut state, agent, &other, ErrorCode::NotFound);
+
+        let transcript = &mut state.agents.get_mut(&agent).unwrap().transcript;
+        transcript.append(command.clone());
+        item_finished(&mut state, agent, &command);
+        let after_step = tree_listings(&mut state);
+        refresh(&mut state.agents.get_mut(&agent).unwrap().tree);
+        let after_refresh = tree_listings(&mut state);
+        let hidden_meanwhile = outside_rows(&state, agent);
+        list_failed(&mut state, agent, &other, ErrorCode::NotFound);
+        let transcript = &mut state.agents.get_mut(&agent).unwrap().transcript;
+        transcript.append(read_item(2, "/work/other/notes/a.md"));
+        let worked_in = outside_rows(&state, agent);
+        let asked_again = tree_listings(&mut state);
+
+        assert!(!after_step.contains(&other), "{after_step:?}");
+        assert_eq!(after_refresh, std::slice::from_ref(&other));
+        assert!(hidden_meanwhile.is_empty(), "{hidden_meanwhile:?}");
+        assert_eq!(worked_in, ["other/"]);
+        assert_eq!(asked_again, [other]);
+    }
+
+    #[test]
+    fn an_open_folder_the_daemon_said_was_gone_lists_again_after_a_step() {
+        let (mut state, agent) = listed_agent();
+        let out = PathBuf::from("/work/project-1/out");
+        let entry = state.agents.get_mut(&agent).unwrap();
+        entry.tree.expanded.insert(out.clone());
+        toggle_pane(&mut state);
+        let asked = tree_listings(&mut state);
+        list_failed(&mut state, agent, &out, ErrorCode::NotFound);
+
+        // A build makes the folder again.
+        item_finished(&mut state, agent, &command_item(1));
+        let asked_after_step = tree_listings(&mut state);
+
+        assert!(asked.contains(&out), "{asked:?}");
+        assert!(asked_after_step.contains(&out), "{asked_after_step:?}");
+    }
+
+    #[test]
+    fn a_gone_folder_that_a_write_makes_again_lists_once_the_write_ends() {
+        let (mut state, agent) = agent_beside_other();
+        let other = PathBuf::from("/work/other");
+        let write = |status| TranscriptItem {
+            id: ItemId::new(1),
+            parent: None,
+            body: ItemBody::ToolCall(ToolCall {
+                tool: "Write".to_owned(),
+                summary: "/work/other/notes/b.md".to_owned(),
+                input: json!({ "file_path": "/work/other/notes/b.md", "content": "b" }),
+                status,
+                output: None,
+                exit_code: None,
+                edit: None,
+            }),
+        };
+        toggle_pane(&mut state);
+        tree_listings(&mut state);
+        list_failed(&mut state, agent, &other, ErrorCode::NotFound);
+
+        let transcript = &mut state.agents.get_mut(&agent).unwrap().transcript;
+        transcript.append(write(ToolCallStatus::Running));
+        // The write has not run yet, as while it waits for approval.
+        let while_running = tree_listings(&mut state);
+        for folder in &while_running {
+            list_failed(&mut state, agent, folder, ErrorCode::NotFound);
+        }
+        let transcript = &mut state.agents.get_mut(&agent).unwrap().transcript;
+        transcript.change(write(ToolCallStatus::Done));
+        item_finished(&mut state, agent, &write(ToolCallStatus::Done));
+        let after_write = tree_listings(&mut state);
+
+        assert_eq!(after_write, [other]);
+        assert!(while_running.is_empty(), "{while_running:?}");
+    }
+
+    #[test]
+    fn a_gone_folder_the_agent_worked_in_that_is_still_gone_hides_and_is_not_asked_again() {
+        let (mut state, agent) = agent_beside_other();
+        let other = PathBuf::from("/work/other");
+        toggle_pane(&mut state);
+        tree_listings(&mut state);
+        list_failed(&mut state, agent, &other, ErrorCode::NotFound);
+        let transcript = &mut state.agents.get_mut(&agent).unwrap().transcript;
+        transcript.append(read_item(1, "/work/other/notes/a.md"));
+        let asked = tree_listings(&mut state);
+
+        list_failed(&mut state, agent, &other, ErrorCode::NotFound);
+        let rows = outside_rows(&state, agent);
+        let asked_again = tree_listings(&mut state);
+        let transcript = &mut state.agents.get_mut(&agent).unwrap().transcript;
+        transcript.append(read_item(2, "/work/project-1/src/lib.rs"));
+        let asked_after_more_work = tree_listings(&mut state);
+
+        assert_eq!(asked, std::slice::from_ref(&other));
+        assert!(rows.is_empty(), "{rows:?}");
+        assert!(asked_again.is_empty(), "{asked_again:?}");
+        assert!(
+            asked_after_more_work.is_empty(),
+            "{asked_after_more_work:?}"
+        );
+    }
+
+    #[test]
+    fn a_lost_connection_keeps_a_folder_gone_and_another_failure_shows_it_again() {
+        let (mut state, agent) = agent_beside_other();
+        let other = PathBuf::from("/work/other");
+        toggle_pane(&mut state);
+        tree_listings(&mut state);
+        list_failed(&mut state, agent, &other, ErrorCode::NotFound);
+        refresh(&mut state.agents.get_mut(&agent).unwrap().tree);
+        tree_listings(&mut state);
+
+        crate::state::apply_response(
+            &mut state,
+            &mut Drafts::default(),
+            Method::AgentListDir,
+            Purpose::TreeListing {
+                agent,
+                folder: other.clone(),
+            },
+            Err(RequestError::Disconnected),
+            MachineId::THIS,
+        );
+        let after_lost_connection = outside_rows(&state, agent);
+        let asked_after_lost_connection = tree_listings(&mut state);
+        list_failed(&mut state, agent, &other, ErrorCode::FileUnreadable);
+        let after_other_failure = outside_rows(&state, agent);
+
+        assert!(
+            after_lost_connection.is_empty(),
+            "{after_lost_connection:?}"
+        );
+        assert_eq!(asked_after_lost_connection, [other]);
+        assert_eq!(after_other_failure, ["other/"]);
+    }
+
+    #[test]
+    fn on_windows_a_gone_folder_comes_back_whatever_the_case_of_the_path_worked_in() {
+        let (mut state, agent) = listed_agent();
+        let other = PathBuf::from(r"C:\Work\Other");
+        let entry = state.agents.get_mut(&agent).unwrap();
+        entry.summary.folder = PathBuf::from(r"C:\work\app");
+        entry.details = Loadable::Loaded(AgentDetails {
+            changed_files: vec![ChangedFile {
+                path: PathBuf::from(r"C:\Work\Other\a.md"),
+                lines_added: 1,
+                lines_removed: 0,
+            }],
+            ..AgentDetails::default()
+        });
+        entry.tree.listings.clear();
+        toggle_pane(&mut state);
+        let asked = tree_listings(&mut state);
+        list_failed(&mut state, agent, &other, ErrorCode::NotFound);
+        let gone_rows = outside_rows(&state, agent);
+        let transcript = &mut state.agents.get_mut(&agent).unwrap().transcript;
+        transcript.append(TranscriptItem {
+            id: ItemId::new(1),
+            parent: None,
+            body: ItemBody::ToolCall(ToolCall {
+                tool: "Write".to_owned(),
+                summary: "b.md".to_owned(),
+                input: json!({ "file_path": "c:/work/OTHER/b.md", "content": "b" }),
+                status: ToolCallStatus::Done,
+                output: None,
+                exit_code: None,
+                edit: None,
+            }),
+        });
+        let back = outside_rows(&state, agent);
+        let asked_again = tree_listings(&mut state);
+
+        assert!(asked.contains(&other), "{asked:?}");
+        assert!(gone_rows.is_empty(), "{gone_rows:?}");
+        assert_eq!(back, [r"Other\"]);
+        assert_eq!(asked_again, [other]);
+    }
+
+    #[test]
+    fn a_cleared_folder_shows_again_once_the_agent_works_in_it() {
+        let (mut state, agent) = agent_beside_other();
+        let read = read_item;
+        let has_section = |state: &AppState| {
+            shown(&shown_rows(state, agent))
+                .iter()
+                .any(|row| row.contains(OUTSIDE_SECTION))
+        };
+        let transcript = &mut state.agents.get_mut(&agent).unwrap().transcript;
+        transcript.append(read(1, "/work/other/notes/a.md"));
+
+        let before = has_section(&state);
+        clear_outside(&mut state, agent);
+        let after_clear = has_section(&state);
+        let saved = cleared(&state, agent).cloned();
+        let transcript = &mut state.agents.get_mut(&agent).unwrap().transcript;
+        transcript.append(read(2, "/opt/tools/config.toml"));
+        let elsewhere = has_section(&state);
+        let elsewhere_rows = shown(&shown_rows(&state, agent));
+        let transcript = &mut state.agents.get_mut(&agent).unwrap().transcript;
+        transcript.append(read(3, "/work/other/notes/b.md"));
+        let back = has_section(&state);
+
+        assert!(before);
+        assert!(!after_clear);
+        assert_eq!(
+            saved,
+            Some(ClearedFolders {
+                folders: BTreeSet::from([PathBuf::from("/work/other")]),
+                after: Some(ItemId::new(1)),
+            }),
+            "kept in the preferences"
+        );
+        assert!(elsewhere, "a read elsewhere lists its own folder");
+        assert!(
+            !elsewhere_rows.iter().any(|row| row.contains("other")),
+            "{elsewhere_rows:?}"
+        );
+        assert!(back, "a read in the cleared folder brings it back");
+        let rows = shown(&shown_rows(&state, agent));
+        assert!(rows.iter().any(|row| row.contains("other")), "{rows:?}");
+    }
+
     #[test]
     fn the_tree_shows_the_agents_folder_and_the_files_it_touched_outside() {
         let (mut state, agent) = agent_beside_other();
@@ -2420,6 +3066,7 @@ mod tests {
                 entries: Loadable::Failed("outside every checkout".to_owned()),
                 stale: false,
                 reading: false,
+                gone: None,
             },
         );
 
@@ -2576,6 +3223,7 @@ mod tests {
                     entries: Loadable::Failed("outside every checkout".to_owned()),
                     stale: false,
                     reading: false,
+                    gone: None,
                 },
             );
         }

@@ -28,6 +28,9 @@ use crate::ui::presence::use_presence;
 /// How long the blame's card stays after the pointer leaves the line's text, so that the pointer
 /// can reach the card.
 const CARD_GRACE: Duration = Duration::from_millis(250);
+/// How long the pointer rests on a line's blame text before its card shows, when none shows yet,
+/// so that a pointer on its way elsewhere opens none.
+const CARD_DELAY: Duration = Duration::from_millis(400);
 
 /// What the hovered line's blame text points at, and where the pointer was.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -48,6 +51,8 @@ pub struct BlameCell {
     pub hover: Signal<Option<BlameHover>>,
     /// The pointer is over the card: it stays.
     pub on_card: Signal<bool>,
+    /// The serial of the blame text the pointer is on, whose card may show next.
+    pub entered: Signal<Option<u64>>,
 }
 
 impl BlameCell {
@@ -57,6 +62,7 @@ impl BlameCell {
             commit,
             mut hover,
             on_card,
+            mut entered,
         } = self;
         rsx! {
             span {
@@ -70,9 +76,24 @@ impl BlameCell {
                     // Whole pixels are enough to place a card.
                     #[expect(clippy::cast_possible_truncation, reason = "a window's pixels fit in i32")]
                     let (x, y) = (point.x.round() as i32, point.y.round() as i32);
-                    hover.set(Some(BlameHover { commit, x, y, serial }));
+                    let shown = BlameHover { commit, x, y, serial };
+                    entered.set(Some(serial));
+                    // From one line's card to the next, the card follows at once.
+                    if hover.peek().is_some() {
+                        hover.set(Some(shown));
+                        return;
+                    }
+                    spawn(async move {
+                        tokio::time::sleep(CARD_DELAY).await;
+                        if *entered.peek() == Some(serial) {
+                            hover.set(Some(shown));
+                        }
+                    });
                 },
-                onmouseleave: move |_| hide_later(hover, on_card),
+                onmouseleave: move |_| {
+                    entered.set(None);
+                    hide_later(hover, on_card);
+                },
             }
         }
     }

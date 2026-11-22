@@ -54,7 +54,7 @@
 //! local daemon's socket. A missing or unreadable file means the defaults, and a field the app
 //! does not know is ignored.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsString;
 use std::fs::{File, OpenOptions};
 use std::io;
@@ -62,7 +62,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use cockpit_protocol::{
-    AccountId, AgentId, AgentStatus, AgentSummary, Mark, ReleaseVersion, Repository,
+    AccountId, AgentId, AgentStatus, AgentSummary, ItemId, Mark, ReleaseVersion, Repository,
 };
 use dioxus::prelude::*;
 use serde::de::IgnoredAny;
@@ -703,6 +703,21 @@ pub struct FilesPanePrefs {
     /// the default.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub width: Option<u16>,
+    /// The folders each agent's "Also worked in" no longer lists, by daemon machine, then by the
+    /// daemon's agent id.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub cleared: BTreeMap<String, BTreeMap<AgentId, ClearedFolders>>,
+}
+
+/// The folders outside an agent's that the user cleared from its "Also worked in". One shows again
+/// once a chat item after `after` reads or changes a file in it.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ClearedFolders {
+    pub folders: BTreeSet<PathBuf>,
+    /// The agent's last chat item when the user cleared them. `None` when it had none.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub after: Option<ItemId>,
 }
 
 /// Where the terminal pane sits, and its size there. Whether it shows is not kept: it opens
@@ -808,7 +823,7 @@ impl FilesPanePrefs {
         self.keep_agents(machine, |kept| kept != agent);
     }
 
-    /// Keeps the panes of the machine's agents that `keep` names.
+    /// Keeps the panes and the cleared folders of the machine's agents that `keep` names.
     pub fn keep_agents(&mut self, machine: &str, keep: impl Fn(AgentId) -> bool) {
         if let Some(panes) = self.agents.get_mut(machine) {
             panes.retain(|&agent, _| keep(agent));
@@ -816,10 +831,30 @@ impl FilesPanePrefs {
                 self.agents.remove(machine);
             }
         }
+        if let Some(cleared) = self.cleared.get_mut(machine) {
+            cleared.retain(|&agent, _| keep(agent));
+            if cleared.is_empty() {
+                self.cleared.remove(machine);
+            }
+        }
     }
 
     pub fn forget_machine(&mut self, machine: &str) {
         self.agents.remove(machine);
+        self.cleared.remove(machine);
+    }
+
+    pub fn cleared(&self, machine: &str, agent: AgentId) -> Option<&ClearedFolders> {
+        self.cleared
+            .get(machine)
+            .and_then(|agents| agents.get(&agent))
+    }
+
+    pub fn set_cleared(&mut self, machine: &str, agent: AgentId, cleared: ClearedFolders) {
+        self.cleared
+            .entry(machine.to_owned())
+            .or_default()
+            .insert(agent, cleared);
     }
 }
 
@@ -922,7 +957,8 @@ pub fn file(environment: &Environment) -> Option<PathBuf> {
 
 impl Prefs {
     /// Moves what the preferences keep under a server's name to its new name: its account
-    /// colors, its agents' notification levels, projects, files panes and places in the sidebar.
+    /// colors, its agents' notification levels, projects, files panes, cleared folders and places
+    /// in the sidebar.
     /// What the new name held, left by a server removed earlier, goes.
     pub fn rename_machine(&mut self, old: &str, new: &str) {
         fn moved<V>(map: &mut BTreeMap<String, V>, old: &str, new: &str) {
@@ -938,6 +974,7 @@ impl Prefs {
         moved(&mut self.notifications.agents, old, new);
         moved(&mut self.projects.agents, old, new);
         moved(&mut self.files_pane.agents, old, new);
+        moved(&mut self.files_pane.cleared, old, new);
         self.agent_order.retain(|key| key.machine != new);
         for key in &mut self.agent_order {
             if key.machine == old {
@@ -1118,7 +1155,17 @@ mod tests {
         "4": "closed"
       }
     },
-    "width": 280
+    "width": 280,
+    "cleared": {
+      "build-box": {
+        "4": {
+          "folders": [
+            "/srv/billing-old"
+          ],
+          "after": 17
+        }
+      }
+    }
   },
   "blocks": {
     "order": [
@@ -1219,6 +1266,16 @@ mod tests {
                         BTreeMap::from([(AgentId::new(4), PaneState::Closed)]),
                     )]),
                     width: Some(280),
+                    cleared: BTreeMap::from([(
+                        "build-box".to_owned(),
+                        BTreeMap::from([(
+                            AgentId::new(4),
+                            ClearedFolders {
+                                folders: BTreeSet::from([PathBuf::from("/srv/billing-old")]),
+                                after: Some(ItemId::new(17)),
+                            },
+                        )]),
+                    )]),
                 },
                 blocks: BlocksPrefs {
                     order: ["running", "tasks", "mcp", "messages"]
@@ -1406,6 +1463,13 @@ mod tests {
             "devbox".to_owned(),
             BTreeMap::from([(AgentId::new(4), PaneState::Open)]),
         );
+        let cleared = ClearedFolders {
+            folders: BTreeSet::from([PathBuf::from("/work/old_worktree")]),
+            after: Some(ItemId::new(9)),
+        };
+        prefs
+            .files_pane
+            .set_cleared("devbox", AgentId::new(4), cleared.clone());
 
         prefs.rename_machine("devbox", "lab");
 
@@ -1419,6 +1483,11 @@ mod tests {
         );
         assert!(prefs.projects.agents.contains_key("lab"));
         assert!(prefs.files_pane.agents.contains_key("lab"));
+        assert_eq!(
+            prefs.files_pane.cleared("lab", AgentId::new(4)),
+            Some(&cleared)
+        );
+        assert!(!prefs.files_pane.cleared.contains_key("devbox"));
         assert!(!prefs.accounts.colors.contains_key("devbox"));
         assert!(!prefs.notifications.agents.contains_key("devbox"));
     }
@@ -1731,6 +1800,7 @@ mod tests {
                 new_agents: PaneState::Open,
                 agents: BTreeMap::new(),
                 width: Some(300),
+                cleared: BTreeMap::new(),
             },
             ..Prefs::default()
         };
@@ -1781,5 +1851,25 @@ mod tests {
 
         assert_eq!(file(&environment), Some(PathBuf::from(expected)));
         assert_eq!(file(&Environment::default()), None);
+    }
+
+    #[test]
+    fn the_cleared_folders_are_kept_and_go_with_their_agent() {
+        let mut panes = FilesPanePrefs::default();
+        let agent = AgentId::new(3);
+        let cleared = ClearedFolders {
+            folders: BTreeSet::from([PathBuf::from("/work/old_worktree")]),
+            after: Some(ItemId::new(9)),
+        };
+        panes.set_cleared("devbox", agent, cleared.clone());
+
+        let saved = serde_json::to_string(&panes).unwrap();
+        let read: FilesPanePrefs = serde_json::from_str(&saved).unwrap();
+        let older: FilesPanePrefs = serde_json::from_str("{}").unwrap();
+        panes.keep_agents("devbox", |kept| kept != agent);
+
+        assert_eq!(read.cleared("devbox", agent), Some(&cleared));
+        assert!(older.cleared.is_empty(), "a file from before reads");
+        assert!(panes.cleared.is_empty(), "a removed agent's go");
     }
 }
