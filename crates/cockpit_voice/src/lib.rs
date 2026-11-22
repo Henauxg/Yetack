@@ -21,10 +21,10 @@ mod utterance;
 mod voice;
 mod voice_error;
 
-pub use catalog::{MODEL_FILES, ModelFile};
+pub use catalog::{ModelFile, SILERO, SpeechModel};
 pub use live_text::LiveText;
 pub use microphone::{Microphones, microphones};
-pub use voice::{Event, LiveRefresh, Missing, Voice, supported};
+pub use voice::{Event, LiveRefresh, Missing, RecordingOptions, Voice, supported};
 pub use voice_error::VoiceError;
 
 /// The rate of the audio the models take.

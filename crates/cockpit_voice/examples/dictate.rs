@@ -1,4 +1,4 @@
-//! Dictation in a terminal, through the default microphone:
+//! Dictation in a terminal, through the default microphone, with Parakeet unified EN:
 //! `cargo run --release -p cockpit_voice --example dictate -- <models folder>`.
 //! Enter starts a recording, Enter again stops it, and `q` then Enter quits.
 
@@ -6,7 +6,7 @@ use std::error::Error;
 use std::io::{self, BufRead};
 use std::path::PathBuf;
 
-use cockpit_voice::{Event, LiveRefresh, Voice};
+use cockpit_voice::{Event, RecordingOptions, Voice};
 
 fn main() -> Result<(), Box<dyn Error>> {
     let Some(models) = std::env::args().nth(1) else {
@@ -27,7 +27,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         if recording {
             voice.stop()?;
         } else {
-            voice.start(LiveRefresh::Auto, None, |event| match event {
+            voice.start(RecordingOptions::default(), |event| match event {
                 Event::Level(_) => {}
                 Event::Live(text) => println!("  {} [{}]", text.said, text.hearing),
                 Event::Fallback { chosen, using, .. } => {

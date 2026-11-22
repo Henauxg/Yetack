@@ -7,13 +7,15 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use cockpit_protocol::{AgentId, PromptDelivery};
-use cockpit_voice::{Event, LiveRefresh, Microphones, Missing, Voice, VoiceError};
+use cockpit_voice::{
+    Event, LiveRefresh, Microphones, Missing, RecordingOptions, SpeechModel, Voice, VoiceError,
+};
 use dioxus::prelude::*;
 use tokio::sync::mpsc::{self, UnboundedReceiver as Receiver};
 
 use crate::bridge::{self, COMPOSER_ID};
 use crate::connection::Cockpit;
-use crate::prefs::LiveTextRefresh;
+use crate::prefs::{DictationLanguage, LiveTextRefresh};
 use crate::state::voice::{
     self, Dictation, DownloadFrom, Field, Landing, LiveWords, MicMissing, MicrophoneList,
     ModelStatus, VoiceCard, VoiceState, WorkerOrder, dictation_target,
@@ -27,18 +29,26 @@ use crate::voice_models::{self, DownloadNews};
 const REMOVE_TRIES: u32 = 20;
 const REMOVE_WAIT: Duration = Duration::from_millis(100);
 
-pub fn initial_state() -> VoiceState {
+pub fn initial_state(language: DictationLanguage) -> VoiceState {
     let folder = voice_models::folder();
-    let model = if folder.as_deref().is_some_and(voice_models::present) {
+    let (model, other_model) = on_disk(folder.as_deref(), voice_models::speech_model(language));
+    VoiceState {
+        available: cockpit_voice::supported() && folder.is_some(),
+        model,
+        other_model,
+        ..VoiceState::default()
+    }
+}
+
+/// Whether `model` is in `folder`, and whether the other model is too.
+fn on_disk(folder: Option<&Path>, model: SpeechModel) -> (ModelStatus, bool) {
+    let present = |model| folder.is_some_and(|folder| voice_models::present(folder, model));
+    let status = if present(model) {
         ModelStatus::Ready
     } else {
         ModelStatus::Missing
     };
-    VoiceState {
-        available: cockpit_voice::supported() && folder.is_some(),
-        model,
-        ..VoiceState::default()
-    }
+    (status, present(voice_models::other(model)))
 }
 
 /// The task's own state.
@@ -140,7 +150,18 @@ impl Desk {
                 WorkerOrder::Nothing
             }
             VoiceCommand::RemoveModel => {
-                self.remove_model().await;
+                self.remove_model(self.chosen()).await;
+                WorkerOrder::Nothing
+            }
+            VoiceCommand::RemoveOtherModel => {
+                self.remove_model(voice_models::other(self.chosen())).await;
+                WorkerOrder::Nothing
+            }
+            // A download of the other model stops: its progress would show in the place of
+            // this model's.
+            VoiceCommand::LanguageChanged => {
+                self.news = None;
+                self.look_at_disk();
                 WorkerOrder::Nothing
             }
             VoiceCommand::CloseCard => {
@@ -184,16 +205,20 @@ impl Desk {
                 };
                 let events = self.events.clone();
                 let recording = self.recording;
-                let (refresh, microphone) = {
+                let options = {
                     let state = self.cockpit.state.peek();
                     let refresh = match state.prefs.voice.live {
                         LiveTextRefresh::Auto => LiveRefresh::Auto,
                         LiveTextRefresh::EverySecond => LiveRefresh::EverySecond,
                         LiveTextRefresh::Off => LiveRefresh::Off,
                     };
-                    (refresh, state.prefs.voice.microphone.clone())
+                    RecordingOptions {
+                        refresh,
+                        microphone: state.prefs.voice.microphone.clone(),
+                        model: voice_models::speech_model(state.prefs.voice.language),
+                    }
                 };
-                let started = voice.start(refresh, microphone, move |event| {
+                let started = voice.start(options, move |event| {
                     // The task ends with the window: the last events have no one to go to.
                     let _ = events.send((recording, event));
                 });
@@ -255,6 +280,22 @@ impl Desk {
         }
     }
 
+    /// The model of the language chosen in Settings.
+    fn chosen(&self) -> SpeechModel {
+        voice_models::speech_model(self.cockpit.state.peek().prefs.voice.language)
+    }
+
+    /// Reads again which models are on this computer.
+    fn look_at_disk(&mut self) {
+        let (model, other_model) = on_disk(self.folder.as_deref(), self.chosen());
+        let mut state = self.state.write();
+        // A running download says how far the model is.
+        if self.news.is_none() {
+            state.model = model;
+        }
+        state.other_model = other_model;
+    }
+
     fn start_download(&mut self, from: DownloadFrom) {
         if self.news.is_some() {
             return;
@@ -262,13 +303,14 @@ impl Desk {
         let Some(folder) = self.folder.clone() else {
             return;
         };
+        let model = self.chosen();
         let (news, heard) = mpsc::unbounded_channel();
         self.news = Some(heard);
         self.state
             .write()
-            .download_started(from, voice_models::total_size());
+            .download_started(from, voice_models::total_size(model));
         tokio::task::spawn_blocking(move || {
-            let result = voice_models::download(&folder, &news);
+            let result = voice_models::download(&folder, model, &news);
             // A cancelled download has no one to tell.
             let _ = news.send(DownloadNews::Done(result));
         });
@@ -285,16 +327,17 @@ impl Desk {
     }
 
     /// Ends the worker first: on Windows, a file it maps cannot be deleted.
-    async fn remove_model(&mut self) {
+    async fn remove_model(&mut self, model: SpeechModel) {
         self.state.write().cancel();
         self.voice = None;
         let Some(folder) = self.folder.clone() else {
             return;
         };
-        let removed = tokio::task::spawn_blocking(move || remove_when_free(&folder)).await;
+        let removed = tokio::task::spawn_blocking(move || remove_when_free(&folder, model)).await;
+        self.look_at_disk();
         let mut state = self.state.write();
         match removed {
-            Ok(Ok(())) => state.model = ModelStatus::Missing,
+            Ok(Ok(())) => {}
             Ok(Err(error)) => {
                 state.card = Some(VoiceCard::Failed(format!(
                     "Could not delete the speech model: {error}"
@@ -305,10 +348,10 @@ impl Desk {
     }
 }
 
-fn remove_when_free(folder: &Path) -> io::Result<()> {
+fn remove_when_free(folder: &Path, model: SpeechModel) -> io::Result<()> {
     let mut tries = 0;
     loop {
-        match voice_models::remove(folder) {
+        match voice_models::remove(folder, model) {
             Err(_) if tries < REMOVE_TRIES => {
                 tries += 1;
                 std::thread::sleep(REMOVE_WAIT);

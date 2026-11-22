@@ -1,21 +1,21 @@
 //! The speech models' download: files pinned to a commit, checked by their SHA-256, and kept in
-//! the app's state folder.
+//! the app's state folder. The language in Settings picks the model.
 
 use std::fs;
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use cockpit_voice::{MODEL_FILES, ModelFile};
+use cockpit_voice::{ModelFile, SILERO, SpeechModel};
 use sha2::{Digest, Sha256};
 use tokio::sync::mpsc::UnboundedSender;
 
 use crate::config::Environment;
-use crate::prefs::PREFS_FOLDER;
+use crate::prefs::{DictationLanguage, PREFS_FOLDER};
 use crate::self_update;
 
 const MODELS_FOLDER: &str = "voice-models";
-/// The longest a model file may take to download: the speech model is 707 MB.
+/// The longest a model file may take to download: a speech model is about 700 MB.
 const DOWNLOAD_TIME: Duration = Duration::from_secs(4 * 3600);
 const READ_CHUNK: usize = 256 * 1024;
 /// The progress goes out each time this much more has arrived.
@@ -40,15 +40,31 @@ pub fn folder() -> Option<PathBuf> {
     )
 }
 
-/// The size of every model file together.
-pub fn total_size() -> u64 {
-    MODEL_FILES.iter().map(|file| file.size).sum()
+/// The model that transcribes `language`.
+pub fn speech_model(language: DictationLanguage) -> SpeechModel {
+    match language {
+        DictationLanguage::English => SpeechModel::UnifiedEn,
+        DictationLanguage::Multilingual => SpeechModel::Ultra,
+    }
 }
 
-/// Whether every model file is in `folder`, whole: its size is right, and a marker beside it
-/// holds the hash its download checked. Hashing 707 MB at each start would take seconds.
-pub fn present(folder: &Path) -> bool {
-    MODEL_FILES.iter().all(|file| whole(folder, file))
+/// The model of the other language.
+pub fn other(model: SpeechModel) -> SpeechModel {
+    match model {
+        SpeechModel::UnifiedEn => SpeechModel::Ultra,
+        SpeechModel::Ultra => SpeechModel::UnifiedEn,
+    }
+}
+
+/// The size of every file `model` needs, together.
+pub fn total_size(model: SpeechModel) -> u64 {
+    model.files().iter().map(|file| file.size).sum()
+}
+
+/// Whether every file `model` needs is in `folder`, whole: its size is right, and a marker beside
+/// it holds the hash its download checked. Hashing 700 MB at each start would take seconds.
+pub fn present(folder: &Path, model: SpeechModel) -> bool {
+    model.files().iter().all(|file| whole(folder, file))
 }
 
 fn whole(folder: &Path, file: &ModelFile) -> bool {
@@ -60,14 +76,18 @@ fn marker(folder: &Path, file: &ModelFile) -> PathBuf {
     folder.join(format!("{}.sha256", file.name))
 }
 
-/// Downloads the model files `folder` lacks. It stops when `news` closes.
-pub fn download(folder: &Path, news: &UnboundedSender<DownloadNews>) -> Result<(), String> {
+/// Downloads the files of `model` that `folder` lacks. It stops when `news` closes.
+pub fn download(
+    folder: &Path,
+    model: SpeechModel,
+    news: &UnboundedSender<DownloadNews>,
+) -> Result<(), String> {
     fs::create_dir_all(folder)
         .map_err(|error| format!("Could not create {}: {error}", folder.display()))?;
     remove_parts(folder);
     let client = self_update::http_client(Some(DOWNLOAD_TIME));
     let mut done = 0;
-    for file in &MODEL_FILES {
+    for file in &model.files() {
         if !whole(folder, file) {
             download_file(&client, folder, file, done, news)
                 .map_err(|error| format!("Could not download {}: {error}", file.name))?;
@@ -78,7 +98,7 @@ pub fn download(folder: &Path, news: &UnboundedSender<DownloadNews>) -> Result<(
 }
 
 /// The app can end during a download without deleting its `.part` file, which can hold most of
-/// the 707 MB.
+/// a model's 700 MB.
 fn remove_parts(folder: &Path) {
     let entries = match fs::read_dir(folder) {
         Ok(entries) => entries,
@@ -90,12 +110,20 @@ fn remove_parts(folder: &Path) {
     for entry in entries.flatten() {
         let name = entry.file_name();
         let name = name.to_string_lossy();
-        let part = name.ends_with(PART_SUFFIX)
-            && MODEL_FILES.iter().any(|file| name.starts_with(file.name));
+        let part =
+            name.ends_with(PART_SUFFIX) && known_files().any(|file| name.starts_with(file.name));
         if part && let Err(error) = fs::remove_file(entry.path()) {
             tracing::warn!("cannot delete {}: {error}", entry.path().display());
         }
     }
+}
+
+/// Every file the app downloads, for any model.
+fn known_files() -> impl Iterator<Item = ModelFile> {
+    SpeechModel::ALL
+        .into_iter()
+        .map(SpeechModel::file)
+        .chain([SILERO])
 }
 
 fn download_file(
@@ -171,10 +199,19 @@ fn save(
     fs::write(marker(folder, file), file.sha256).map_err(|error| error.to_string())
 }
 
-/// Deletes the model files. On Windows, a file the worker still maps cannot go yet: its marker
-/// goes after it, so that a file that stays still counts as whole.
-pub fn remove(folder: &Path) -> io::Result<()> {
-    for file in &MODEL_FILES {
+/// Deletes the file of `model`, and Silero's once no other speech model needs it. On Windows, a
+/// file the worker still maps cannot go yet: its marker goes after it, so that a file that stays
+/// still counts as whole.
+pub fn remove(folder: &Path, model: SpeechModel) -> io::Result<()> {
+    let others_left = SpeechModel::ALL
+        .into_iter()
+        .any(|other| other != model && whole(folder, &other.file()));
+    let files = if others_left {
+        vec![model.file()]
+    } else {
+        model.files().to_vec()
+    };
+    for file in &files {
         for path in [folder.join(file.name), marker(folder, file)] {
             match fs::remove_file(&path) {
                 Err(error) if error.kind() != io::ErrorKind::NotFound => return Err(error),
@@ -189,28 +226,29 @@ pub fn remove(folder: &Path) -> io::Result<()> {
 mod tests {
     use super::*;
 
+    const ENGLISH: SpeechModel = SpeechModel::UnifiedEn;
+
     #[test]
     fn a_file_without_its_marker_is_not_whole() {
-        let folder = tempfile::tempdir().ok();
-        let Some(folder) = folder else {
-            return;
-        };
-        for file in &MODEL_FILES {
-            let _ =
-                fs::File::create(folder.path().join(file.name)).and_then(|f| f.set_len(file.size));
+        let folder = tempfile::tempdir().unwrap();
+        for file in &ENGLISH.files() {
+            fs::File::create(folder.path().join(file.name))
+                .and_then(|created| created.set_len(file.size))
+                .unwrap();
         }
-        assert!(!present(folder.path()));
-        for file in &MODEL_FILES {
-            let _ = fs::write(marker(folder.path(), file), file.sha256);
+        assert!(!present(folder.path(), ENGLISH));
+        for file in &ENGLISH.files() {
+            fs::write(marker(folder.path(), file), file.sha256).unwrap();
         }
-        assert!(present(folder.path()));
-        assert!(remove(folder.path()).is_ok());
-        assert!(!present(folder.path()));
+        assert!(present(folder.path(), ENGLISH));
+        assert!(!present(folder.path(), SpeechModel::Ultra));
+        assert!(remove(folder.path(), ENGLISH).is_ok());
+        assert!(!present(folder.path(), ENGLISH));
     }
 
-    /// Every model file in `folder`, whole, so that a download has nothing to fetch.
-    fn whole_files(folder: &Path) {
-        for file in &MODEL_FILES {
+    /// Every file of `model` in `folder`, whole, so that a download has nothing to fetch.
+    fn whole_files(folder: &Path, model: SpeechModel) {
+        for file in &model.files() {
             fs::File::create(folder.join(file.name))
                 .and_then(|created| created.set_len(file.size))
                 .unwrap();
@@ -219,21 +257,46 @@ mod tests {
     }
 
     #[test]
+    fn removing_one_model_keeps_the_other_and_the_silero_it_needs() {
+        let folder = tempfile::tempdir().unwrap();
+        whole_files(folder.path(), ENGLISH);
+        whole_files(folder.path(), SpeechModel::Ultra);
+
+        assert!(remove(folder.path(), SpeechModel::Ultra).is_ok());
+        let english_stays = present(folder.path(), ENGLISH);
+        assert!(remove(folder.path(), ENGLISH).is_ok());
+
+        assert!(english_stays);
+        assert_eq!(fs::read_dir(folder.path()).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn each_language_has_its_model_and_the_other_language_the_other() {
+        let english = speech_model(DictationLanguage::English);
+        let multilingual = speech_model(DictationLanguage::Multilingual);
+
+        assert_eq!(english, SpeechModel::UnifiedEn);
+        assert_eq!(multilingual, SpeechModel::Ultra);
+        assert_eq!(other(english), multilingual);
+        assert_eq!(other(multilingual), english);
+    }
+
+    #[test]
     fn a_download_deletes_the_parts_an_earlier_one_left() {
         let folder = tempfile::tempdir().unwrap();
-        whole_files(folder.path());
+        whole_files(folder.path(), ENGLISH);
         let left = folder
             .path()
-            .join(format!("{}k3XyZq.part", MODEL_FILES[0].name));
+            .join(format!("{}k3XyZq.part", SpeechModel::Ultra.file().name));
         let other = folder.path().join("notes.part");
         fs::write(&left, "half a model").unwrap();
         fs::write(&other, "not a model").unwrap();
         let (news, _heard) = tokio::sync::mpsc::unbounded_channel();
 
-        assert_eq!(download(folder.path(), &news), Ok(()));
+        assert_eq!(download(folder.path(), ENGLISH, &news), Ok(()));
         assert!(!left.exists());
         assert!(other.exists());
-        assert!(present(folder.path()));
+        assert!(present(folder.path(), ENGLISH));
     }
 
     const HELLO: ModelFile = ModelFile {
@@ -288,12 +351,12 @@ mod tests {
     #[test]
     fn a_file_that_cannot_go_keeps_its_marker() {
         let folder = tempfile::tempdir().unwrap();
-        let file = &MODEL_FILES[0];
+        let file = &ENGLISH.file();
         // A folder in the file's place: deleting it as a file fails on every system.
         fs::create_dir(folder.path().join(file.name)).unwrap();
         fs::write(marker(folder.path(), file), file.sha256).unwrap();
 
-        assert!(remove(folder.path()).is_err());
+        assert!(remove(folder.path(), ENGLISH).is_err());
         assert!(marker(folder.path(), file).exists());
     }
 }

@@ -5,6 +5,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use crate::SAMPLE_RATE;
+use crate::catalog::SpeechModel;
 use crate::level_control::LevelControl;
 use crate::live_text::LiveText;
 use crate::microphone::{self, Block, Level, Microphone};
@@ -23,6 +24,16 @@ pub enum LiveRefresh {
     EverySecond,
     /// Only at each pause.
     Off,
+}
+
+/// What a recording asks for.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct RecordingOptions {
+    pub refresh: LiveRefresh,
+    /// The microphone by its name. `None`, or a name not connected, records from the system
+    /// default.
+    pub microphone: Option<String>,
+    pub model: SpeechModel,
 }
 
 /// When the microphone chosen for a recording went missing.
@@ -98,8 +109,7 @@ type Events = Arc<dyn Fn(Event) + Send + Sync>;
 
 enum Command {
     Start {
-        refresh: LiveRefresh,
-        microphone: Option<String>,
+        options: RecordingOptions,
         events: Events,
     },
     /// The user stopped at this instant: the worker may hear of it later.
@@ -124,18 +134,15 @@ impl Voice {
         Ok(Self { commands })
     }
 
-    /// Starts recording, unless a recording runs, from the microphone named `microphone`, or
-    /// from the system default when it is `None` or missing. Its events go to `events`, from the
-    /// worker and from the audio thread.
+    /// Starts recording, unless a recording runs. Its events go to `events`, from the worker and
+    /// from the audio thread.
     pub fn start(
         &self,
-        refresh: LiveRefresh,
-        microphone: Option<String>,
+        options: RecordingOptions,
         events: impl Fn(Event) + Send + Sync + 'static,
     ) -> Result<(), VoiceError> {
         self.send(Command::Start {
-            refresh,
-            microphone,
+            options,
             events: Arc::new(events),
         })
     }
@@ -168,17 +175,13 @@ fn work(folder: &Path, commands: &Receiver<Command>) {
             }
             Err(RecvTimeoutError::Disconnected) => return,
         };
-        let Command::Start {
-            refresh,
-            microphone,
-            events,
-        } = command
-        else {
+        let Command::Start { options, events } = command else {
             continue;
         };
         let recording = Recording {
-            refresh,
-            microphone: microphone.as_deref(),
+            refresh: options.refresh,
+            microphone: options.microphone.as_deref(),
+            model: options.model,
             events: &events,
         };
         if let Err(error) = record(folder, &mut models, &recording, commands) {
@@ -192,6 +195,7 @@ struct Recording<'a> {
     refresh: LiveRefresh,
     /// The microphone chosen, by name.
     microphone: Option<&'a str>,
+    model: SpeechModel,
     events: &'a Events,
 }
 
@@ -268,11 +272,22 @@ fn record(
     };
     let mut input = Input::open(recording.microphone, &level)?;
     let mut told = input.tell_fallback(recording, Missing::AtStart);
+    // Another model than the one loaded takes its place.
+    if models
+        .as_ref()
+        .is_some_and(|loaded| loaded.model != recording.model)
+    {
+        *models = None;
+    }
     let models = match models {
         Some(models) => models,
         unloaded @ None => {
             let threads = thread::available_parallelism().map_or(MAX_THREADS, |n| n.get());
-            unloaded.insert(Models::load(folder, threads.min(MAX_THREADS))?)
+            unloaded.insert(Models::load(
+                folder,
+                recording.model,
+                threads.min(MAX_THREADS),
+            )?)
         }
     };
     let mut control = LevelControl::new();

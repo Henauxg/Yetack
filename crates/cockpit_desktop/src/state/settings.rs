@@ -13,8 +13,8 @@ use super::ui_state::{Dialog, RefusedChord, SettingsTab, SettingsView};
 use crate::config::{DAEMON_SECTION, DaemonConfig};
 use crate::keymap::{Chord, Command, Refusal};
 use crate::prefs::{
-    AfterDictation, CommentPlacement, EscStop, LiveTextRefresh, PaneState, ProjectId, SteerHold,
-    ToolCallDetail,
+    AfterDictation, CommentPlacement, DictationLanguage, EscStop, LiveTextRefresh, PaneState,
+    ProjectId, SteerHold, ToolCallDetail,
 };
 
 /// What the Local section says where the background service does not run.
@@ -170,6 +170,10 @@ pub fn set_voice_enabled(state: &mut AppState, enabled: bool) {
 
 pub fn set_voice_after(state: &mut AppState, after: AfterDictation) {
     state.prefs.voice.after = after;
+}
+
+pub fn set_voice_language(state: &mut AppState, language: DictationLanguage) {
+    state.prefs.voice.language = language;
 }
 
 /// Takes effect at the next dictation.

@@ -4,17 +4,19 @@ use transcribe_cpp::{
     Backend, Model, ModelOptions, RunOptions, Session, SessionOptions, VadOptions, VadSession,
 };
 
-use crate::catalog::{PARAKEET, SILERO};
+use crate::catalog::{SILERO, SpeechModel};
 use crate::utterance::{SpeechCheck, Transcribe};
 use crate::voice_error::VoiceError;
 
 /// The speech models, loaded. The weights are memory-mapped from their files.
 pub(crate) struct Models {
+    /// The model `speech` runs.
+    pub(crate) model: SpeechModel,
     pub(crate) speech: Speech,
     pub(crate) detector: SpeechDetector,
 }
 
-/// Parakeet, which writes the text.
+/// The model that writes the text.
 pub(crate) struct Speech {
     session: Session,
 }
@@ -25,10 +27,14 @@ pub(crate) struct SpeechDetector {
 }
 
 impl Models {
-    pub(crate) fn load(folder: &Path, threads: usize) -> Result<Self, VoiceError> {
+    pub(crate) fn load(
+        folder: &Path,
+        model: SpeechModel,
+        threads: usize,
+    ) -> Result<Self, VoiceError> {
         transcribe_cpp::disable_logging();
         let parakeet = Model::load_with(
-            present(folder, PARAKEET.name)?,
+            present(folder, model.file().name)?,
             &ModelOptions {
                 backend: Backend::Cpu,
                 ..Default::default()
@@ -40,6 +46,7 @@ impl Models {
         })?;
         let silero = Model::load(present(folder, SILERO.name)?)?;
         Ok(Self {
+            model,
             speech: Speech { session },
             detector: SpeechDetector {
                 session: silero.vad_session()?,
@@ -60,6 +67,7 @@ fn present(folder: &Path, name: &str) -> Result<PathBuf, VoiceError> {
 impl Transcribe for Speech {
     fn transcribe(&mut self, pcm: &[f32]) -> Result<String, VoiceError> {
         // Parakeet Ultra ignores a language hint, so a word can still come out in another one.
+        // Parakeet unified EN knows only English.
         Ok(self.session.run(pcm, &RunOptions::default())?.text)
     }
 }

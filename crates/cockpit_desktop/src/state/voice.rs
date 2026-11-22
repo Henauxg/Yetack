@@ -17,7 +17,10 @@ pub struct VoiceState {
     pub available: bool,
     pub phase: VoicePhase,
     pub live: LiveWords,
+    /// The model of the language chosen in Settings.
     pub model: ModelStatus,
+    /// The model of the other language is on this computer too.
+    pub other_model: bool,
     /// The card above the mic button.
     pub card: Option<VoiceCard>,
     /// The microphones Settings lists, once listed.

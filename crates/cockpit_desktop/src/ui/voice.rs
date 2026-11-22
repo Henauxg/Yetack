@@ -11,7 +11,7 @@ use dioxus::prelude::*;
 use crate::connection::{Clock, Cockpit};
 use crate::format;
 use crate::keymap::Command;
-use crate::prefs::AfterDictation;
+use crate::prefs::{AfterDictation, DictationLanguage};
 use crate::state::actions;
 use crate::state::quotes::Opening;
 use crate::state::voice::{
@@ -114,7 +114,13 @@ fn VoiceCardPopover() -> Element {
     let Some(shown) = use_presence(card) else {
         return rsx! {};
     };
-    let keys = cockpit.state.read().prefs.keys.shown(Command::Talk);
+    let (keys, language) = {
+        let state = cockpit.state.read();
+        (
+            state.prefs.keys.shown(Command::Talk),
+            state.prefs.voice.language,
+        )
+    };
     let class = if shown.leaving {
         "popover voice-card leaving"
     } else {
@@ -128,7 +134,10 @@ fn VoiceCardPopover() -> Element {
                     ModelStatus::Missing => rsx! {
                         h3 { "Dictation needs a speech model" }
                         p {
-                            "Parakeet Ultra, {format::bytes(model_size())}, downloaded once. It runs on this computer: your voice never leaves it."
+                            "{model_name(language)}, {format::bytes(model_size(language))}, downloaded once. It runs on this computer: your voice never leaves it."
+                            if language == DictationLanguage::English {
+                                " For other languages, choose {language_label(DictationLanguage::Multilingual)} in Settings."
+                            }
                         }
                         div { class: "voice-card-actions",
                             button { class: "button small", onclick: close, "Not now" }
@@ -220,14 +229,31 @@ pub fn DownloadBar(done: u64, total: u64) -> Element {
     }
 }
 
-/// The size of the speech model's download, as the card says it.
-pub fn model_size() -> u64 {
+/// The language as Settings' choice names it.
+pub fn language_label(language: DictationLanguage) -> &'static str {
+    match language {
+        DictationLanguage::English => "English",
+        DictationLanguage::Multilingual => "25 languages",
+    }
+}
+
+/// The name of the speech model that transcribes `language`.
+pub fn model_name(language: DictationLanguage) -> &'static str {
+    match language {
+        DictationLanguage::English => "Parakeet unified EN",
+        DictationLanguage::Multilingual => "Parakeet Ultra",
+    }
+}
+
+/// The size of the download of the speech model that transcribes `language`.
+pub fn model_size(language: DictationLanguage) -> u64 {
     #[cfg(feature = "voice")]
     {
-        crate::voice_models::total_size()
+        crate::voice_models::total_size(crate::voice_models::speech_model(language))
     }
     #[cfg(not(feature = "voice"))]
     {
+        let _ = language;
         0
     }
 }

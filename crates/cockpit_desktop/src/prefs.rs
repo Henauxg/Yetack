@@ -347,6 +347,8 @@ pub struct VoicePrefs {
     pub enabled: bool,
     pub after: AfterDictation,
     pub live: LiveTextRefresh,
+    /// The language picks the speech model.
+    pub language: DictationLanguage,
     /// The microphone, by the name the system gives it. `None` records from the system default.
     #[serde(
         skip_serializing_if = "Option::is_none",
@@ -361,6 +363,7 @@ impl Default for VoicePrefs {
             enabled: true,
             after: AfterDictation::default(),
             live: LiveTextRefresh::default(),
+            language: DictationLanguage::default(),
             microphone: None,
         }
     }
@@ -402,6 +405,33 @@ impl Serialize for AfterDictation {
 
 /// A word this version does not know, from another version of the app, reads as the default.
 impl<'de> Deserialize<'de> for AfterDictation {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let word = String::deserialize(deserializer)?;
+        Ok(word.parse().unwrap_or_default())
+    }
+}
+
+/// The language the user dictates in, which picks the speech model.
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, Default, EnumString, IntoStaticStr, VariantArray,
+)]
+#[strum(serialize_all = "snake_case")]
+pub enum DictationLanguage {
+    /// Parakeet unified EN, which knows only English and so never switches to another language.
+    #[default]
+    English,
+    /// Parakeet Ultra, which picks the language of each segment among 25.
+    Multilingual,
+}
+
+impl Serialize for DictationLanguage {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(self.into())
+    }
+}
+
+/// A word this version does not know, from another version of the app, reads as the default.
+impl<'de> Deserialize<'de> for DictationLanguage {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         let word = String::deserialize(deserializer)?;
         Ok(word.parse().unwrap_or_default())
@@ -1299,6 +1329,7 @@ mod tests {
     "enabled": false,
     "after": "insert_and_send",
     "live": "every_second",
+    "language": "multilingual",
     "microphone": "Headset (USB Audio)"
   },
   "keys": {
@@ -1412,6 +1443,7 @@ mod tests {
                     enabled: false,
                     after: AfterDictation::InsertAndSend,
                     live: LiveTextRefresh::EverySecond,
+                    language: DictationLanguage::Multilingual,
                     microphone: Some("Headset (USB Audio)".to_owned()),
                 },
                 keys: switched,
@@ -1718,13 +1750,21 @@ mod tests {
             .iter()
             .map(|&live| live.into())
             .collect();
-        let unknown: Prefs =
-            serde_json::from_str(r#"{"voice": {"after": "copy", "live": "always"}}"#).unwrap();
+        let languages: Vec<&str> = DictationLanguage::VARIANTS
+            .iter()
+            .map(|&language| language.into())
+            .collect();
+        let unknown: Prefs = serde_json::from_str(
+            r#"{"voice": {"after": "copy", "live": "always", "language": "klingon"}}"#,
+        )
+        .unwrap();
 
         assert_eq!(afters, ["insert", "insert_and_send"]);
         assert_eq!(lives, ["auto", "every_second", "off"]);
+        assert_eq!(languages, ["english", "multilingual"]);
         assert_eq!(unknown.voice.after, AfterDictation::Insert);
         assert_eq!(unknown.voice.live, LiveTextRefresh::Auto);
+        assert_eq!(unknown.voice.language, DictationLanguage::English);
     }
 
     #[test]

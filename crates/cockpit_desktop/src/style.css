@@ -5938,6 +5938,16 @@ html.reordering * {
   gap: 5px;
 }
 
+/* The model of the other language, still on this computer, under the model row. */
+.voice-other-model {
+  margin-top: -6px;
+  animation: fade-in var(--motion-in) var(--ease-out) backwards;
+}
+
+.presence.leaving > .voice-other-model {
+  animation: fade-out var(--motion-out) var(--ease-in) forwards;
+}
+
 /* Settings' microphone: a menu button, and its menu under it. */
 .mic-choice-anchor {
   position: relative;

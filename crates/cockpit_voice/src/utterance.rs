@@ -362,12 +362,14 @@ mod tests {
 
     /// The real models on a recording: `VOICE_TEST_MODELS` names the models folder, and
     /// `VOICE_TEST_WAV` a 16 kHz mono 16-bit WAV file. The recording goes in as a microphone
-    /// would give it, 30 ms at a time, and the final text is printed.
+    /// would give it, 30 ms at a time, and the final text is printed. `VOICE_TEST_MODEL=ultra`
+    /// takes Parakeet Ultra rather than Parakeet unified EN.
     #[test]
     #[ignore = "needs the models and a recording"]
     fn transcribes_a_recording() {
         use std::path::Path;
 
+        use crate::catalog::SpeechModel;
         use crate::level_control::LevelControl;
         use crate::models::Models;
 
@@ -388,7 +390,11 @@ mod tests {
             .map(|pair| f32::from(i16::from_le_bytes(*pair)) / 32_768.0)
             .collect();
         LevelControl::new().apply(&mut pcm);
-        let Ok(mut models) = Models::load(Path::new(&folder), 4) else {
+        let model = match std::env::var("VOICE_TEST_MODEL").as_deref() {
+            Ok("ultra") => SpeechModel::Ultra,
+            Ok(_) | Err(_) => SpeechModel::UnifiedEn,
+        };
+        let Ok(mut models) = Models::load(Path::new(&folder), model, 4) else {
             panic!("the models did not load from {folder}");
         };
         let mut utterance =

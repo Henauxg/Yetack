@@ -7,6 +7,7 @@
 use dioxus::prelude::*;
 
 use crate::connection::Cockpit;
+use crate::prefs::DictationLanguage;
 use crate::state::voice::{DownloadFrom, Field, VoiceState};
 
 /// What the window asks of dictation.
@@ -30,7 +31,12 @@ pub enum VoiceCommand {
     AgentGone,
     Download(DownloadFrom),
     CancelDownload,
+    /// Removes the model of the language chosen.
     RemoveModel,
+    /// Removes the model of the other language.
+    RemoveOtherModel,
+    /// The language changed in Settings, and with it the model.
+    LanguageChanged,
     CloseCard,
     /// Settings' Voice tab opened: it lists the microphones.
     ListMicrophones,
@@ -52,7 +58,7 @@ impl VoiceDesk {
 
 /// Starts dictation's task, and provides the [`VoiceDesk`] to every component.
 pub fn use_voice(cockpit: Cockpit) -> VoiceDesk {
-    let state = use_signal(initial_state);
+    let state = use_signal(move || initial_state(cockpit.state.peek().prefs.voice.language));
     let level = use_signal(|| 0.0_f32);
     let commands = use_coroutine(move |commands: UnboundedReceiver<VoiceCommand>| {
         run(cockpit, state, level, commands)
@@ -88,13 +94,13 @@ pub fn use_voice(cockpit: Cockpit) -> VoiceDesk {
 }
 
 #[cfg(feature = "voice")]
-fn initial_state() -> VoiceState {
-    crate::voice_engine::initial_state()
+fn initial_state(language: DictationLanguage) -> VoiceState {
+    crate::voice_engine::initial_state(language)
 }
 
 /// This build has no dictation: the window shows none.
 #[cfg(not(feature = "voice"))]
-fn initial_state() -> VoiceState {
+fn initial_state(_: DictationLanguage) -> VoiceState {
     VoiceState::default()
 }
 
