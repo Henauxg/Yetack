@@ -28,6 +28,10 @@ pub const HOME_ENV: &str = "HOME";
 /// Names the home folder, which the default state folder and Claude Code's folder need.
 #[cfg(windows)]
 pub const HOME_ENV: &str = "USERPROFILE";
+/// Names the user's local data folder, which holds the default state folder and the programs
+/// installed for the user alone.
+#[cfg(windows)]
+pub(crate) const LOCAL_APP_DATA_ENV: &str = "LOCALAPPDATA";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DaemonConfig {

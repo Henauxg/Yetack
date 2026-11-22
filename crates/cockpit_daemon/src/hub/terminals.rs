@@ -16,7 +16,7 @@ use std::sync::mpsc as std_mpsc;
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
 use cockpit_protocol::{
-    AgentId, ErrorBody, ErrorCode, Frame, ResponseBody, ServerMessage, TerminalChange,
+    AgentId, ErrorBody, ErrorCode, Frame, ResponseBody, ServerMessage, ShellChoice, TerminalChange,
     TerminalExit, TerminalId, TerminalInfo, TerminalInputParams, TerminalOpenParams,
     TerminalParams, TerminalResizeParams, TerminalSize, TerminalUpdate,
 };
@@ -28,11 +28,9 @@ use tokio::time;
 use crate::blocking::{self, Scope};
 use crate::hub::agents::respond;
 use crate::hub::input::{HubInput, Reply};
+use crate::hub::shells::{self, Shell};
 use crate::hub::state::{CLIENT_QUEUE, Hub};
 use crate::hub::{errors, start};
-
-/// The shell terminals run. It wins over the account's login shell.
-const SHELL_ENV: &str = "YETACK_SHELL";
 
 /// The output a terminal keeps for a client that shows it again: a few screens of a busy build.
 const RECENT_BYTES: usize = 512 * 1024;
@@ -59,12 +57,6 @@ struct Terminal {
     written: u64,
     /// `Some` once the shell ended.
     exited: Option<TerminalExit>,
-}
-
-/// The program a terminal runs, and the title it shows.
-struct Shell {
-    program: String,
-    title: String,
 }
 
 /// A shell that runs on its PTY and waits for [`Terminals::add`]: the thread that waits for it
@@ -278,41 +270,6 @@ fn pty_size(size: TerminalSize) -> PtySize {
     }
 }
 
-/// The user's shell: `YETACK_SHELL`, else the account's login shell, else `$SHELL`. `$SHELL`
-/// comes last: a `nix develop` shell sets it to a bash built without readline, which shows a
-/// prompt's `\[` and `\]` and cannot edit a line.
-fn shell() -> Shell {
-    let set = |name| {
-        std::env::var(name)
-            .ok()
-            .filter(|shell: &String| !shell.is_empty())
-    };
-    #[cfg(unix)]
-    let program = set(SHELL_ENV)
-        .or_else(login_shell)
-        .or_else(|| set("SHELL"))
-        .unwrap_or_else(|| "/bin/sh".to_owned());
-    #[cfg(windows)]
-    let program = set(SHELL_ENV)
-        .or_else(|| set("COMSPEC"))
-        .unwrap_or_else(|| "cmd.exe".to_owned());
-    let title = Path::new(&program)
-        .file_stem()
-        .and_then(|stem| stem.to_str())
-        .unwrap_or("shell")
-        .to_owned();
-    Shell { program, title }
-}
-
-/// The daemon's user's login shell, as the system's user database gives it (`/etc/passwd`, a
-/// directory service, or macOS's), when it names a file that exists.
-#[cfg(unix)]
-fn login_shell() -> Option<String> {
-    let user = nix::unistd::User::from_uid(nix::unistd::getuid()).ok()??;
-    let shell = user.shell.into_os_string().into_string().ok()?;
-    Path::new(&shell).is_file().then_some(shell)
-}
-
 fn spawn_thread(name: &str, run: impl FnOnce() + Send + 'static) -> Result<(), String> {
     std::thread::Builder::new()
         .name(name.to_owned())
@@ -321,15 +278,18 @@ fn spawn_thread(name: &str, run: impl FnOnce() + Send + 'static) -> Result<(), S
         .map_err(|error| format!("cannot start a thread for the terminal: {error}"))
 }
 
-/// Starts the user's shell in `folder` on a PTY of `size`, as terminal `terminal`. It waits until
-/// the shell runs in the folder, so a folder on a stuck mount holds it.
+/// Starts the shell whose program is `program`, or the default one, in `folder` on a PTY of
+/// `size`, as terminal `terminal`. It waits until the shell runs in the folder, so a folder on a
+/// stuck mount holds it.
 fn spawn_shell(
     terminal: TerminalId,
     folder: &Path,
     size: TerminalSize,
+    program: Option<&Path>,
     inputs: mpsc::Sender<HubInput>,
 ) -> Result<SpawnedShell, String> {
-    spawn(&shell(), terminal, folder, size, inputs)
+    let shell = shells::pick(shells::find(), program)?;
+    spawn(&shell, terminal, folder, size, inputs)
 }
 
 /// Starts `shell` in `folder` on a PTY of `size`, with the thread that waits for it.
@@ -345,18 +305,19 @@ fn spawn(
         .map_err(|error| format!("cannot open a terminal: {error}"))?;
     let program = &shell.program;
     let mut command = CommandBuilder::new(program);
+    command.args(shell.args);
     command.cwd(folder);
     command.env("TERM", "xterm-256color");
     command.env("COLORTERM", "truecolor");
     // As login(1) does: what the terminal starts, as tmux or vim's `:sh`, runs the same shell.
     #[cfg(unix)]
-    command.env("SHELL", program);
+    command.env(shells::USER_SHELL_ENV, program);
     // The shell is the user's, not one Claude Code runs.
     command.env_remove("CLAUDECODE");
     let child = pair
         .slave
         .spawn_command(command)
-        .map_err(|error| format!("cannot start {program}: {error}"))?;
+        .map_err(|error| format!("cannot start {}: {error}", program.display()))?;
     drop(pair.slave);
     let mut killer = child.clone_killer();
     let (owned, owner) = std_mpsc::channel();
@@ -372,7 +333,7 @@ fn spawn(
         return Err(error);
     }
     Ok(SpawnedShell {
-        title: shell.title.clone(),
+        title: shell.title().to_owned(),
         master: pair.master,
         killer,
         owned,
@@ -449,10 +410,11 @@ fn write_input(
 }
 
 impl Hub {
-    /// Starts the user's shell in the agent's folder in a task, with the time limit of an agent's
-    /// start. The hub takes the terminal and answers in [`Hub::terminal_spawned`].
+    /// Starts the shell asked for, or the default one, in the agent's folder in a task, with the
+    /// time limit of an agent's start. The hub takes the terminal and answers in
+    /// [`Hub::terminal_spawned`].
     pub(super) fn open_terminal(&mut self, params: TerminalOpenParams, reply: Reply) {
-        let TerminalOpenParams { agent, size } = params;
+        let TerminalOpenParams { agent, size, shell } = params;
         let folder = match self.agent(agent) {
             Ok(found) => found.record.folder.clone(),
             Err(error) => return respond(reply, Err(error)),
@@ -466,7 +428,8 @@ impl Hub {
             let deadline = time::Instant::now() + start::FOLDER_TIME;
             // A shell that starts past the limit drops with no terminal, which ends it.
             let spawned = blocking::run(deadline, Scope::Folder(&folder), move || {
-                spawn_shell(terminal, &shell_folder, size, exits).map_err(unsupported)
+                spawn_shell(terminal, &shell_folder, size, shell.as_deref(), exits)
+                    .map_err(unsupported)
             })
             .await;
             let spawned = spawned.unwrap_or_else(|error| Err(start::not_answered(&folder, &error)));
@@ -516,11 +479,43 @@ impl Hub {
         Ok(ResponseBody::TerminalOpened { terminal })
     }
 
-    pub(super) fn list_terminals(&self, agent: AgentId) -> Result<ResponseBody, ErrorBody> {
-        self.agent(agent)?;
-        Ok(ResponseBody::Terminals {
+    /// Lists the agent's terminals and the shells a terminal can run. A task finds the shells,
+    /// since it reads files, and the hub answers in [`Hub::shells_found`], with the terminals open
+    /// then.
+    pub(super) fn list_terminals(&self, agent: AgentId, reply: Reply) {
+        if let Err(error) = self.agent(agent) {
+            return respond(reply, Err(error));
+        }
+        let inputs = self.inputs.clone();
+        tokio::spawn(async move {
+            let deadline = time::Instant::now() + start::FOLDER_TIME;
+            let found = blocking::run(deadline, Scope::Shells, shells::find).await;
+            // Without the shells, the app still shows the terminals, with no menu.
+            let shells = found.unwrap_or_else(|error| {
+                tracing::warn!(%error, "cannot find the shells a terminal can run");
+                Vec::new()
+            });
+            let shells: Vec<ShellChoice> = shells.into_iter().map(Shell::into_choice).collect();
+            let input = HubInput::ShellsFound {
+                agent,
+                shells,
+                reply,
+            };
+            if let Err(unsent) = inputs.send(input).await
+                && let HubInput::ShellsFound { reply, .. } = unsent.0
+            {
+                respond(reply, Err(errors::stopping()));
+            }
+        });
+    }
+
+    /// A task found the shells that `agent.terminals` lists.
+    pub(super) fn shells_found(&self, agent: AgentId, shells: Vec<ShellChoice>, reply: Reply) {
+        let listed = self.agent(agent).map(|_| ResponseBody::Terminals {
             terminals: self.terminals.list(agent),
-        })
+            shells,
+        });
+        respond(reply, listed);
     }
 
     pub(super) fn attach_terminal(
@@ -635,7 +630,7 @@ mod tests {
     #[cfg(target_os = "linux")]
     use std::time::Duration;
 
-    use cockpit_protocol::{AccountId, Mark, Position, Request, Timestamp};
+    use cockpit_protocol::{AccountId, AgentParams, Mark, Position, Request, Timestamp};
 
     use crate::store::{AgentRecord, AgentsFile, ResumeAs, StateDir};
     #[cfg(target_os = "linux")]
@@ -681,6 +676,7 @@ mod tests {
         Request::AgentTerminalOpen(TerminalOpenParams {
             agent,
             size: TerminalSize { cols: 80, rows: 24 },
+            shell: None,
         })
     }
 
@@ -741,6 +737,46 @@ mod tests {
         assert!(hub.terminals.list(agent).is_empty());
     }
 
+    #[tokio::test]
+    async fn the_terminal_list_names_the_shells_with_one_default() {
+        let temp = tempfile::tempdir().unwrap();
+        let (mut hub, mut inputs, agent) = hub_with_agent(temp.path());
+
+        let listed = hub
+            .ask(&mut inputs, Request::AgentTerminals(AgentParams { agent }))
+            .await;
+
+        let Ok(ResponseBody::Terminals { terminals, shells }) = listed else {
+            panic!("expected the terminals, got {listed:?}");
+        };
+        assert!(terminals.is_empty());
+        let defaults = shells.iter().filter(|shell| shell.default).count();
+        assert_eq!(defaults, 1, "{shells:?}");
+    }
+
+    /// The app names a shell from the list: any other program is refused, and nothing runs.
+    #[tokio::test]
+    async fn a_shell_the_machine_does_not_offer_is_refused() {
+        let temp = tempfile::tempdir().unwrap();
+        let (mut hub, mut inputs, agent) = hub_with_agent(temp.path());
+        let program = temp.path().join("not-a-shell");
+        let request = Request::AgentTerminalOpen(TerminalOpenParams {
+            agent,
+            size: TerminalSize { cols: 80, rows: 24 },
+            shell: Some(program.clone()),
+        });
+
+        let refused = hub.ask(&mut inputs, request).await;
+
+        let refused = refused.unwrap_err();
+        assert_eq!(refused.code, ErrorCode::Unsupported);
+        assert_eq!(
+            refused.message,
+            format!("{} is not a shell of this machine", program.display())
+        );
+        assert!(hub.terminals.list(agent).is_empty());
+    }
+
     /// A shell that writes its pid in its folder, then runs until it is killed: it ignores the
     /// SIGHUP of its PTY's end. `write_script` runs it once without a terminal, and it then ends
     /// at once.
@@ -752,8 +788,10 @@ mod tests {
             "#!/bin/sh\n[ -t 0 ] || exit 0\ntrap '' HUP\necho $$ > shell.pid\nexec sleep 600\n",
         );
         Shell {
-            program: program.display().to_string(),
-            title: "shell".to_owned(),
+            program,
+            args: &[],
+            name: "shell".to_owned(),
+            default: true,
         }
     }
 
@@ -848,18 +886,6 @@ mod tests {
         assert_eq!(gone.code, ErrorCode::NotFound);
         assert!(hub.terminals.open.is_empty());
         assert!(ends(pid).await, "the shell ended");
-    }
-
-    /// The daemon's user has a login shell on any machine that runs the tests.
-    #[cfg(unix)]
-    #[test]
-    fn the_users_login_shell_is_a_file() {
-        let shell = login_shell();
-
-        assert!(
-            shell.is_some(),
-            "the user database gives no login shell that is an existing file"
-        );
     }
 
     /// A terminal of agent 3 whose shell already ended.

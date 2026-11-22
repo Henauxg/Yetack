@@ -620,11 +620,14 @@ pub fn apply_response(
             }
         },
         Purpose::Terminals { agent } => match result {
-            Ok(ResponseBody::Terminals { terminals: listed }) => {
-                terminals::listed(state, agent, Some(listed));
+            Ok(ResponseBody::Terminals {
+                terminals: listed,
+                shells,
+            }) => {
+                terminals::listed(state, agent, Some(listed), shells);
             }
             other => {
-                terminals::listed(state, agent, None);
+                terminals::listed(state, agent, None, Vec::new());
                 report(state, method, other);
             }
         },

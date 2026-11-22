@@ -5,6 +5,8 @@ use std::{env, io};
 use cockpit_protocol::AgentId;
 
 use crate::daemon_config::HOME_ENV;
+#[cfg(windows)]
+use crate::daemon_config::LOCAL_APP_DATA_ENV;
 use crate::lock_holder::LockHolder;
 use crate::store::store_error::StoreError;
 
@@ -15,7 +17,7 @@ const STATE_HOME_ENV: &str = "XDG_STATE_HOME";
 #[cfg(unix)]
 const HOME_STATE: &str = ".local/state";
 #[cfg(windows)]
-const STATE_HOME_ENV: &str = "LOCALAPPDATA";
+const STATE_HOME_ENV: &str = LOCAL_APP_DATA_ENV;
 /// Where the state goes under `%USERPROFILE%` when `LOCALAPPDATA` is unset.
 #[cfg(windows)]
 const HOME_STATE: &str = r"AppData\Local";

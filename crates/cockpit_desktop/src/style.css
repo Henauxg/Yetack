@@ -8235,10 +8235,6 @@ html.splitting * {
   transition: color var(--motion-hover) var(--ease), background var(--motion-hover) var(--ease);
 }
 
-.terminal-add {
-  margin-left: 4px;
-}
-
 .terminal-tab-close:hover,
 .terminal-add:not(:disabled):hover {
   background: #262626;
@@ -8249,6 +8245,55 @@ html.splitting * {
 .terminal-add:not(:disabled):active,
 .terminal-tab-name:active {
   transform: scale(var(--press-scale));
+}
+
+/* The "+", and the button beside it that lists the other shells. */
+.terminal-new {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 1px;
+  margin: auto 4px;
+}
+
+.terminal-new .terminal-add {
+  margin: 0;
+}
+
+.terminal-shells {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 22px;
+  padding: 0;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--dim);
+  transition: color var(--motion-hover) var(--ease), background var(--motion-hover) var(--ease);
+  animation: fade-in var(--motion-in) var(--ease-out) backwards;
+}
+
+.terminal-shells:not(:disabled):hover,
+.terminal-shells.open {
+  background: #262626;
+  color: var(--text);
+}
+
+.terminal-shells:not(:disabled):active {
+  transform: scale(var(--press-scale));
+}
+
+/* It came on screen with its agent. */
+.terminal-shells.instant {
+  animation: none;
+}
+
+.terminal-shells.leaving {
+  pointer-events: none;
+  animation: fade-out var(--motion-out) var(--ease-in) forwards;
 }
 
 .terminal-controls {
@@ -8324,6 +8369,51 @@ html.splitting * {
   display: inline-flex;
   width: 12px;
   color: var(--teal);
+}
+
+/* The shells a new terminal can run, under the button beside the "+". `--menu-y` is the button's
+   bottom edge, or its top edge when the menu opens above it. */
+.popover.row-menu.shell-menu {
+  left: max(8px, min(var(--menu-x), calc(100vw - 368px)));
+  top: calc(var(--menu-y) + 4px);
+  max-width: 360px;
+  max-height: calc(100vh - var(--menu-y) - 12px);
+  overflow-y: auto;
+}
+
+/* No room under the button: the menu opens above it, from its bottom edge. */
+.popover.row-menu.shell-menu.above {
+  --enter-y: 4px;
+  top: auto;
+  bottom: calc(100vh - var(--menu-y) + 4px);
+  max-height: calc(var(--menu-y) - 12px);
+  transform-origin: bottom left;
+}
+
+.shell-menu-head {
+  padding: 5px 8px 3px;
+  font-size: 12px;
+  color: var(--dim);
+}
+
+/* The name, "default" after it, and the program at the end of the row. */
+.shell-menu .menu-label {
+  flex: none;
+}
+
+.shell-default {
+  font-size: 11.5px;
+  color: var(--dim);
+}
+
+.shell-program {
+  min-width: 0;
+  margin-left: auto;
+  padding-left: 16px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-size: 11px;
+  color: var(--faint);
 }
 
 .terminal-screen {

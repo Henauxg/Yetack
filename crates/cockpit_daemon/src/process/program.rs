@@ -35,10 +35,15 @@ const NPM_NAME: &str = "claude.cmd";
 #[cfg(any(windows, test))]
 const POWERSHELL_SCRIPT_EXTENSION: &str = ".ps1";
 #[cfg(windows)]
+pub(crate) const PATH_ENV: &str = "PATH";
+#[cfg(windows)]
 const PATHEXT_ENV: &str = "PATHEXT";
 /// Windows' own `PATHEXT`, for a daemon whose environment lacks it.
 #[cfg(windows)]
 const DEFAULT_PATHEXT: &str = ".COM;.EXE;.BAT;.CMD";
+/// Windows' command interpreter, which runs a `.cmd`.
+#[cfg(windows)]
+pub(crate) const INTERPRETER: &str = "cmd.exe";
 /// `/d` skips the AutoRun commands of the registry, `/v:off` keeps `!` plain text, and `/s /c`
 /// runs the rest of the line once its outer quotes are taken off.
 #[cfg(any(windows, test))]
@@ -110,7 +115,7 @@ pub(crate) fn resolve(configured: &Path) -> ClaudeProgram {
             name: TerminalName::Path(configured.to_owned()),
         };
     }
-    let path = std::env::var_os("PATH").unwrap_or_default();
+    let path = std::env::var_os(PATH_ENV).unwrap_or_default();
     let home = std::env::var_os(HOME_ENV);
     let extensions = std::env::var_os(PATHEXT_ENV);
     resolve_default(&path, home.as_deref(), extensions.as_deref(), Path::is_file)
@@ -289,12 +294,16 @@ fn quoted(word: &OsStr) -> io::Result<String> {
 /// `cmd.exe` in the system folder, rather than one found on `PATH`.
 #[cfg(windows)]
 fn interpreter() -> io::Result<PathBuf> {
+    Ok(system_folder()?.join(INTERPRETER))
+}
+
+/// Windows' system folder, such as `C:\Windows\System32`.
+#[cfg(windows)]
+pub(crate) fn system_folder() -> io::Result<PathBuf> {
     use std::os::windows::ffi::OsStringExt;
 
     use windows_sys::Win32::Foundation::MAX_PATH;
     use windows_sys::Win32::System::SystemInformation::GetSystemDirectoryW;
-
-    const INTERPRETER: &str = "cmd.exe";
 
     let mut buffer = [0_u16; MAX_PATH as usize];
     // SAFETY: the buffer holds `MAX_PATH` UTF-16 units, the length passed.
@@ -303,7 +312,7 @@ fn interpreter() -> io::Result<PathBuf> {
         .get(..length as usize)
         .filter(|folder| !folder.is_empty())
         .ok_or_else(io::Error::last_os_error)?;
-    Ok(PathBuf::from(OsString::from_wide(folder)).join(INTERPRETER))
+    Ok(PathBuf::from(OsString::from_wide(folder)))
 }
 
 #[cfg(test)]

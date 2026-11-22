@@ -283,7 +283,7 @@ mod tests {
             title: "zsh".to_owned(),
             exited: None,
         };
-        terminals::listed(&mut state, AgentId::new(1), Some(vec![info(2)]));
+        terminals::listed(&mut state, AgentId::new(1), Some(vec![info(2)]), Vec::new());
 
         open(&mut state, spot(false, None));
         let opened = target(&state).is_some();
@@ -296,7 +296,7 @@ mod tests {
             },
         );
         let after_close = (state.ui.popover, target(&state).is_some());
-        terminals::listed(&mut state, AgentId::new(1), Some(vec![info(2)]));
+        terminals::listed(&mut state, AgentId::new(1), Some(vec![info(2)]), Vec::new());
         open(&mut state, spot(false, None));
         terminals::opened(&mut state, AgentId::new(1), Some(TerminalId::new(3)));
         let after_opening = state.ui.popover;

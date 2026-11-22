@@ -59,6 +59,8 @@ pub(crate) enum Scope<'folder> {
     FolderList,
     /// The lists of past sessions.
     Sessions,
+    /// The search for the shells a terminal can run.
+    Shells,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
@@ -66,6 +68,7 @@ enum ScopeKey {
     Folder(PathBuf),
     FolderList,
     Sessions,
+    Shells,
 }
 
 impl From<Scope<'_>> for ScopeKey {
@@ -74,6 +77,7 @@ impl From<Scope<'_>> for ScopeKey {
             Scope::Folder(folder) => Self::Folder(folder.to_owned()),
             Scope::FolderList => Self::FolderList,
             Scope::Sessions => Self::Sessions,
+            Scope::Shells => Self::Shells,
         }
     }
 }

@@ -22,10 +22,10 @@ use cockpit_protocol::{
     PROTOCOL_VERSION, PastSession, PendingId, PermissionMode, Plan, PlanUsage, Position, ProcessId,
     Prompt, PromptId, Question, QuestionAnswer, QuestionOption, RateLimitStatus, ReleaseVersion,
     Remote, Repository, Request, ResourceUse, ResponseBody, Selection, ServerLoad, ServerPoint,
-    SessionUse, SignIn, SignInWait, SlashCommand, Subagent, SubagentRun, SubagentStatus,
-    SubagentToolCall, TaskListItem, TaskProgress, TaskStatus, TerminalId, TerminalInfo, Timestamp,
-    TokenUsage, ToolCall, ToolCallStatus, TranscriptItem, TurnEnd, TurnOutcome, Upstream,
-    UsageWindow, UserMessage, WaitingPrompt, WaitingState, WindowUsage,
+    SessionUse, ShellChoice, SignIn, SignInWait, SlashCommand, Subagent, SubagentRun,
+    SubagentStatus, SubagentToolCall, TaskListItem, TaskProgress, TaskStatus, TerminalId,
+    TerminalInfo, Timestamp, TokenUsage, ToolCall, ToolCallStatus, TranscriptItem, TurnEnd,
+    TurnOutcome, Upstream, UsageWindow, UserMessage, WaitingPrompt, WaitingState, WindowUsage,
 };
 use dioxus::prelude::{Signal, WritableExt};
 use serde_json::Value;
@@ -91,6 +91,20 @@ const TERMINAL_AGENT: u32 = 1;
 /// The demo's only terminal, the terminal agent's.
 fn demo_terminal() -> TerminalId {
     TerminalId::new(1)
+}
+
+/// The shells the demo's machine offers, as a Linux daemon finds them in `/etc/shells`.
+fn demo_shells() -> Vec<ShellChoice> {
+    let shell = |name: &str, default| ShellChoice {
+        program: PathBuf::from(format!("/usr/bin/{name}")),
+        name: name.to_owned(),
+        default,
+    };
+    vec![
+        shell("bash", false),
+        shell("zsh", true),
+        shell("fish", false),
+    ]
 }
 
 /// What the demo's terminal shows: the agent's tests. It fits the pane's default height.
@@ -2416,6 +2430,7 @@ pub fn answer(state: &AppState, request: &Request) -> Result<ResponseBody, Reque
                 })
                 .into_iter()
                 .collect(),
+            shells: demo_shells(),
         }),
         Request::TerminalAttach(params) if params.terminal == demo_terminal() => {
             use base64::Engine;
@@ -5686,12 +5701,14 @@ mod tests {
         let open = Request::AgentTerminalOpen(TerminalOpenParams {
             agent,
             size: TerminalSize { cols: 80, rows: 24 },
+            shell: None,
         });
 
         assert_eq!(
             answer(&state, &list).unwrap(),
             ResponseBody::Terminals {
-                terminals: Vec::new()
+                terminals: Vec::new(),
+                shells: demo_shells(),
             }
         );
         assert!(answer(&state, &open).is_err());
@@ -5710,7 +5727,7 @@ mod tests {
             terminal: demo_terminal(),
         });
 
-        let ResponseBody::Terminals { terminals } = answer(&state, &list).unwrap() else {
+        let ResponseBody::Terminals { terminals, .. } = answer(&state, &list).unwrap() else {
             panic!("expected the terminals");
         };
         assert_eq!(

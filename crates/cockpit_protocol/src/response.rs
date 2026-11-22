@@ -10,7 +10,7 @@ use crate::details::{AgentDetails, ContextUsage, McpServer, SlashCommand};
 use crate::git::{GitBlame, GitCommitFile, GitFile, GitStatus, LogEntry};
 use crate::ids::{AccountId, AgentId, ClaudeSessionId, Seq};
 use crate::machine_load::MachineLoad;
-use crate::terminal::{TerminalId, TerminalInfo};
+use crate::terminal::{ShellChoice, TerminalId, TerminalInfo};
 use crate::time::Timestamp;
 use crate::transcript::{FileEdit, Image, TranscriptItem};
 
@@ -83,6 +83,10 @@ pub enum ResponseBody {
     },
     Terminals {
         terminals: Vec<TerminalInfo>,
+        /// The shells a terminal can run, the default one among them. Empty from a daemon that
+        /// predates the field.
+        #[serde(default)]
+        shells: Vec<ShellChoice>,
     },
     /// The output the daemon keeps of a terminal, base64: the bytes from `offset` to the end of
     /// what the shell wrote so far.

@@ -35,12 +35,12 @@ use cockpit_protocol::{
     ReleaseVersion, Remote, RenameParams, Repository, Request, RequestId, ResourceUse,
     ResponseBody, ResponseResult, Selection, Seq, ServerLoad, ServerMessage, ServerPoint,
     SessionResumeParams, SessionUse, SetEffortParams, SetModeParams, SetModelParams, Settings,
-    SignIn, SignInWait, SlashCommand, Snapshot, StartParams, StopProcessParams, StopTaskParams,
-    Subagent, SubagentRun, SubagentStatus, SubagentToolCall, TaskListItem, TaskProgress,
-    TaskStatus, TerminalChange, TerminalExit, TerminalId, TerminalInfo, TerminalInputParams,
-    TerminalOpenParams, TerminalParams, TerminalResizeParams, TerminalSize, TerminalUpdate,
-    Timestamp, TokenUsage, ToolCall, ToolCallStatus, TranscriptItem, TurnEnd, TurnOutcome,
-    Upstream, UsageWindow, UserMessage, WaitingPrompt, WaitingState, WindowUsage,
+    ShellChoice, SignIn, SignInWait, SlashCommand, Snapshot, StartParams, StopProcessParams,
+    StopTaskParams, Subagent, SubagentRun, SubagentStatus, SubagentToolCall, TaskListItem,
+    TaskProgress, TaskStatus, TerminalChange, TerminalExit, TerminalId, TerminalInfo,
+    TerminalInputParams, TerminalOpenParams, TerminalParams, TerminalResizeParams, TerminalSize,
+    TerminalUpdate, Timestamp, TokenUsage, ToolCall, ToolCallStatus, TranscriptItem, TurnEnd,
+    TurnOutcome, Upstream, UsageWindow, UserMessage, WaitingPrompt, WaitingState, WindowUsage,
 };
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -717,6 +717,7 @@ fn requests() -> Vec<Request> {
         Request::AgentTerminalOpen(TerminalOpenParams {
             agent,
             size: TerminalSize { cols: 80, rows: 24 },
+            shell: Some(PathBuf::from("/usr/bin/zsh")),
         }),
         Request::AgentTerminals(AgentParams { agent }),
         Request::TerminalAttach(TerminalParams {
@@ -950,6 +951,18 @@ fn response_bodies() -> Vec<ResponseBody> {
                     terminal: TerminalId::new(4),
                     title: "fish".to_owned(),
                     exited: None,
+                },
+            ],
+            shells: vec![
+                ShellChoice {
+                    program: PathBuf::from("/usr/bin/bash"),
+                    name: "bash".to_owned(),
+                    default: true,
+                },
+                ShellChoice {
+                    program: PathBuf::from("/usr/bin/zsh"),
+                    name: "zsh".to_owned(),
+                    default: false,
                 },
             ],
         },
@@ -2327,6 +2340,81 @@ fn a_welcome_without_the_end_of_its_replay_reads_as_none() {
             daemon_commit: None,
             catchup: Catchup::Replay,
             replayed_through: None,
+        }
+    );
+}
+
+#[test]
+fn a_terminal_open_names_its_shell_only_when_it_has_one() {
+    let size = TerminalSize { cols: 80, rows: 24 };
+    let default = Request::AgentTerminalOpen(TerminalOpenParams {
+        agent: agent(),
+        size,
+        shell: None,
+    });
+    let named = Request::AgentTerminalOpen(TerminalOpenParams {
+        agent: agent(),
+        size,
+        shell: Some(PathBuf::from(r"C:\Windows\System32\cmd.exe")),
+    });
+
+    assert_wire(
+        &default,
+        json!({
+            "method": "agent.terminal_open",
+            "params": {"agent": 3, "size": {"cols": 80, "rows": 24}},
+        }),
+    );
+    assert_wire(
+        &named,
+        json!({
+            "method": "agent.terminal_open",
+            "params": {
+                "agent": 3,
+                "size": {"cols": 80, "rows": 24},
+                "shell": r"C:\Windows\System32\cmd.exe",
+            },
+        }),
+    );
+}
+
+#[test]
+fn a_terminal_list_names_its_shells_on_the_wire() {
+    let listed = ResponseBody::Terminals {
+        terminals: Vec::new(),
+        shells: vec![ShellChoice {
+            program: PathBuf::from("/usr/bin/zsh"),
+            name: "zsh".to_owned(),
+            default: true,
+        }],
+    };
+
+    assert_wire(
+        &listed,
+        json!({
+            "type": "terminals",
+            "terminals": [],
+            "shells": [{"program": "/usr/bin/zsh", "name": "zsh", "default": true}],
+        }),
+    );
+}
+
+/// A daemon that predates the shells lists none.
+#[test]
+fn a_terminal_list_without_shells_reads_as_none() {
+    let older = r#"{"type":"terminals","terminals":[{"terminal":2,"title":"zsh","exited":null}]}"#;
+
+    let read: ResponseBody = serde_json::from_str(older).unwrap();
+
+    assert_eq!(
+        read,
+        ResponseBody::Terminals {
+            terminals: vec![TerminalInfo {
+                terminal: TerminalId::new(2),
+                title: "zsh".to_owned(),
+                exited: None,
+            }],
+            shells: Vec::new(),
         }
     );
 }

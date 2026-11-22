@@ -111,7 +111,7 @@ fn run(cockpit: Cockpit, script: TerminalScript, spot: &MenuSpot, item: Terminal
         TerminalItem::Clear => {
             cockpit.send_terminal_keys(terminals::input(agent, terminal, CLEAR_SCREEN.to_owned()))
         }
-        TerminalItem::NewTerminal => cockpit.change(|state| terminals::open(state, agent)),
+        TerminalItem::NewTerminal => cockpit.change(|state| terminals::open(state, agent, None)),
         TerminalItem::MoveTo(place) => cockpit.update(|state| terminals::move_to(state, place)),
         TerminalItem::Close => cockpit.change(|state| terminals::close(state, agent, terminal)),
     }

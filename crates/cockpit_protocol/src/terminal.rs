@@ -5,6 +5,8 @@
 //! can write megabytes a second. A [`TerminalUpdate`] goes to every client as it comes, and a
 //! client that missed some asks `terminal.attach` for the output the daemon keeps.
 
+use std::path::PathBuf;
+
 use serde::{Deserialize, Serialize};
 
 use crate::ids::AgentId;
@@ -43,6 +45,20 @@ pub struct TerminalSize {
 pub struct TerminalOpenParams {
     pub agent: AgentId,
     pub size: TerminalSize,
+    /// The program of one of the shells `agent.terminals` lists. `None` runs the default one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shell: Option<PathBuf>,
+}
+
+/// A shell the daemon found on its machine, which a terminal can run.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ShellChoice {
+    /// The program, by its path on the daemon's machine.
+    pub program: PathBuf,
+    /// What the app shows, such as "PowerShell 7" or "zsh".
+    pub name: String,
+    /// Whether a terminal opened without a shell runs this one.
+    pub default: bool,
 }
 
 /// Names a terminal. `agent` routes the request to the agent's daemon.

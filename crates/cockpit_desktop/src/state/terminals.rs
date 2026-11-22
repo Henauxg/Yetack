@@ -1,23 +1,34 @@
-//! The terminal pane: each agent's terminals, the tab it shows, its tab in the file view, and the
-//! requests that list, open and close them. The output does not pass here: it goes from the
-//! connection to the page, see `terminal_feed`.
+//! The terminal pane: each agent's terminals, the tab it shows, its tab in the file view, the
+//! shells a new terminal can run, and the requests that list, open and close them. The output
+//! does not pass here: it goes from the connection to the page, see `terminal_feed`.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use cockpit_protocol::{
-    AgentId, AgentParams, Request, TerminalChange, TerminalExit, TerminalId, TerminalInfo,
-    TerminalInputParams, TerminalOpenParams, TerminalParams, TerminalResizeParams, TerminalSize,
-    TerminalUpdate,
+    AgentId, AgentParams, Request, ShellChoice, TerminalChange, TerminalExit, TerminalId,
+    TerminalInfo, TerminalInputParams, TerminalOpenParams, TerminalParams, TerminalResizeParams,
+    TerminalSize, TerminalUpdate,
 };
 
 use super::app_state::AppState;
 use super::requests::{Outgoing, Purpose};
 use super::terminal_menu;
+use super::ui_state::{MenuSide, Popover};
 use crate::machine::MachineId;
+use crate::path_style::PathStyle;
 use crate::prefs::TerminalPlace;
 
 /// The size a terminal opens with, before the pane measures itself.
 const OPENING_SIZE: TerminalSize = TerminalSize { cols: 80, rows: 24 };
+
+/// The shell menu's frame and heading, in pixels, as the style sheet draws them.
+const SHELL_MENU_FRAME: i32 = 36;
+/// A row of the shell menu, in pixels: the height of `.compact-menu .menu-item`.
+const SHELL_MENU_ROW: i32 = 28;
+/// The room between the shell menu and its button, in pixels.
+const SHELL_MENU_GAP: i32 = 4;
+/// The room between the shell menu and the window's edge, in pixels.
+const SHELL_MENU_MARGIN: i32 = 8;
 
 /// An agent's terminals, as the pane shows them.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -31,6 +42,9 @@ pub struct AgentTerminals {
     pub opening: bool,
     /// The last opening failed: the pane waits for the "+" rather than trying again.
     pub open_failed: bool,
+    /// The shells a terminal can run, the default one among them. Empty from a daemon that
+    /// predates them.
+    pub shells: Vec<ShellChoice>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -62,6 +76,16 @@ pub struct Screen {
 }
 
 impl AgentTerminals {
+    /// The shell the "+" opens, when the daemon names one.
+    pub fn default_shell(&self) -> Option<&ShellChoice> {
+        self.shells.iter().find(|shell| shell.default)
+    }
+
+    /// Whether the tab bar offers a choice of shell.
+    pub fn offers_shells(&self) -> bool {
+        self.shells.len() > 1
+    }
+
     fn tab_mut(&mut self, terminal: TerminalId) -> Option<&mut TerminalTab> {
         self.tabs.iter_mut().find(|tab| tab.terminal == terminal)
     }
@@ -172,6 +196,7 @@ pub fn show_tab(state: &mut AppState, agent: AgentId) {
 
 /// Hides `agent`'s pane. Its shells keep running.
 pub fn hide(state: &mut AppState, agent: AgentId) {
+    close_shell_menu(state, |shown| shown == agent);
     let panel_was_open = file_view_open(state, agent);
     state.ui.terminal_panes.remove(&agent);
     state.ui.terminal_tab_shown.remove(&agent);
@@ -236,14 +261,14 @@ pub fn needed_requests(state: &mut AppState) -> Vec<Outgoing> {
         Listing::Listed
             if terminals.tabs.is_empty() && !terminals.opening && !terminals.open_failed =>
         {
-            open(state, agent)
+            open(state, agent, None)
         }
         Listing::Asking | Listing::Listed => Vec::new(),
     }
 }
 
-/// The tab bar's "+".
-pub fn open(state: &mut AppState, agent: AgentId) -> Vec<Outgoing> {
+/// The tab bar's "+" with `None`, which opens the default shell, or a row of the shell menu.
+pub fn open(state: &mut AppState, agent: AgentId, shell: Option<PathBuf>) -> Vec<Outgoing> {
     let Some(terminals) = terminals_mut(state, agent) else {
         return Vec::new();
     };
@@ -253,17 +278,116 @@ pub fn open(state: &mut AppState, agent: AgentId) -> Vec<Outgoing> {
         Request::AgentTerminalOpen(TerminalOpenParams {
             agent,
             size: OPENING_SIZE,
+            shell,
         }),
         Purpose::TerminalOpened { agent },
     )]
 }
 
+/// What the shell menu shows, and where.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ShellMenu {
+    pub agent: AgentId,
+    pub x: i32,
+    pub y: i32,
+    pub side: MenuSide,
+    pub shells: Vec<ShellChoice>,
+}
+
+/// The side of its button the shell menu of `agent` opens on: under the button when its rows fit
+/// between the button's `bottom` and the window's, else above it when they fit between the
+/// window's top and the button's `top`, else on the side with more room. A menu over its own
+/// button would take the click that closes it as a pick.
+pub fn shell_menu_side(
+    state: &AppState,
+    agent: AgentId,
+    top: i32,
+    bottom: i32,
+    window_height: i32,
+) -> MenuSide {
+    let rows = state
+        .agents
+        .get(&agent)
+        .map_or(0, |entry| entry.terminals.shells.len());
+    let rows = i32::try_from(rows).unwrap_or(i32::MAX);
+    let height = SHELL_MENU_FRAME.saturating_add(rows.saturating_mul(SHELL_MENU_ROW));
+    let room = |from: i32, to: i32| {
+        to.saturating_sub(from)
+            .saturating_sub(SHELL_MENU_GAP)
+            .saturating_sub(SHELL_MENU_MARGIN)
+    };
+    let below = room(bottom, window_height);
+    let above = room(0, top);
+    if height <= below || below >= above {
+        MenuSide::Below
+    } else {
+        MenuSide::Above
+    }
+}
+
+/// The button beside the "+": opens or closes the agent's shell menu on `side` of the button, at
+/// its left edge `x` and its edge `y` on that side.
+pub fn toggle_shell_menu(state: &mut AppState, agent: AgentId, x: i32, y: i32, side: MenuSide) {
+    let open = matches!(
+        state.ui.popover,
+        Some(Popover::ShellMenu { agent: shown, .. }) if shown == agent
+    );
+    state.ui.popover = (!open).then_some(Popover::ShellMenu { agent, x, y, side });
+}
+
+/// The open shell menu, while its agent offers a choice of shell.
+pub fn shell_menu(state: &AppState) -> Option<ShellMenu> {
+    let Some(Popover::ShellMenu { agent, x, y, side }) = state.ui.popover else {
+        return None;
+    };
+    let terminals = &state.agents.get(&agent)?.terminals;
+    terminals.offers_shells().then(|| ShellMenu {
+        agent,
+        x,
+        y,
+        side,
+        shells: terminals.shells.clone(),
+    })
+}
+
+/// A row of the shell menu: opens a terminal with that shell.
+pub fn pick_shell(state: &mut AppState, agent: AgentId, program: PathBuf) -> Vec<Outgoing> {
+    close_shell_menu(state, |shown| shown == agent);
+    open(state, agent, Some(program))
+}
+
+/// Closes the shell menu of an agent that `gone` names: the menu would show over nothing, and its
+/// backdrop would take the next click.
+fn close_shell_menu(state: &mut AppState, gone: impl Fn(AgentId) -> bool) {
+    state.ui.popover.take_if(|popover| match popover {
+        Popover::ShellMenu { agent, .. } => gone(*agent),
+        _ => false,
+    });
+}
+
+/// What the shell menu shows of a program: its file's name on Windows, whose folders are long, and
+/// its path elsewhere, where two shells may share a name.
+pub fn program_label(program: &Path) -> String {
+    let text = program.to_string_lossy();
+    let style = PathStyle::of_text(&text);
+    match style {
+        PathStyle::Windows => style.file_name(&text).unwrap_or(&text).to_owned(),
+        PathStyle::Unix => text.into_owned(),
+    }
+}
+
 /// `agent.terminals` answered. A failure leaves the pane empty, with no retry.
-pub fn listed(state: &mut AppState, agent: AgentId, listed: Option<Vec<TerminalInfo>>) {
+pub fn listed(
+    state: &mut AppState,
+    agent: AgentId,
+    listed: Option<Vec<TerminalInfo>>,
+    shells: Vec<ShellChoice>,
+) {
     let Some(terminals) = terminals_mut(state, agent) else {
         return;
     };
     terminals.listing = Listing::Listed;
+    terminals.shells = shells;
     let Some(listed) = listed else {
         terminals.opening = true;
         return;
@@ -334,6 +458,7 @@ pub fn connected(state: &mut AppState, machine: MachineId) {
         }
     }
     terminal_menu::close_if(state, |spot| MachineId::of(spot.agent) == machine);
+    close_shell_menu(state, |agent| MachineId::of(agent) == machine);
 }
 
 pub fn show(state: &mut AppState, agent: AgentId, terminal: TerminalId) {
@@ -407,7 +532,7 @@ mod tests {
     use std::time::Instant;
 
     use cockpit_client::RequestError;
-    use cockpit_protocol::{AgentStatus, Catchup, Method};
+    use cockpit_protocol::{AgentStatus, Catchup, Method, ResponseBody};
 
     use super::*;
     use crate::state::find::{self, FindPane};
@@ -447,7 +572,7 @@ mod tests {
         toggle_pane(&mut state);
         let list = needed_requests(&mut state);
         assert!(needed_requests(&mut state).is_empty(), "asked once");
-        listed(&mut state, agent(), Some(Vec::new()));
+        listed(&mut state, agent(), Some(Vec::new()), Vec::new());
         let open = needed_requests(&mut state);
         assert!(needed_requests(&mut state).is_empty(), "opened once");
         opened(&mut state, agent(), Some(TerminalId::new(7)));
@@ -480,7 +605,12 @@ mod tests {
         toggle_pane(&mut state);
         needed_requests(&mut state);
 
-        listed(&mut state, agent(), Some(vec![tab(2), tab(3), tab(4)]));
+        listed(
+            &mut state,
+            agent(),
+            Some(vec![tab(2), tab(3), tab(4)]),
+            Vec::new(),
+        );
         show(&mut state, agent(), TerminalId::new(3));
         close(&mut state, agent(), TerminalId::new(3));
 
@@ -498,7 +628,7 @@ mod tests {
         state.ui.selected = Some(agent());
         toggle_pane(&mut state);
         needed_requests(&mut state);
-        listed(&mut state, agent(), Some(vec![tab(2)]));
+        listed(&mut state, agent(), Some(vec![tab(2)]), Vec::new());
 
         close(&mut state, agent(), TerminalId::new(2));
 
@@ -554,12 +684,12 @@ mod tests {
         state.ui.selected = Some(agent());
         toggle_pane(&mut state);
         needed_requests(&mut state);
-        listed(&mut state, agent(), Some(Vec::new()));
+        listed(&mut state, agent(), Some(Vec::new()), Vec::new());
         needed_requests(&mut state);
 
         opened(&mut state, agent(), None);
         let after_failure = needed_requests(&mut state);
-        let asked = open(&mut state, agent());
+        let asked = open(&mut state, agent(), None);
 
         assert!(after_failure.is_empty(), "{after_failure:?}");
         assert_eq!(asked.len(), 1);
@@ -571,7 +701,7 @@ mod tests {
         state.ui.selected = Some(agent());
         toggle_pane(&mut state);
         needed_requests(&mut state);
-        listed(&mut state, agent(), Some(vec![tab(2), tab(3)]));
+        listed(&mut state, agent(), Some(vec![tab(2), tab(3)]), Vec::new());
 
         apply_session_update(
             &mut state,
@@ -592,14 +722,160 @@ mod tests {
         ));
     }
 
+    fn shell(program: &str, default: bool) -> ShellChoice {
+        ShellChoice {
+            program: PathBuf::from(program),
+            name: program.rsplit('/').next().unwrap().to_owned(),
+            default,
+        }
+    }
+
+    /// The selected agent's pane is open, and its daemon offers `shells`.
+    fn pane_with_shells(shells: Vec<ShellChoice>) -> AppState {
+        let mut state = state_with(vec![summary(1, AgentStatus::Idle)]);
+        state.ui.selected = Some(agent());
+        toggle_pane(&mut state);
+        needed_requests(&mut state);
+        listed(&mut state, agent(), Some(vec![tab(2)]), shells);
+        state
+    }
+
+    fn opened_shell(outgoing: &[Outgoing]) -> Option<Option<PathBuf>> {
+        match outgoing {
+            [
+                Outgoing {
+                    request: Request::AgentTerminalOpen(params),
+                    ..
+                },
+            ] => Some(params.shell.clone()),
+            _ => None,
+        }
+    }
+
+    #[test]
+    fn a_pick_in_the_shell_menu_opens_that_shell_and_the_plus_the_default() {
+        let mut state = pane_with_shells(vec![
+            shell("/usr/bin/bash", false),
+            shell("/usr/bin/zsh", true),
+        ]);
+        let terminals = &state.agents[&agent()].terminals;
+        let default = terminals.default_shell().map(|shell| shell.name.clone());
+
+        toggle_shell_menu(&mut state, agent(), 40, 60, MenuSide::Below);
+        let menu = shell_menu(&state);
+        let picked = pick_shell(&mut state, agent(), PathBuf::from("/usr/bin/bash"));
+        let plus = open(&mut state, agent(), None);
+
+        assert_eq!(default.as_deref(), Some("zsh"));
+        let menu = menu.expect("the menu shows");
+        assert_eq!((menu.x, menu.y, menu.shells.len()), (40, 60, 2));
+        assert_eq!(
+            opened_shell(&picked),
+            Some(Some(PathBuf::from("/usr/bin/bash")))
+        );
+        assert_eq!(state.ui.popover, None, "the pick closes the menu");
+        assert_eq!(opened_shell(&plus), Some(None));
+    }
+
+    #[test]
+    fn the_answer_to_the_listing_gives_the_pane_its_shells() {
+        let shells = vec![shell("/usr/bin/bash", true), shell("/usr/bin/zsh", false)];
+        let mut state = state_with(vec![summary(1, AgentStatus::Idle)]);
+        state.ui.selected = Some(agent());
+        toggle_pane(&mut state);
+        let list = needed_requests(&mut state);
+        let [Outgoing { purpose, .. }] = list.as_slice() else {
+            panic!("expected the listing, got {list:?}");
+        };
+
+        apply_response(
+            &mut state,
+            &mut Drafts::default(),
+            Method::AgentTerminals,
+            purpose.clone(),
+            Ok(ResponseBody::Terminals {
+                terminals: vec![tab(2)],
+                shells: shells.clone(),
+            }),
+            MachineId::THIS,
+        );
+
+        assert_eq!(state.agents[&agent()].terminals.shells, shells);
+    }
+
+    #[test]
+    fn a_daemon_with_one_shell_or_none_offers_no_menu() {
+        let mut one = pane_with_shells(vec![shell("/usr/bin/bash", true)]);
+        let mut older = pane_with_shells(Vec::new());
+
+        toggle_shell_menu(&mut one, agent(), 40, 60, MenuSide::Below);
+        toggle_shell_menu(&mut older, agent(), 40, 60, MenuSide::Below);
+
+        assert!(!one.agents[&agent()].terminals.offers_shells());
+        assert!(!older.agents[&agent()].terminals.offers_shells());
+        assert_eq!(shell_menu(&one), None);
+        assert_eq!(shell_menu(&older), None);
+    }
+
+    /// A menu left open would show over nothing, and its backdrop would take the next click.
+    #[test]
+    fn hiding_the_pane_or_a_new_connection_closes_the_shell_menu() {
+        let shells = vec![shell("/usr/bin/bash", true), shell("/usr/bin/zsh", false)];
+        let mut hidden = pane_with_shells(shells.clone());
+        let mut reconnected = pane_with_shells(shells);
+        toggle_shell_menu(&mut hidden, agent(), 40, 60, MenuSide::Below);
+        toggle_shell_menu(&mut reconnected, agent(), 40, 60, MenuSide::Below);
+
+        toggle_pane(&mut hidden);
+        connected(&mut reconnected, MachineId::THIS);
+
+        assert_eq!(hidden.ui.popover, None);
+        assert_eq!(reconnected.ui.popover, None);
+        assert!(reconnected.agents[&agent()].terminals.shells.is_empty());
+    }
+
+    /// A menu pushed over its own button would take the click that closes it as a pick.
+    #[test]
+    fn the_shell_menu_opens_above_its_button_when_its_rows_do_not_fit_under_it() {
+        let three = pane_with_shells(vec![
+            shell("/usr/bin/bash", true),
+            shell("/usr/bin/zsh", false),
+            shell("/usr/bin/fish", false),
+        ]);
+        // 36 px of frame and heading, and 28 px a row: 120 px.
+        let side = |top, bottom, window| shell_menu_side(&three, agent(), top, bottom, window);
+
+        let room_below = side(640, 666, 900);
+        let just_enough = side(752, 768, 900);
+        let short_pane = side(800, 820, 900);
+        let no_room_anywhere = side(100, 116, 220);
+
+        assert_eq!(room_below, MenuSide::Below);
+        assert_eq!(just_enough, MenuSide::Below);
+        assert_eq!(short_pane, MenuSide::Above);
+        assert_eq!(no_room_anywhere, MenuSide::Below, "below has more room");
+    }
+
+    #[test]
+    fn the_menu_shows_a_windows_programs_file_and_a_unix_programs_path() {
+        assert_eq!(
+            program_label(Path::new(r"C:\Program Files\PowerShell\7\pwsh.exe")),
+            "pwsh.exe"
+        );
+        assert_eq!(
+            program_label(Path::new("/opt/homebrew/bin/bash")),
+            "/opt/homebrew/bin/bash"
+        );
+    }
+
     #[test]
     fn the_page_keeps_the_terminals_of_every_agent_and_no_other() {
         let mut state = state_with(vec![
             summary(1, AgentStatus::Idle),
             summary(2, AgentStatus::Idle),
         ]);
-        listed(&mut state, agent(), Some(vec![tab(2), tab(3)]));
-        listed(&mut state, AgentId::new(2), Some(vec![tab(4)]));
+        listed(&mut state, agent(), Some(vec![tab(2), tab(3)]), Vec::new());
+        listed(&mut state, AgentId::new(2), Some(vec![tab(4)]), Vec::new());
 
         close(&mut state, agent(), TerminalId::new(2));
 

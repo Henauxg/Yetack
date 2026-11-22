@@ -130,9 +130,7 @@ impl Hub {
                 );
             }
             Request::AgentTerminalOpen(params) => self.open_terminal(params, reply),
-            Request::AgentTerminals(params) => {
-                agents::respond(reply, self.list_terminals(params.agent));
-            }
+            Request::AgentTerminals(params) => self.list_terminals(params.agent, reply),
             Request::TerminalAttach(params) => agents::respond(reply, self.attach_terminal(params)),
             Request::TerminalInput(params) => agents::respond(reply, self.type_in_terminal(params)),
             Request::TerminalResize(params) => agents::respond(reply, self.resize_terminal(params)),

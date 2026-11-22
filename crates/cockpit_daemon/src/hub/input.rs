@@ -4,7 +4,8 @@ use std::time::Instant;
 
 use cockpit_protocol::{
     AccountId, AccountState, AgentId, CostUsd, ErrorBody, Frame, PermissionMode, Repository,
-    Request, ResponseResult, Seq, SignIn, SlashCommand, Snapshot, TerminalId, Timestamp,
+    Request, ResponseResult, Seq, ShellChoice, SignIn, SlashCommand, Snapshot, TerminalId,
+    Timestamp,
 };
 use tokio::sync::{mpsc, oneshot};
 
@@ -86,6 +87,12 @@ pub(crate) enum HubInput {
         agent: AgentId,
         generation: u32,
         cost: CostUsd,
+    },
+    /// A task found the shells a terminal can run, for `agent.terminals`.
+    ShellsFound {
+        agent: AgentId,
+        shells: Vec<ShellChoice>,
+        reply: Reply,
     },
     /// A task started a terminal's shell in its agent's folder, or could not.
     TerminalSpawned {

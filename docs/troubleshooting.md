@@ -53,4 +53,4 @@ The app stopped the daemon and started its own version, but another program star
 
 ## A terminal starts the wrong shell
 
-A terminal runs the shell your account logs in with, on the machine of the agent. To run another one, set `YETACK_SHELL` to its full path in the daemon's environment, then restart the daemon. For the background service on Linux, put `Environment=YETACK_SHELL=/run/current-system/sw/bin/zsh` in a drop-in file (`systemctl --user edit yetack`).
+A terminal runs the shell your account logs in with, on the machine of the agent. On Windows, it runs PowerShell 7, or Windows PowerShell when PowerShell 7 is not installed. The ⌄ beside the "+" of the terminal's tabs opens a terminal with another shell of that machine. To change the default one, set `YETACK_SHELL` to its full path in the daemon's environment, then restart the daemon. On Windows, the daemon runs in the app: set it in your user's environment (`setx YETACK_SHELL <path>`), then start the app again. For the background service on Linux, put `Environment=YETACK_SHELL=/run/current-system/sw/bin/zsh` in a drop-in file (`systemctl --user edit yetack`).

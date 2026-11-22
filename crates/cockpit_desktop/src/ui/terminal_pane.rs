@@ -23,10 +23,11 @@ use crate::prefs::{
 };
 use crate::render::{self, LineRef};
 use crate::state::terminal_menu::{self, MenuSpot, TerminalLink};
-use crate::state::{actions, terminals};
+use crate::state::{Popover, actions, terminals};
 use crate::terminal_feed::FeedReceiver;
 use crate::ui::icons::{Icon, IconKind};
 use crate::ui::presence::Presence;
+use crate::ui::shell_menu::ShellButton;
 
 /// ghostty-web 0.4.0, an ES module that holds its WebAssembly inline. See
 /// `assets/ghostty-web/README.md`.
@@ -971,6 +972,15 @@ pub fn TerminalPane(
     let shown = terminals.shown.map_or(0, TerminalId::get);
     let tabs = terminals.tabs.clone();
     let opening = terminals.opening;
+    let offers_shells = terminals.offers_shells();
+    let add_title = terminals.default_shell().map_or_else(
+        || "New terminal".to_owned(),
+        |shell| format!("New {} terminal", shell.name),
+    );
+    let shell_menu_open = matches!(
+        state.ui.popover,
+        Some(Popover::ShellMenu { agent: shown, .. }) if shown == agent
+    );
     drop(state);
     let places = [
         (TerminalPlace::Bottom, "Bottom panel"),
@@ -1020,13 +1030,16 @@ pub fn TerminalPane(
                             }
                         }
                     }
-                    button {
-                        class: "terminal-add",
-                        aria_label: "New terminal",
-                        title: "New terminal",
-                        disabled: opening,
-                        onclick: move |_| cockpit.change(|state| terminals::open(state, agent)),
-                        Icon { kind: IconKind::Plus, size: 12 }
+                    div { class: "terminal-new",
+                        button {
+                            class: "terminal-add",
+                            aria_label: "New terminal",
+                            title: "{add_title}",
+                            disabled: opening,
+                            onclick: move |_| cockpit.change(|state| terminals::open(state, agent, None)),
+                            Icon { kind: IconKind::Plus, size: 12 }
+                        }
+                        ShellButton { agent, offers: offers_shells, open: shell_menu_open, disabled: opening }
                     }
                 }
                 div { class: "terminal-controls",

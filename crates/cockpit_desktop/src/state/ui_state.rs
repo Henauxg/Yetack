@@ -103,6 +103,14 @@ pub enum Popover {
     AppNotifications,
     /// A terminal's right-click menu, which `UiState::terminal_menu` describes.
     TerminalMenu,
+    /// The shells a new terminal of the agent can run, from the button beside the tab bar's "+",
+    /// at `x`, `y` in the window's pixels: the button's left edge, and its edge on `side`.
+    ShellMenu {
+        agent: AgentId,
+        x: i32,
+        y: i32,
+        side: MenuSide,
+    },
     /// The history of the file the agent's file view shows, at `x`, `y` in the window's pixels.
     FileHistory {
         agent: AgentId,
@@ -117,6 +125,14 @@ pub enum Popover {
         x: i32,
         y: i32,
     },
+}
+
+/// The side of its button a menu opens on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum MenuSide {
+    Below,
+    /// The menu's rows do not fit under the button.
+    Above,
 }
 
 /// Where a tab's menu opened, which names its groups and decides what it closes to.

@@ -2866,8 +2866,8 @@ async fn the_daemon_names_itself_in_its_lock_and_stops_when_asked() {
     setup.start();
 }
 
-/// A terminal runs the shell in the agent's folder, takes what is typed, keeps the output for a
-/// client that attaches, and goes when closed.
+/// A terminal runs the shell the client picks from the daemon's list, in the agent's folder, takes
+/// what is typed, keeps the output for a client that attaches, and goes when closed.
 #[cfg(unix)]
 #[tokio::test]
 async fn a_terminal_runs_a_shell_in_the_agents_folder() {
@@ -2881,10 +2881,20 @@ async fn a_terminal_runs_a_shell_in_the_agents_folder() {
     );
     let mut client = setup.connect().await;
     let agent = client.start(&setup.work(), "hello").await;
+    let listed = client
+        .ok(Request::AgentTerminals(AgentParams { agent }))
+        .await;
+    let ResponseBody::Terminals { shells, .. } = listed else {
+        panic!("expected the terminals, got {listed:?}");
+    };
+    let default = shells.into_iter().find(|shell| shell.default);
+    let default = default.map(|shell| shell.program);
+    assert_eq!(default.as_deref(), Some(Path::new("/bin/sh")));
     let opened = client
         .ok(Request::AgentTerminalOpen(TerminalOpenParams {
             agent,
             size: TerminalSize { cols: 80, rows: 24 },
+            shell: default,
         }))
         .await;
     let ResponseBody::TerminalOpened { terminal } = opened else {
@@ -2924,7 +2934,7 @@ async fn a_terminal_runs_a_shell_in_the_agents_folder() {
         .await;
     assert!(matches!(
         listed,
-        ResponseBody::Terminals { ref terminals } if terminals.len() == 1
+        ResponseBody::Terminals { ref terminals, .. } if terminals.len() == 1
     ));
     client.ok(Request::TerminalClose(params)).await;
     assert_eq!(

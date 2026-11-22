@@ -31,6 +31,7 @@ use crate::ui::project_menu::ProjectMenu;
 use crate::ui::quotes::{QuoteLayer, use_quotes};
 use crate::ui::reorder::use_reorder;
 use crate::ui::row_menu::RowMenu;
+use crate::ui::shell_menu::ShellMenu;
 use crate::ui::sidebar::Sidebar;
 use crate::ui::splitter::{
     APP_ID, FILES_WIDTH_PROPERTY, FilesSplitter, SHARE_PROPERTY, SIDEBAR_WIDTH_PROPERTY,
@@ -215,6 +216,7 @@ pub fn App() -> Element {
             TreeMenu {}
             TabMenu {}
             TerminalMenu {}
+            ShellMenu {}
             BlockSubagentMenu {}
             FileHistory {}
             BranchCardView {}

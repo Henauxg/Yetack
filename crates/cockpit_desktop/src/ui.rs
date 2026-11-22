@@ -45,6 +45,7 @@ mod quotes;
 mod reorder;
 mod row_menu;
 mod settings;
+mod shell_menu;
 mod sidebar;
 mod splitter;
 mod subagent_menu;
