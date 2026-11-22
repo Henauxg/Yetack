@@ -648,9 +648,9 @@ mod tests {
 
     use cockpit_client::{ConnectError, SessionError};
     use cockpit_protocol::{
-        AgentDetails, Approval, ApprovalAnswer, ApprovalDecision, BuildCommit, CostUsd, Image,
-        ImageMediaType, ItemId, NoticeKind, PendingId, PlanUsage, Question, ReleaseVersion, Seq,
-        Settings, TaskProgress, TokenUsage, TranscriptItem, TurnEnd, TurnOutcome,
+        AgentDetails, Approval, ApprovalAnswer, ApprovalDecision, Base64, BuildCommit, CostUsd,
+        Image, ImageMediaType, ItemId, NoticeKind, PendingId, PlanUsage, Question, ReleaseVersion,
+        Seq, Settings, TaskProgress, TokenUsage, TranscriptItem, TurnEnd, TurnOutcome,
     };
 
     use super::*;
@@ -1700,7 +1700,7 @@ mod tests {
         let mut state = state_with(vec![summary(1, AgentStatus::Idle)]);
         let image = Image {
             media_type: ImageMediaType::Png,
-            data: "iVBORw0KGgo=".to_owned(),
+            data: Base64::new("iVBORw0KGgo=".to_owned()),
         };
         let path = PathBuf::from("/tmp/shots/mockup.png");
         chat_images::open_full_view(&mut state, AgentId::new(1), path, Arc::new(image));

@@ -5,10 +5,9 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::Duration;
 
-use base64::engine::general_purpose::STANDARD as BASE64;
 use cockpit_protocol::{
-    AgentId, AgentStatus, Effort, Image, ImageMediaType, PermissionMode, PromptDelivery, PromptId,
-    SubagentStatus,
+    AgentId, AgentStatus, Base64, Effort, Image, ImageMediaType, PermissionMode, PromptDelivery,
+    PromptId, SubagentStatus,
 };
 use dioxus::html::FileData;
 use dioxus::prelude::*;
@@ -357,8 +356,6 @@ fn accepted_images() -> String {
 }
 
 async fn attach(cockpit: Cockpit, agent: AgentId, files: Vec<FileData>) {
-    use base64::Engine;
-
     for file in files {
         let name = file.name();
         let media_type = file
@@ -384,7 +381,7 @@ async fn attach(cockpit: Cockpit, agent: AgentId, files: Vec<FileData>) {
             Ok(bytes) => {
                 let image = Image {
                     media_type,
-                    data: BASE64.encode(&bytes),
+                    data: Base64::encode(&bytes),
                 };
                 let added =
                     cockpit.with_drafts(|_, drafts| actions::add_image(drafts, agent, image));

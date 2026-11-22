@@ -1,22 +1,24 @@
-//! Opens the web links of an agent's text, and the web pages the file view shows, in the user's
-//! browser.
+//! Opens the web links of an agent's text, and the web pages and PDFs the file view shows, in the
+//! user's browser.
 //!
 //! On Linux the app runs `xdg-open` without `LD_LIBRARY_PATH`. A parent process may set it, as
 //! the NixOS `claude` wrapper does with its own alsa-lib, and an app started from an agent's
 //! session inherits it. The browser then loads a library built for another glibc and exits before
 //! it opens the page. On other systems, the `webbrowser` crate opens the link, as Dioxus does. On
 //! Windows it starts the browser that opens `http` addresses, whatever program opens `.html`
-//! files.
+//! files. A PDF opens there too, but on Linux in the program `xdg-open` picks for PDFs.
 
 use std::io;
 use std::path::{Path, PathBuf};
 #[cfg(target_os = "linux")]
 use std::process::{ExitStatus, Stdio};
 
+use cockpit_protocol::is_pdf_name;
 #[cfg(target_os = "linux")]
 use tokio::process::Command;
 use url::Url;
 
+use crate::path_style;
 use crate::state::page_copy;
 
 #[cfg(target_os = "linux")]
@@ -32,6 +34,12 @@ pub enum OpenError {
     Failed(ExitStatus),
     #[error("the file is not a web page")]
     NotAPage,
+    #[error("the file is not a PDF")]
+    NotAPdf,
+    /// Resolving a path on a network share makes Windows send its host a hash of the user's
+    /// login.
+    #[error("a file on a network share does not open in the browser")]
+    NetworkShare,
     #[error(transparent)]
     Io(#[from] io::Error),
 }
@@ -77,25 +85,62 @@ async fn run(mut command: Command) -> Result<(), OpenError> {
     }
 }
 
+/// The files the opener opens by their `file:` address.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum OpenedFile {
+    /// An `.html` or `.htm` file.
+    Page,
+    /// A `.pdf` file.
+    Pdf,
+}
+
+impl OpenedFile {
+    fn is_named(self, name: &str) -> bool {
+        match self {
+            Self::Page => page_copy::is_page(name),
+            Self::Pdf => is_pdf_name(name),
+        }
+    }
+
+    fn refusal(self) -> OpenError {
+        match self {
+            Self::Page => OpenError::NotAPage,
+            Self::Pdf => OpenError::NotAPdf,
+        }
+    }
+}
+
 /// Opens the web page at `path`, an `.html` or `.htm` file on this computer. The symbolic links
 /// on the path are resolved first, and the file they lead to must be a page too: on Linux the
 /// opener picks the program by the name it gets.
 pub async fn open_page(path: PathBuf) -> Result<(), OpenError> {
-    let url = tokio::task::spawn_blocking(move || page_url(&path))
+    open_file(path, OpenedFile::Page).await
+}
+
+/// Opens the PDF at `path`, a `.pdf` file on this computer, with the checks of [`open_page`].
+pub async fn open_pdf(path: PathBuf) -> Result<(), OpenError> {
+    open_file(path, OpenedFile::Pdf).await
+}
+
+async fn open_file(path: PathBuf, opened: OpenedFile) -> Result<(), OpenError> {
+    let url = tokio::task::spawn_blocking(move || file_url(&path, opened))
         .await
         .map_err(io::Error::other)??;
     open(&url).await
 }
 
-fn page_url(path: &Path) -> Result<String, OpenError> {
+fn file_url(path: &Path, opened: OpenedFile) -> Result<String, OpenError> {
+    if cfg!(windows) && path_style::is_network_share(&path.to_string_lossy()) {
+        return Err(OpenError::NetworkShare);
+    }
     let resolved = path.canonicalize()?;
     let is_file = resolved.metadata()?.is_file();
-    if !is_file || !page_copy::is_page(&resolved.to_string_lossy()) {
-        return Err(OpenError::NotAPage);
+    if !is_file || !opened.is_named(&resolved.to_string_lossy()) {
+        return Err(opened.refusal());
     }
     Url::from_file_path(&resolved)
         .map(String::from)
-        .map_err(|()| OpenError::NotAPage)
+        .map_err(|()| opened.refusal())
 }
 
 async fn open_with_crate(url: &str) -> Result<(), OpenError> {
@@ -120,7 +165,7 @@ mod tests {
         std::fs::create_dir(page.parent().unwrap()).unwrap();
         std::fs::write(&page, "<p>Hi</p>").unwrap();
 
-        let url = page_url(&page).unwrap();
+        let url = file_url(&page, OpenedFile::Page).unwrap();
 
         assert!(url.starts_with("file:///"), "{url}");
         assert!(url.ends_with("/mock%20up/Index.HTML"), "{url}");
@@ -133,14 +178,45 @@ mod tests {
         std::fs::create_dir(temp.path().join("site.html")).unwrap();
 
         for path in ["notes.txt", "site.html"] {
-            let refused = page_url(&temp.path().join(path));
+            let refused = file_url(&temp.path().join(path), OpenedFile::Page);
             assert!(
                 matches!(refused, Err(OpenError::NotAPage)),
                 "{path}: {refused:?}"
             );
         }
-        let missing = page_url(&temp.path().join("gone.html"));
+        let missing = file_url(&temp.path().join("gone.html"), OpenedFile::Page);
         assert!(matches!(missing, Err(OpenError::Io(_))), "{missing:?}");
+    }
+
+    #[test]
+    fn a_pdf_opens_by_its_file_address_and_no_other_file_does() {
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::write(temp.path().join("Report.PDF"), "%PDF-").unwrap();
+        std::fs::write(temp.path().join("index.html"), "<p>Hi</p>").unwrap();
+
+        let url = file_url(&temp.path().join("Report.PDF"), OpenedFile::Pdf).unwrap();
+        let refused = file_url(&temp.path().join("index.html"), OpenedFile::Pdf);
+
+        assert!(url.starts_with("file:///"), "{url}");
+        assert!(url.ends_with("/Report.PDF"), "{url}");
+        assert!(matches!(refused, Err(OpenError::NotAPdf)), "{refused:?}");
+    }
+
+    /// Checked before the path is resolved: the host's name does not resolve, so a lookup fails
+    /// with another error.
+    #[cfg(windows)]
+    #[test]
+    fn a_file_on_a_network_share_does_not_open() {
+        for (path, opened) in [
+            (r"\\fileserver.invalid\team\report.pdf", OpenedFile::Pdf),
+            ("//fileserver.invalid/team/index.html", OpenedFile::Page),
+        ] {
+            let refused = file_url(Path::new(path), opened);
+            assert!(
+                matches!(refused, Err(OpenError::NetworkShare)),
+                "{path}: {refused:?}"
+            );
+        }
     }
 
     /// The opener picks a program by the name it gets: a link named like a page must lead to one.
@@ -152,7 +228,7 @@ mod tests {
         std::os::unix::fs::symlink(temp.path().join("run.sh"), temp.path().join("page.html"))
             .unwrap();
 
-        let refused = page_url(&temp.path().join("page.html"));
+        let refused = file_url(&temp.path().join("page.html"), OpenedFile::Page);
 
         assert!(matches!(refused, Err(OpenError::NotAPage)), "{refused:?}");
     }

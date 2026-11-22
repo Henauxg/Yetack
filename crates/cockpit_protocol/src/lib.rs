@@ -16,6 +16,7 @@
 mod account;
 mod agent;
 mod agent_ids;
+mod base64_bytes;
 mod details;
 mod details_change;
 mod event;
@@ -43,6 +44,7 @@ pub use agent::{
     AgentStatus, AgentSummary, ClaudeCodeVersion, Effort, EffortSource, Mark, PermissionMode,
     SessionUse, SignInWait, TaskProgress,
 };
+pub use base64_bytes::{Base64, NotBase64};
 pub use details::{
     AgentDetails, BackgroundTask, BackgroundTaskKind, BackgroundTaskStatus, ChangedFile,
     CommandKind, ContextCategory, ContextUsage, McpScope, McpServer, McpServerStatus, McpTool,
@@ -79,7 +81,7 @@ pub use request::{
 };
 pub use response::{
     CommandChanges, Completeness, DirEntry, DirListing, EntryKind, EntryLink, ErrorBody, ErrorCode,
-    GitIgnore, HistoryPage, OlderItems, PastSession, ResponseBody, ResponseResult,
+    GitIgnore, HistoryPage, OlderItems, PastSession, ResponseBody, ResponseResult, is_pdf_name,
 };
 pub use session::{
     BuildCommit, Catchup, ClientMessage, PROTOCOL_VERSION, ReleaseVersion, ServerMessage, Snapshot,

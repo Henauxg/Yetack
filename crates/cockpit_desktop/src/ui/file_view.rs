@@ -1,5 +1,6 @@
 //! The read-only file view on the right: tabs of the changed files, the diff, the whole file or a
-//! markdown file rendered, and the line a `path:line` link marks.
+//! markdown file rendered, and the line a `path:line` link marks. An image shows, and a PDF opens
+//! outside the app.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -15,6 +16,7 @@ use crate::daemon_label::DaemonPlace;
 use crate::keymap::Command;
 use crate::machine::MachineId;
 use crate::path_style::PathStyle;
+use crate::pdf_files::{self, PdfSource};
 use crate::prefs::TerminalPlace;
 use crate::render::{self, Diff, Language, MAX_RENDERED_LINES, diff_lines};
 use crate::state::git::{self, DiffBase, GitHubLinks};
@@ -300,7 +302,10 @@ fn FileShown(agent: AgentId) -> Element {
         modes.push((ViewMode::Preview, "Preview"));
     }
     let loading = matches!(text, Loadable::NotRequested | Loadable::Loading);
-    let image = matches!(text, Loadable::Loaded(FileRead::Image(_)));
+    let shows_text = !matches!(
+        text,
+        Loadable::Loaded(FileRead::Image(_) | FileRead::Pdf(_))
+    );
     let copied_text = match &text {
         Loadable::Loaded(FileRead::Text { text, .. }) => Some(text.clone()),
         _ => None,
@@ -333,7 +338,7 @@ fn FileShown(agent: AgentId) -> Element {
                 }
             }
             span { class: "read-only-chip", "Read-only" }
-            if !image {
+            if shows_text {
                 div { class: "segmented", role: "group", aria_label: "View mode",
                     for (choice, name) in modes {
                         button {
@@ -381,6 +386,11 @@ fn FileShown(agent: AgentId) -> Element {
                 },
                 Loadable::Failed(error) => rsx! {
                     p { class: "file-note", "Cannot read the file: {error}" }
+                    if let Some(source) = PdfSource::unread(&full, on_this_computer) {
+                        div { class: "file-pdf",
+                            OpenPdfButton { source }
+                        }
+                    }
                 },
                 Loadable::Loaded(FileRead::Missing(sentence)) => rsx! {
                     p { class: "file-note", "{sentence}." }
@@ -413,6 +423,9 @@ fn FileShown(agent: AgentId) -> Element {
                         blame: blame.clone(),
                         github: blame_github.clone(),
                     }
+                },
+                Loadable::Loaded(FileRead::Pdf(bytes)) => rsx! {
+                    PdfFile { path: full.clone(), bytes, on_this_computer }
                 },
                 Loadable::Loaded(FileRead::Image(image)) => {
                     let image = Arc::new(image);
@@ -488,6 +501,46 @@ fn OpenInBrowserButton(
             } else {
                 Icon { kind: IconKind::External, size: 15 }
             }
+        }
+    }
+}
+
+/// A PDF at `path`, absolute, which the view does not show: its size, and the button that opens
+/// it outside the app.
+#[component]
+fn PdfFile(path: String, bytes: Arc<[u8]>, on_this_computer: bool) -> Element {
+    let size = format::bytes(u64::try_from(bytes.len()).unwrap_or(u64::MAX));
+    let source = PdfSource::of_read(&path, on_this_computer, &bytes);
+    rsx! {
+        div { class: "file-pdf",
+            p { class: "file-note", "A PDF of {size}, which the file view does not show." }
+            OpenPdfButton { source }
+        }
+    }
+}
+
+#[component]
+fn OpenPdfButton(source: PdfSource) -> Element {
+    let cockpit: Cockpit = use_context();
+    let title = match source {
+        PdfSource::Here(_) => "Open the PDF outside Yetack",
+        PdfSource::Server { .. } => "Open a copy of the PDF outside Yetack",
+    };
+    rsx! {
+        button {
+            class: "button small",
+            title,
+            onclick: move |_| {
+                let source = source.clone();
+                // Not tied to the button, which may leave the screen before the opener is done.
+                spawn_forever(async move {
+                    if let Err(error) = pdf_files::open(source).await {
+                        cockpit.update(|state| state.ui.report(format!("Cannot open the PDF: {error}")));
+                    }
+                });
+            },
+            Icon { kind: IconKind::External, size: 14 }
+            {pdf_files::OPEN_LABEL}
         }
     }
 }

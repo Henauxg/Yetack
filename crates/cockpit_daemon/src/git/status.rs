@@ -7,7 +7,7 @@ use std::time::Duration;
 use cockpit_protocol::{
     BranchState, CheckoutKind, CheckoutState, Commit, CommitHash, Completeness, FileChange,
     FileStatus, GitStatus, ImageMediaType, LineCounts, MAX_STATUS_FILES, Remote, Repository,
-    Upstream,
+    Upstream, is_pdf_name,
 };
 use strum::{EnumString, IntoStaticStr, VariantArray};
 use tokio::time::Instant;
@@ -477,12 +477,11 @@ fn count_untracked(access: &Access, files: &mut [FileStatus]) {
         .iter_mut()
         .filter(|file| file.change == FileChange::Untracked);
     for file in untracked {
-        // An image reads whole, to be left uncounted.
-        let is_image = file
-            .path
-            .to_str()
-            .is_some_and(|path| ImageMediaType::from_file_name(path).is_some());
-        if is_image || access.check_before_open(&file.path).is_err() {
+        // An image or a PDF reads whole, to be left uncounted.
+        let reads_whole = file.path.to_str().is_some_and(|path| {
+            ImageMediaType::from_file_name(path).is_some() || is_pdf_name(path)
+        });
+        if reads_whole || access.check_before_open(&file.path).is_err() {
             continue;
         }
         // Not followed: an untracked link counts nothing.
@@ -660,6 +659,30 @@ mod tests {
                 FileChange::Untracked,
                 Some((2, 0))
             )]
+        );
+    }
+
+    /// An image or a PDF reads whole, so none counts lines, even one that reads as text.
+    #[tokio::test]
+    async fn an_untracked_image_or_pdf_counts_no_lines() {
+        let repo = TestRepo::new();
+        repo.write("notes.txt", "one\ntwo\n");
+        repo.write("paper.PDF", "%PDF-1.4\n%%EOF\n");
+        repo.write("shot.png", "not a picture\n");
+
+        let checkouts = git_status(&repo, &[]).await;
+
+        let [state] = checkouts.as_slice() else {
+            panic!("one checkout, not {checkouts:?}");
+        };
+        let root = &repo.root;
+        assert_eq!(
+            state.files,
+            [
+                file(root.join("notes.txt"), FileChange::Untracked, Some((2, 0))),
+                file(root.join("paper.PDF"), FileChange::Untracked, None),
+                file(root.join("shot.png"), FileChange::Untracked, None),
+            ]
         );
     }
 

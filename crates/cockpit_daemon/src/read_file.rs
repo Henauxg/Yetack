@@ -1,5 +1,5 @@
-//! `agent.read_file`: a text file or an image, for the file view. An image is a file whose
-//! extension names a type Claude reads, such as `.png`.
+//! `agent.read_file`: a text file, an image or a PDF, for the file view. An image is a file whose
+//! extension names a type Claude reads, such as `.png`, and a PDF one whose extension is `.pdf`.
 //!
 //! The daemon reads any regular file its user can read, as an IDE opens any file: an absolute
 //! path, or one relative to the agent's folder. The daemon and the app run as the same user, and
@@ -29,7 +29,9 @@ use std::path::{Component, Path, PathBuf};
 use std::process::Stdio;
 use std::time::Duration;
 
-use cockpit_protocol::{ErrorBody, ErrorCode, FileEdit, Image, ImageMediaType};
+use cockpit_protocol::{
+    Base64, ErrorBody, ErrorCode, FileEdit, Image, ImageMediaType, is_pdf_name,
+};
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
 use tokio::time::Instant;
@@ -44,6 +46,8 @@ use crate::{windows_files, windows_path};
 pub(crate) const MAX_FILE_BYTES: u64 = 4 * 1024 * 1024;
 /// The largest image the view shows. In base64 it stays well under a frame's limit.
 pub(crate) const MAX_IMAGE_BYTES: u64 = 8 * 1024 * 1024;
+/// The largest PDF the app opens. In base64 it stays well under a frame's limit.
+pub(crate) const MAX_PDF_BYTES: u64 = 8 * 1024 * 1024;
 /// The entry that marks a git checkout's top folder: a folder, or a file in a worktree.
 pub(crate) const GIT_ENTRY: &str = ".git";
 
@@ -226,13 +230,12 @@ impl ReadFileError {
 pub(crate) enum Content {
     Text(String),
     Image(Image),
+    Pdf(Base64),
 }
 
 /// Reads `path`, absolute or relative to the agent's folder.
 pub(crate) fn read(access: &Access, path: &Path) -> Result<Content, ReadFileError> {
     use std::io::Read;
-
-    use base64::Engine;
 
     if path
         .components()
@@ -259,12 +262,8 @@ pub(crate) fn read(access: &Access, path: &Path) -> Result<Content, ReadFileErro
     if !metadata.is_file() {
         return Err(ReadFileError::NotAFile);
     }
-    let media_type = ImageMediaType::from_file_name(&resolved.to_string_lossy());
-    let limit = if media_type.is_some() {
-        MAX_IMAGE_BYTES
-    } else {
-        MAX_FILE_BYTES
-    };
+    let format = FileFormat::of(&resolved.to_string_lossy());
+    let limit = format.max_bytes();
     if metadata.len() > limit {
         return Err(ReadFileError::TooLarge(limit));
     }
@@ -275,14 +274,43 @@ pub(crate) fn read(access: &Access, path: &Path) -> Result<Content, ReadFileErro
     if u64::try_from(bytes.len()).unwrap_or(u64::MAX) > limit {
         return Err(ReadFileError::TooLarge(limit));
     }
-    match media_type {
-        Some(media_type) => Ok(Content::Image(Image {
+    match format {
+        FileFormat::Image(media_type) => Ok(Content::Image(Image {
             media_type,
-            data: base64::engine::general_purpose::STANDARD.encode(bytes),
+            data: Base64::encode(&bytes),
         })),
-        None => String::from_utf8(bytes)
+        FileFormat::Pdf => Ok(Content::Pdf(Base64::encode(&bytes))),
+        FileFormat::Text => String::from_utf8(bytes)
             .map(Content::Text)
             .map_err(|_| ReadFileError::NotText),
+    }
+}
+
+/// How the daemon reads a file, by its name's extension.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FileFormat {
+    Text,
+    Image(ImageMediaType),
+    Pdf,
+}
+
+impl FileFormat {
+    fn of(name: &str) -> Self {
+        if let Some(media_type) = ImageMediaType::from_file_name(name) {
+            Self::Image(media_type)
+        } else if is_pdf_name(name) {
+            Self::Pdf
+        } else {
+            Self::Text
+        }
+    }
+
+    fn max_bytes(self) -> u64 {
+        match self {
+            Self::Text => MAX_FILE_BYTES,
+            Self::Image(_) => MAX_IMAGE_BYTES,
+            Self::Pdf => MAX_PDF_BYTES,
+        }
     }
 }
 
@@ -1109,13 +1137,56 @@ mod tests {
             shot.unwrap(),
             Content::Image(Image {
                 media_type: ImageMediaType::Png,
-                data: "iVBORw==".to_owned(),
+                data: Base64::new("iVBORw==".to_owned()),
             })
         );
         assert!(
             matches!(too_large, Err(ReadFileError::TooLarge(MAX_IMAGE_BYTES))),
             "{too_large:?}"
         );
+    }
+
+    /// A PDF holds bytes that are not UTF-8, which the daemon refuses in a text file.
+    #[test]
+    fn a_pdf_reads_as_base64_up_to_its_own_limit() {
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::write(temp.path().join("report.PDF"), b"%PDF-\xe2\xe3").unwrap();
+        let large = File::create(temp.path().join("large.pdf")).unwrap();
+        large.set_len(MAX_PDF_BYTES + 1).unwrap();
+        let access = only_folder(temp.path());
+
+        let report = read(&access, Path::new("report.PDF"));
+        let too_large = read(&access, Path::new("large.pdf"));
+
+        assert_eq!(
+            report.unwrap(),
+            Content::Pdf(Base64::new("JVBERi3i4w==".to_owned()))
+        );
+        assert!(
+            matches!(too_large, Err(ReadFileError::TooLarge(MAX_PDF_BYTES))),
+            "{too_large:?}"
+        );
+    }
+
+    /// The name a link leads to decides how the file reads, not the link's own name.
+    #[cfg(unix)]
+    #[test]
+    fn a_link_reads_as_the_file_it_leads_to() {
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::write(temp.path().join("report.pdf"), b"%PDF-\xe2\xe3").unwrap();
+        std::fs::write(temp.path().join("notes.txt"), "notes").unwrap();
+        symlink(temp.path().join("report.pdf"), temp.path().join("latest")).unwrap();
+        symlink(temp.path().join("notes.txt"), temp.path().join("notes.pdf")).unwrap();
+        let access = only_folder(temp.path());
+
+        let latest = read(&access, Path::new("latest"));
+        let notes = read(&access, Path::new("notes.pdf"));
+
+        assert_eq!(
+            latest.unwrap(),
+            Content::Pdf(Base64::new("JVBERi3i4w==".to_owned()))
+        );
+        assert_eq!(notes.unwrap(), text("notes"));
     }
 
     #[test]

@@ -1166,15 +1166,9 @@ pub(super) fn moved(index: usize, count: usize, direction: Direction) -> usize {
 
 /// Adds the image to the draft, unless Claude would refuse it for its size.
 pub fn add_image(drafts: &mut Drafts, agent: AgentId, image: Image) -> Result<(), ImageTooLarge> {
-    ImageTooLarge::check(decoded_len(&image.data))?;
+    ImageTooLarge::check(image.data.decoded_len())?;
     drafts.draft_mut(agent).images.push(image);
     Ok(())
-}
-
-/// The size of the bytes that base64 `data` encodes.
-fn decoded_len(data: &str) -> usize {
-    let padding = data.bytes().rev().take_while(|&byte| byte == b'=').count();
-    (data.len() / 4 * 3).saturating_sub(padding)
 }
 
 pub fn remove_image(drafts: &mut Drafts, agent: AgentId, index: usize) {
@@ -2680,11 +2674,12 @@ pub fn resume_session(
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
     use std::time::SystemTime;
 
     use cockpit_client::RequestError;
     use cockpit_protocol::{
-        Account, AgentDetails, AskedQuestion, ChangedFile, CommandKind, CredentialSource,
+        Account, AgentDetails, AskedQuestion, Base64, ChangedFile, CommandKind, CredentialSource,
         EditTexts, ErrorBody, ErrorCode, FileEdit, HistoryPage, ImageMediaType, Method, NoticeKind,
         OlderItems, Position, QuestionOption, Repository, ResponseBody, SessionUse, Timestamp,
         ToolCall, ToolCallStatus, TranscriptItem, UserMessage,
@@ -4110,7 +4105,7 @@ mod tests {
         let mut drafts = Drafts::default();
         let image = Image {
             media_type: ImageMediaType::Png,
-            data: "aGVsbG8=".to_owned(),
+            data: Base64::new("aGVsbG8=".to_owned()),
         };
         drafts.draft_mut(agent()).images.push(image.clone());
         let writes = drafts.composer_writes(agent());
@@ -4764,11 +4759,9 @@ mod tests {
 
     #[test]
     fn an_image_over_five_megabytes_is_refused_with_a_note() {
-        use base64::Engine;
-
         let png = |bytes: usize| Image {
             media_type: ImageMediaType::Png,
-            data: base64::engine::general_purpose::STANDARD.encode(vec![0; bytes]),
+            data: Base64::encode(&vec![0; bytes]),
         };
         let limit = 5 * 1024 * 1024;
         let mut drafts = Drafts::default();
@@ -5344,7 +5337,7 @@ mod tests {
         let mut state = state(AgentStatus::Idle);
         let image = Image {
             media_type: ImageMediaType::Jpeg,
-            data: "aGVsbG8=".to_owned(),
+            data: Base64::new("aGVsbG8=".to_owned()),
         };
         open_file(
             &mut state,
@@ -5366,6 +5359,44 @@ mod tests {
             state.agents[&agent()].files[Path::new("shots/sheet05.jpg")],
             Loadable::Loaded(FileRead::Image(image))
         );
+    }
+
+    #[test]
+    fn a_pdf_the_daemon_read_keeps_its_bytes() {
+        let mut state = state(AgentStatus::Idle);
+        open_file(&mut state, agent(), PathBuf::from("docs/report.pdf"), None);
+
+        read_answer(
+            &mut state,
+            "docs/report.pdf",
+            Ok(ResponseBody::Pdf {
+                path: PathBuf::from("/work/project-1/docs/report.pdf"),
+                data: Base64::new("JVBERi0=".to_owned()),
+            }),
+        );
+
+        assert_eq!(
+            state.agents[&agent()].files[Path::new("docs/report.pdf")],
+            Loadable::Loaded(FileRead::Pdf(Arc::from(&b"%PDF-"[..])))
+        );
+    }
+
+    #[test]
+    fn a_pdf_not_in_base64_fails_to_read() {
+        let mut state = state(AgentStatus::Idle);
+        open_file(&mut state, agent(), PathBuf::from("docs/report.pdf"), None);
+
+        read_answer(
+            &mut state,
+            "docs/report.pdf",
+            Ok(ResponseBody::Pdf {
+                path: PathBuf::from("/work/project-1/docs/report.pdf"),
+                data: Base64::new("not base64!".to_owned()),
+            }),
+        );
+
+        let read = &state.agents[&agent()].files[Path::new("docs/report.pdf")];
+        assert!(matches!(read, Loadable::Failed(_)), "{read:?}");
     }
 
     #[test]

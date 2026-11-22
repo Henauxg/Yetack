@@ -97,8 +97,9 @@ pub enum Request {
     /// Has Claude Code read its plugins again. Answered by `PluginsReloaded`, and a
     /// `CommandsChanged` event when the commands changed. Needs a running `claude`.
     AgentReloadPlugins(AgentParams),
-    /// Answered by `File`, or by `FileMatches` when the path is relative, names no file in the
-    /// agent's folder, and several files elsewhere end with it.
+    /// Answered by `File`, `Image` or `Pdf` as the file's extension says, or by `FileMatches`
+    /// when the path is relative, names no file in the agent's folder, and several files
+    /// elsewhere end with it.
     AgentReadFile(ReadFileParams),
     /// The entries of a folder the daemon reads files in. Answered by `Directory`.
     AgentListDir(ListDirParams),

@@ -353,9 +353,9 @@ fn card_key(
 #[cfg(test)]
 mod tests {
     use cockpit_protocol::{
-        AgentDetails, AgentStatus, Answer, AnswerState, Approval, AskedQuestion, CommandKind,
-        Image, ImageMediaType, ItemBody, ItemId, Method, PendingId, Question, QuestionOption,
-        Request, Selection, SignInWait, SlashCommand, TranscriptItem,
+        AgentDetails, AgentStatus, Answer, AnswerState, Approval, AskedQuestion, Base64,
+        CommandKind, Image, ImageMediaType, ItemBody, ItemId, Method, PendingId, Question,
+        QuestionOption, Request, Selection, SignInWait, SlashCommand, TranscriptItem,
     };
     use serde_json::Value;
 
@@ -1253,7 +1253,7 @@ mod tests {
         let mut state = state(AgentStatus::NeedsYou, Some(questions(2)));
         let image = Image {
             media_type: ImageMediaType::Png,
-            data: "iVBORw0KGgo=".to_owned(),
+            data: Base64::new("iVBORw0KGgo=".to_owned()),
         };
         actions::add_image(&mut drafts, AgentId::new(1), image).unwrap();
 

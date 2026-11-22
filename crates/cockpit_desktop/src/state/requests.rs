@@ -672,7 +672,9 @@ pub fn apply_response(
         Purpose::ChatImage { agent, key } => {
             let answer = match result {
                 Ok(ResponseBody::Image { image, .. }) => Ok(image),
-                Ok(ResponseBody::File { .. }) => Err("This file is not an image.".to_owned()),
+                Ok(ResponseBody::File { .. } | ResponseBody::Pdf { .. }) => {
+                    Err("This file is not an image.".to_owned())
+                }
                 Ok(ResponseBody::FileMatches { .. }) => {
                     Err("Several files have this name: give its full path.".to_owned())
                 }
@@ -710,6 +712,14 @@ pub fn apply_response(
                     );
                     return;
                 }
+                Ok(ResponseBody::Pdf { path: found, data }) => match data.decode() {
+                    Ok(bytes) => {
+                        let read = FileRead::Pdf(bytes.into());
+                        actions::show_read_file(state, agent, &path, &found, read, now);
+                        return;
+                    }
+                    Err(_) => Loadable::Failed(format!("{method} sent a PDF that is not base64.")),
+                },
                 Ok(ResponseBody::FileMatches { matches }) => {
                     Loadable::Loaded(FileRead::Choices(matches))
                 }

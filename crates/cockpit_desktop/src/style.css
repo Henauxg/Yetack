@@ -9062,6 +9062,20 @@ html.splitting * {
   padding-bottom: 8px;
 }
 
+/* A PDF, which opens outside the app: its size, then the button that opens it. The file's body
+   is monospace for text, which a button does not take. */
+.file-pdf {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  padding-bottom: 8px;
+  font-family: var(--sans);
+}
+
+.file-pdf .button {
+  margin: 0 12px;
+}
+
 .file-choice {
   display: flex;
   max-width: calc(100% - 16px);

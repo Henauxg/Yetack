@@ -267,6 +267,10 @@ impl Hub {
                     path,
                     content: Content::Image(image),
                 }) => Ok(ResponseBody::Image { path, image }),
+                Ok(Found::File {
+                    path,
+                    content: Content::Pdf(data),
+                }) => Ok(ResponseBody::Pdf { path, data }),
                 Ok(Found::Several(matches)) => Ok(ResponseBody::FileMatches { matches }),
                 Err(error) => Err(error.to_error_body()),
             };

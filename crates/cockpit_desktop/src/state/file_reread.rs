@@ -29,7 +29,7 @@ pub fn reread(state: &mut AppState, agent: AgentId) {
         return;
     };
     match held {
-        Loadable::Loaded(FileRead::Text { .. } | FileRead::Image(_)) => {
+        Loadable::Loaded(FileRead::Text { .. } | FileRead::Image(_) | FileRead::Pdf(_)) => {
             let freshness = &mut entry.file_freshness;
             freshness.reread = match freshness.reread {
                 Reread::Idle | Reread::Wanted => Reread::Wanted,
@@ -121,6 +121,7 @@ pub fn arrived(
 #[cfg(test)]
 mod tests {
     use std::path::{Path, PathBuf};
+    use std::sync::Arc;
 
     use cockpit_protocol::{AgentStatus, EditTexts, FileEdit, ItemId, ToolCall};
     use serde_json::Value;
@@ -140,19 +141,17 @@ mod tests {
 
     /// The agent selected, its file view on `path`, whose `text` arrived.
     fn showing(path: &str, text: &str) -> AppState {
+        showing_read(path, FileRead::unedited(text))
+    }
+
+    /// The agent selected, its file view on `path`, whose `read` arrived.
+    fn showing_read(path: &str, read: FileRead) -> AppState {
         let mut state = state_with(vec![summary(AGENT_ID, AgentStatus::Working)]);
         state.machines.this.connection = ConnectionState::Connected;
         state.ui.selected = Some(agent());
         actions::open_file(&mut state, agent(), PathBuf::from(path), None);
         let path = Path::new(path);
-        actions::show_read_file(
-            &mut state,
-            agent(),
-            path,
-            path,
-            FileRead::unedited(text),
-            at(1_000),
-        );
+        actions::show_read_file(&mut state, agent(), path, path, read, at(1_000));
         state
     }
 
@@ -212,6 +211,28 @@ mod tests {
             (Timestamp::from_unix_millis(2_000), 0)
         );
         assert_eq!(update.lines, BTreeSet::from([2, 3]));
+    }
+
+    /// A PDF shows no text, but reads again as a text does: the old one stays on screen meanwhile.
+    #[test]
+    fn a_pdf_reads_again_and_a_changed_one_shows_as_updated() {
+        let pdf = |bytes: &[u8]| FileRead::Pdf(Arc::from(bytes));
+        let mut state = showing_read("report.pdf", pdf(b"%PDF-1"));
+
+        reread(&mut state, agent());
+        let reads = crate::state::needed_requests(&mut state)
+            .into_iter()
+            .filter(|outgoing| matches!(outgoing.purpose, Purpose::ReadFile { .. }))
+            .count();
+        let path = Path::new("report.pdf");
+        let held = state.agents[&agent()].files[path].clone();
+        actions::show_read_file(&mut state, agent(), path, path, pdf(b"%PDF-2"), at(2_000));
+
+        assert_eq!(reads, 1);
+        assert_eq!(held, Loadable::Loaded(pdf(b"%PDF-1")));
+        let update = freshness(&state).update.as_ref().unwrap();
+        assert_eq!(update.at, Timestamp::from_unix_millis(2_000));
+        assert!(update.lines.is_empty(), "{:?}", update.lines);
     }
 
     #[test]

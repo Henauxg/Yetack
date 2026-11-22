@@ -11,7 +11,6 @@ use std::io::Cursor;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use base64::engine::general_purpose::STANDARD as BASE64;
 use cockpit_protocol::{AgentId, Image, ImageMediaType, ItemId, ReadFileParams, Request};
 use image::metadata::Orientation;
 use image::{ImageFormat, ImageReader};
@@ -76,10 +75,9 @@ pub struct ImageSize {
 /// The size the web view draws the image at, from the file's header, without decoding its
 /// pixels. The web view turns an image as its Exif data says, as a phone's photo needs.
 fn image_size(image: &Image) -> Option<ImageSize> {
-    use base64::Engine as _;
     use image::ImageDecoder as _;
 
-    let bytes = BASE64.decode(&image.data).ok()?;
+    let bytes = image.data.decode().ok()?;
     let format = match image.media_type {
         ImageMediaType::Png => ImageFormat::Png,
         ImageMediaType::Jpeg => ImageFormat::Jpeg,
@@ -218,7 +216,7 @@ fn open(state: &mut AppState, agent: AgentId, path: Option<PathBuf>, image: Arc<
 
 #[cfg(test)]
 mod tests {
-    use cockpit_protocol::{AgentStatus, ImageMediaType, ItemId};
+    use cockpit_protocol::{AgentStatus, Base64, ImageMediaType, ItemId};
 
     use super::*;
     use crate::state::Popover;
@@ -269,7 +267,7 @@ mod tests {
     fn png() -> Image {
         Image {
             media_type: ImageMediaType::Png,
-            data: "iVBORw0KGgo=".to_owned(),
+            data: Base64::new("iVBORw0KGgo=".to_owned()),
         }
     }
 
@@ -327,15 +325,13 @@ mod tests {
     /// The size comes from the header, and a header that does not read gives none.
     #[test]
     fn an_image_reads_its_size_from_its_header() {
-        use base64::Engine as _;
-
         let mut file = Cursor::new(Vec::new());
         image::RgbaImage::new(900, 60)
             .write_to(&mut file, ImageFormat::Png)
             .unwrap();
         let wide = Image {
             media_type: ImageMediaType::Png,
-            data: BASE64.encode(file.into_inner()),
+            data: Base64::encode(&file.into_inner()),
         };
         let mislabelled = Image {
             media_type: ImageMediaType::Jpeg,
@@ -357,7 +353,6 @@ mod tests {
     /// view draws it turned, so its size is the turned one.
     #[test]
     fn a_photo_turned_by_its_exif_data_reads_turned() {
-        use base64::Engine as _;
         use image::codecs::jpeg::JpegEncoder;
         use image::{ExtendedColorType, ImageEncoder as _, RgbImage};
 
@@ -380,7 +375,7 @@ mod tests {
             .unwrap();
         let photo = Image {
             media_type: ImageMediaType::Jpeg,
-            data: BASE64.encode(file),
+            data: Base64::encode(&file),
         };
 
         assert_eq!(
@@ -422,7 +417,7 @@ mod tests {
         let later = ImageKey::new(Some(ItemId::new(9)), path.clone());
         let new_png = Image {
             media_type: ImageMediaType::Png,
-            data: "iVBORw0KGgoAAAA=".to_owned(),
+            data: Base64::new("iVBORw0KGgoAAAA=".to_owned()),
         };
         show(&mut state, agent(), &first);
         asked(&mut state);

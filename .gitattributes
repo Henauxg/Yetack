@@ -1,2 +1,4 @@
 # These scripts run on Linux, and a checkout on Windows must not turn their line ends to CRLF.
 contrib/**/*.sh text eol=lf
+# A hand-written PDF counts its bytes, so a checkout on Windows must not change its line ends.
+crates/cockpit_desktop/assets/*.pdf binary

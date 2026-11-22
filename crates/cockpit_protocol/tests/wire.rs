@@ -18,7 +18,7 @@ use cockpit_protocol::{
     AccountState, AgentDetails, AgentHistory, AgentId, AgentLoad, AgentParams, AgentStatus,
     AgentSummary, Answer, AnswerParams, AnswerState, Approval, ApprovalAnswer, ApprovalDecision,
     AskedQuestion, BackgroundTask, BackgroundTaskId, BackgroundTaskKind, BackgroundTaskStatus,
-    BlameRun, BranchState, BuildCommit, Catchup, ChangedFile, CheckoutKind, CheckoutState,
+    Base64, BlameRun, BranchState, BuildCommit, Catchup, ChangedFile, CheckoutKind, CheckoutState,
     ClaudeCodeVersion, ClaudeRoute, ClaudeSessionId, ClientMessage, CommandChanges, CommandKind,
     CommandLoad, Commit, CommitHash, CommitTexts, Completeness, ContextCategory, ContextUsage,
     Cores, CostUsd, CredentialSource, DEFAULT_TITLE_MAX_CHARS, DetailsChange, DirEntry, DirListing,
@@ -161,7 +161,7 @@ fn work_account_state() -> AccountState {
 fn image() -> Image {
     Image {
         media_type: ImageMediaType::Png,
-        data: "iVBORw0KGgo=".to_owned(),
+        data: Base64::new("iVBORw0KGgo=".to_owned()),
     }
 }
 
@@ -979,6 +979,10 @@ fn response_bodies() -> Vec<ResponseBody> {
             path: PathBuf::from("/srv/projects/shop/docs/cart.png"),
             image: image(),
         },
+        ResponseBody::Pdf {
+            path: PathBuf::from("/srv/projects/shop/docs/invoice.pdf"),
+            data: Base64::new("JVBERi0=".to_owned()),
+        },
         ResponseBody::Directory(dir_listing()),
         ResponseBody::FileMatches {
             matches: vec![
@@ -1399,6 +1403,7 @@ fn message_and_body_tags_are_pinned() {
             "terminal_screen",
             "file",
             "image",
+            "pdf",
             "directory",
             "file_matches",
             "git_file",
@@ -1746,6 +1751,23 @@ fn an_image_answer_on_the_wire() {
             "type": "image",
             "path": "/srv/projects/shop/docs/cart.png",
             "image": {"media_type": "image/png", "data": "iVBORw0KGgo="},
+        }),
+    );
+}
+
+#[test]
+fn a_pdf_answer_on_the_wire() {
+    let answer = ResponseBody::Pdf {
+        path: PathBuf::from("/srv/projects/shop/docs/invoice.pdf"),
+        data: Base64::new("JVBERi0=".to_owned()),
+    };
+
+    assert_wire(
+        &answer,
+        json!({
+            "type": "pdf",
+            "path": "/srv/projects/shop/docs/invoice.pdf",
+            "data": "JVBERi0=",
         }),
     );
 }

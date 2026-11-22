@@ -271,9 +271,9 @@ mod tests {
     use std::time::Duration;
 
     use cockpit_protocol::{
-        AgentStatus, ApprovalAnswer, AskedQuestion, CostUsd, HistoryPage, Image, ImageMediaType,
-        OlderItems, PendingId, PlanAnswer, QuestionAnswer, QuestionOption, Selection, TokenUsage,
-        UserMessage,
+        AgentStatus, ApprovalAnswer, AskedQuestion, Base64, CostUsd, HistoryPage, Image,
+        ImageMediaType, OlderItems, PendingId, PlanAnswer, QuestionAnswer, QuestionOption,
+        Selection, TokenUsage, UserMessage,
     };
     use serde_json::Value;
 
@@ -295,7 +295,7 @@ mod tests {
     fn user(text: &str, images: usize) -> ItemBody {
         let image = Image {
             media_type: ImageMediaType::Png,
-            data: "aGVsbG8=".to_owned(),
+            data: Base64::new("aGVsbG8=".to_owned()),
         };
         ItemBody::UserMessage(UserMessage {
             text: text.to_owned(),

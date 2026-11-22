@@ -97,6 +97,7 @@ impl ResponseBody {
             | Self::TerminalScreen { .. }
             | Self::File { .. }
             | Self::Image { .. }
+            | Self::Pdf { .. }
             | Self::FileMatches { .. }
             | Self::Directory(_)
             | Self::GitFile(_)

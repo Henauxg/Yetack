@@ -16,12 +16,12 @@ use claude_protocol::{
 };
 use cockpit_protocol::{
     AccountId, AgentDetails, AgentId, AgentStatus, AgentSummary, Answer, AnswerState, Approval,
-    BackgroundTask, BackgroundTaskId, BackgroundTaskStatus, ClaudeCodeVersion, ClaudeSessionId,
-    CommandChanges, ContextUsage, CostUsd, Effort, EffortSource, Event, Image, ItemBody, ItemId,
-    Mark, McpServer, NoticeKind, PendingId, PermissionMode, Plan, Position, Prompt, PromptId,
-    Question, Repository, SessionUse, SignInWait, SlashCommand, SubagentRun, SubagentStatus,
-    SubagentToolCall, Timestamp, TokenUsage, ToolCall, ToolCallStatus, TranscriptItem, TurnEnd,
-    TurnOutcome, UserMessage, WaitingPrompt, WaitingState,
+    BackgroundTask, BackgroundTaskId, BackgroundTaskStatus, Base64, ClaudeCodeVersion,
+    ClaudeSessionId, CommandChanges, ContextUsage, CostUsd, Effort, EffortSource, Event, Image,
+    ItemBody, ItemId, Mark, McpServer, NoticeKind, PendingId, PermissionMode, Plan, Position,
+    Prompt, PromptId, Question, Repository, SessionUse, SignInWait, SlashCommand, SubagentRun,
+    SubagentStatus, SubagentToolCall, Timestamp, TokenUsage, ToolCall, ToolCallStatus,
+    TranscriptItem, TurnEnd, TurnOutcome, UserMessage, WaitingPrompt, WaitingState,
 };
 use serde_json::{Map, Value};
 use strum::{EnumString, IntoStaticStr, VariantArray};
@@ -2139,7 +2139,7 @@ fn cockpit_image(image: &ImageBlock) -> Option<Image> {
     };
     Some(Image {
         media_type: words::media_type_from_word(&base64.media_type)?,
-        data: base64.data.clone(),
+        data: Base64::new(base64.data.clone()),
     })
 }
 
@@ -2264,8 +2264,8 @@ mod tests {
     use claude_protocol::PermissionDecision;
     use cockpit_protocol::{
         AgentId, ApprovalAnswer, ApprovalDecision, BackgroundTaskKind, CommandKind, EditTexts,
-        FileEdit, McpServerStatus, PlanAnswer, PlanDecision, QuestionAnswer, Subagent,
-        TaskProgress, TaskStatus,
+        FileEdit, ImageMediaType, McpServerStatus, PlanAnswer, PlanDecision, QuestionAnswer,
+        Subagent, TaskProgress, TaskStatus,
     };
     use serde_json::json;
 
@@ -2364,6 +2364,32 @@ mod tests {
         assert_eq!(
             times,
             [Some(Timestamp::from_unix_millis(5_000)), Some(now())]
+        );
+    }
+
+    #[test]
+    fn an_image_in_claude_codes_line_keeps_its_base64_text() {
+        let mut view = view();
+        let typed = json!({"type": "user", "isReplay": true, "message": {"role": "user", "content": [
+            {"type": "image", "source": {
+                "type": "base64", "media_type": "image/png", "data": "iVBORw0KGgo="
+            }},
+            {"type": "text", "text": "What is on this screen?"}
+        ]}});
+
+        apply(&mut view, typed);
+
+        let image = Image {
+            media_type: ImageMediaType::Png,
+            data: Base64::new("iVBORw0KGgo=".to_owned()),
+        };
+        assert_eq!(
+            bodies(&view),
+            [&user_message(
+                "What is on this screen?".to_owned(),
+                vec![image],
+                Some(now())
+            )]
         );
     }
 

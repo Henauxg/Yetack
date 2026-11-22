@@ -21,6 +21,7 @@ mod machine;
 mod notifications;
 mod page_files;
 mod path_style;
+mod pdf_files;
 mod perf;
 mod prefs;
 mod reach;

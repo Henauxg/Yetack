@@ -451,8 +451,8 @@ pub fn waiting_changed(entry: &mut AgentEntry) {
 mod tests {
     use cockpit_client::{RequestError, SessionUpdate};
     use cockpit_protocol::{
-        AgentDetails, AgentId, DetailsChange, Event, EventRecord, ImageMediaType, ItemId, Method,
-        PromptDelivery, PromptId, ResponseBody, Seq, UserMessage, WaitingState,
+        AgentDetails, AgentId, Base64, DetailsChange, Event, EventRecord, ImageMediaType, ItemId,
+        Method, PromptDelivery, PromptId, ResponseBody, Seq, UserMessage, WaitingState,
     };
 
     use super::*;
@@ -607,7 +607,7 @@ mod tests {
         queued(&mut state, "Look at this");
         let image = Image {
             media_type: ImageMediaType::Png,
-            data: "iVBORw0KGgo=".to_owned(),
+            data: Base64::new("iVBORw0KGgo=".to_owned()),
         };
 
         item_appended(
@@ -627,7 +627,7 @@ mod tests {
                 text: "Look at this".to_owned(),
                 images: vec![Image {
                     media_type: ImageMediaType::Png,
-                    data: data.to_owned(),
+                    data: Base64::new(data.to_owned()),
                 }],
             },
             PromptDelivery::Queue,
@@ -670,7 +670,7 @@ mod tests {
         entry(&mut state).details = Loadable::Loaded(waiting(&[]));
         let image = Image {
             media_type: ImageMediaType::Png,
-            data: "iVBORw0KGgo=".to_owned(),
+            data: Base64::new("iVBORw0KGgo=".to_owned()),
         };
         start(
             &mut state,
@@ -1118,7 +1118,7 @@ mod tests {
         let mut drafts = Drafts::default();
         drafts.draft_mut(agent()).images.push(Image {
             media_type: ImageMediaType::Png,
-            data: "iVBORw0KGgo=".to_owned(),
+            data: Base64::new("iVBORw0KGgo=".to_owned()),
         });
 
         restore_draft(

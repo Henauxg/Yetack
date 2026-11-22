@@ -53,7 +53,7 @@ pub(crate) fn prompt_line(prompt: &Prompt) -> Option<InputLine> {
         blocks.push(ContentBlock::Image(ImageBlock {
             source: ImageSource::Base64(Base64Image {
                 media_type: words::media_type_word(image.media_type)?,
-                data: image.data.clone(),
+                data: image.data.as_str().to_owned(),
             }),
         }));
     }
@@ -78,7 +78,7 @@ pub(crate) fn effort_command(effort: Effort) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use cockpit_protocol::{Image, ImageMediaType};
+    use cockpit_protocol::{Base64, Image, ImageMediaType};
     use serde_json::json;
 
     use super::*;
@@ -89,7 +89,7 @@ mod tests {
             text: "What is wrong here?".to_owned(),
             images: vec![Image {
                 media_type: ImageMediaType::Png,
-                data: "aGVsbG8=".to_owned(),
+                data: Base64::new("aGVsbG8=".to_owned()),
             }],
         };
 

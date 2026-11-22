@@ -603,6 +603,7 @@ dependencies = [
 name = "cockpit_protocol"
 version = "0.5.0"
 dependencies = [
+ "base64 0.22.1",
  "serde",
  "serde_json",
  "strum",

@@ -10,7 +10,7 @@ use cockpit_daemon::NOT_SERVING_HINT;
 use cockpit_protocol::{
     Account, AccountId, AccountState, AgentDetails, AgentHistory, AgentId, AgentLoad, AgentStatus,
     AgentSummary, Answer, AnswerState, Approval, ApprovalAnswer, ApprovalDecision, AskedQuestion,
-    BackgroundTask, BackgroundTaskId, BackgroundTaskKind, BackgroundTaskStatus, BlameRun,
+    BackgroundTask, BackgroundTaskId, BackgroundTaskKind, BackgroundTaskStatus, Base64, BlameRun,
     BranchState, BuildCommit, ChangedFile, CheckoutKind, CheckoutState, ClaudeCodeVersion,
     ClaudeRoute, ClaudeSessionId, CommandChanges, CommandKind, CommandLoad, Commit, CommitHash,
     CommitTexts, Completeness, ContextCategory, ContextUsage, Cores, CostUsd, CredentialSource,
@@ -26,6 +26,7 @@ use cockpit_protocol::{
     SubagentStatus, SubagentToolCall, TaskListItem, TaskProgress, TaskStatus, TerminalId,
     TerminalInfo, Timestamp, TokenUsage, ToolCall, ToolCallStatus, TranscriptItem, TurnEnd,
     TurnOutcome, Upstream, UsageWindow, UserMessage, WaitingPrompt, WaitingState, WindowUsage,
+    is_pdf_name,
 };
 use dioxus::prelude::{Signal, WritableExt};
 use serde_json::Value;
@@ -234,6 +235,9 @@ const SIGN_IN_FOLDER: &str = "/home/dev/projects/billing";
 
 /// The screenshot of the failing test, in a message of the selected agent.
 const FAILING_TEST_PNG: &[u8] = include_bytes!("../assets/demo-failing-test.png");
+
+/// A one-page PDF in the parser's folder, written by hand in plain ASCII.
+const GRAMMAR_PDF: &str = include_str!("../assets/demo-grammar.pdf");
 
 /// The second machine: a server with agents of its own.
 const SERVER: MachineId = MachineId::new(1);
@@ -3089,7 +3093,7 @@ fn in_folder(folder: &str, path: impl AsRef<Path>) -> PathBuf {
 }
 
 /// The sample's files, absolute, with their text.
-fn files() -> [(PathBuf, &'static str); 26] {
+fn files() -> [(PathBuf, &'static str); 27] {
     [
         (in_folder(PARSER_FOLDER, "Cargo.toml"), CARGO_TEXT),
         (in_folder(PARSER_FOLDER, "README.md"), README_TEXT),
@@ -3110,6 +3114,7 @@ fn files() -> [(PathBuf, &'static str); 26] {
         (in_folder(PARSER_FOLDER, CHANGELOG_FILE), CHANGELOG_TEXT),
         (in_folder(PARSER_FOLDER, "LICENSE"), LICENSE_TEXT),
         (in_folder(PARSER_FOLDER, "docs/grammar.md"), GRAMMAR_TEXT),
+        (in_folder(PARSER_FOLDER, "docs/grammar.pdf"), GRAMMAR_PDF),
         (in_folder(PARSER_FOLDER, "docs/errors.md"), ERRORS_DOC_TEXT),
         (in_folder(PARSER_FOLDER, "examples/repl.rs"), REPL_TEXT),
         (in_folder(PARSER_FOLDER, "src/eval.rs"), EVAL_TEXT),
@@ -3326,17 +3331,15 @@ fn with_edits(state: &AppState, agent: AgentId, body: ResponseBody) -> ResponseB
 }
 
 /// As the daemon answers for the parser agent: the path itself, else the sample's files whose
-/// path ends with it, one read or several listed. Any PNG is the app's icon.
+/// path ends with it, one read or several listed. Any PNG is the app's icon, and a PDF comes as
+/// bytes.
 fn read_file(path: &Path) -> Result<ResponseBody, RequestError> {
-    use base64::Engine;
-    use base64::engine::general_purpose::STANDARD as BASE64;
-
     if path.extension().is_some_and(|extension| extension == "png") {
         return Ok(ResponseBody::Image {
             path: path.to_owned(),
             image: Image {
                 media_type: ImageMediaType::Png,
-                data: BASE64.encode(crate::ICON_PNG),
+                data: Base64::encode(crate::ICON_PNG),
             },
         });
     }
@@ -3357,6 +3360,10 @@ fn read_file(path: &Path) -> Result<ResponseBody, RequestError> {
                 path.display()
             ),
         )),
+        [(path, text)] if is_pdf_name(&path.to_string_lossy()) => Ok(ResponseBody::Pdf {
+            path: path.clone(),
+            data: Base64::encode(text.as_bytes()),
+        }),
         [(path, text)] => Ok(ResponseBody::File {
             path: Some(path.clone()),
             text: (*text).to_owned(),
@@ -3472,14 +3479,11 @@ fn user(text: &str) -> ItemBody {
 
 /// A message with a PNG screenshot attached.
 fn user_with_image(text: &str, png: &[u8]) -> ItemBody {
-    use base64::Engine;
-    use base64::engine::general_purpose::STANDARD as BASE64;
-
     ItemBody::UserMessage(UserMessage {
         text: text.to_owned(),
         images: vec![Image {
             media_type: ImageMediaType::Png,
-            data: BASE64.encode(png),
+            data: Base64::encode(png),
         }],
         sent_at: None,
     })

@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use strum::VariantArray;
 
+use crate::base64_bytes::Base64;
 use crate::ids::{ItemId, PendingId};
 use crate::stored_bool::{FromStoredBool, enum_or_stored_bool};
 use crate::time::Timestamp;
@@ -99,8 +100,8 @@ pub struct UserMessage {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Image {
     pub media_type: ImageMediaType,
-    /// The image file's bytes, in base64.
-    pub data: String,
+    /// The image file's bytes.
+    pub data: Base64,
 }
 
 /// The image types Claude accepts.

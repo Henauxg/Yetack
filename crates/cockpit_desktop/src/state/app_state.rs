@@ -2,6 +2,7 @@
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime};
 
 use cockpit_protocol::{
@@ -75,6 +76,8 @@ pub enum FileRead {
         edits: Vec<FileEdit>,
     },
     Image(Image),
+    /// A PDF's bytes, which the view opens outside the app.
+    Pdf(Arc<[u8]>),
     /// Several files end with the path, which names none in the agent's folder: the user picks
     /// one. Absolute paths.
     Choices(Vec<PathBuf>),

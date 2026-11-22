@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 use strum::VariantArray;
 
 use crate::account::{AccountState, EnvironmentCredentials};
+use crate::base64_bytes::Base64;
 use crate::details::{AgentDetails, ContextUsage, McpServer, SlashCommand};
 use crate::git::{GitBlame, GitCommitFile, GitFile, GitStatus, LogEntry};
 use crate::ids::{AccountId, AgentId, ClaudeSessionId, Seq};
@@ -113,6 +114,13 @@ pub enum ResponseBody {
         path: PathBuf,
         image: Image,
     },
+    /// For `agent.read_file`, a PDF file, which the daemon reads by its extension
+    /// ([`is_pdf_name`]). `path` is as for `File`. The app opens it outside its window.
+    Pdf {
+        path: PathBuf,
+        /// The file's bytes.
+        data: Base64,
+    },
     /// For `agent.read_file`, several files match the relative path asked for, and none was
     /// read. For `agent.find_files`, the files found. Absolute paths.
     FileMatches {
@@ -141,6 +149,16 @@ pub enum ResponseBody {
     },
     /// The account added or changed.
     Account(AccountState),
+}
+
+const PDF_EXTENSION: &str = "pdf";
+
+/// Whether `name`, a file's name or path, names a PDF file: its extension is `.pdf`, whatever its
+/// case.
+#[must_use]
+pub fn is_pdf_name(name: &str) -> bool {
+    name.rsplit_once('.')
+        .is_some_and(|(_, extension)| extension.eq_ignore_ascii_case(PDF_EXTENSION))
 }
 
 /// The slash commands and skills a reload added or removed, by name, without the `/`, each list
@@ -284,4 +302,19 @@ pub enum ErrorCode {
     AccountInUse,
     /// A fault in the daemon.
     Internal,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_pdf_name_ends_with_pdf_whatever_its_case() {
+        for name in ["report.pdf", "/srv/docs/Report.PDF", r"C:\mock\scan.Pdf"] {
+            assert!(is_pdf_name(name), "{name}");
+        }
+        for name in ["report.pdf.txt", "pdf", "/srv/pdf/notes.md", "report.pd"] {
+            assert!(!is_pdf_name(name), "{name}");
+        }
+    }
 }

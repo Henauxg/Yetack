@@ -20,10 +20,10 @@ use cockpit_client::{Connection, RequestError, Transport};
 use cockpit_protocol::{
     Account, AccountAddParams, AccountId, AccountParams, AccountPlanUsage, AccountState, AgentId,
     AgentParams, AgentStatus, AgentSummary, Answer, AnswerParams, AnswerState, Approval,
-    ApprovalAnswer, ApprovalDecision, BackgroundTaskId, Catchup, ClaudeSessionId, CommandChanges,
-    CommandKind, CostUsd, CredentialSource, DetailsChange, EditTexts, Effort, EffortSource,
-    EnvironmentCredentials, ErrorCode, Event, EventRecord, FileEdit, HistoryParams, Image,
-    ImageMediaType, ItemBody, McpRemoveParams, McpScope, McpServerParams, McpServerStatus,
+    ApprovalAnswer, ApprovalDecision, BackgroundTaskId, Base64, Catchup, ClaudeSessionId,
+    CommandChanges, CommandKind, CostUsd, CredentialSource, DetailsChange, EditTexts, Effort,
+    EffortSource, EnvironmentCredentials, ErrorCode, Event, EventRecord, FileEdit, HistoryParams,
+    Image, ImageMediaType, ItemBody, McpRemoveParams, McpScope, McpServerParams, McpServerStatus,
     McpToggleAction, McpToggleParams, MoveParams, PROTOCOL_VERSION, PendingId, PermissionMode,
     Plan, PlanAnswer, PlanDecision, PlanUsage, ProcessId, Prompt, PromptDelivery, PromptParams,
     Question, QuestionAnswer, QueuedPromptParams, ReadFileParams, RenameParams, Request,
@@ -2015,6 +2015,7 @@ async fn files_settings_sessions_and_agent_settings() {
     let mut client = setup.connect().await;
     std::fs::write(setup.work().join("notes.txt"), "remember the milk\n").unwrap();
     std::fs::write(setup.work().join("cart.gif"), b"GIF89a").unwrap();
+    std::fs::write(setup.work().join("invoice.pdf"), b"%PDF-\xe2\xe3").unwrap();
     let agent = client.start(&setup.work(), "garbage first").await;
     client.says(agent, "Still here.").await;
     client.idle(agent).await;
@@ -2039,8 +2040,15 @@ async fn files_settings_sessions_and_agent_settings() {
             path: setup.work().join("cart.gif"),
             image: Image {
                 media_type: ImageMediaType::Gif,
-                data: "R0lGODlh".to_owned(),
+                data: Base64::new("R0lGODlh".to_owned()),
             }
+        }
+    );
+    assert_eq!(
+        client.ok(read("invoice.pdf")).await,
+        ResponseBody::Pdf {
+            path: setup.work().join("invoice.pdf"),
+            data: Base64::new("JVBERi3i4w==".to_owned()),
         }
     );
     assert_eq!(

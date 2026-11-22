@@ -12,6 +12,9 @@ use std::process::Stdio;
 #[cfg(target_os = "macos")]
 use tokio::process::Command;
 
+#[cfg(any(windows, test))]
+use crate::path_style;
+
 /// What the menu item that shows a file says on this system.
 pub const SHOW_LABEL: &str = if cfg!(windows) {
     "Show in Explorer"
@@ -57,7 +60,7 @@ pub async fn show(path: &Path) -> Result<(), ShowError> {
 /// the path and start another argument.
 #[cfg(any(windows, test))]
 fn select_argument(text: &str) -> Result<String, ShowError> {
-    if is_network_share(text) {
+    if path_style::is_network_share(text) {
         return Err(ShowError::NetworkShare);
     }
     if text.contains('"') {
@@ -101,43 +104,9 @@ fn folder_of(path: &Path) -> Result<PathBuf, ShowError> {
     }
 }
 
-/// Whether a Windows path may be on a network share: it starts with two separators, `\` or `/`,
-/// as `\\host\share`, `//host/share` and `\\?\UNC\host\share` do, and is no verbatim drive path
-/// (`\\?\C:\`).
-#[cfg(any(windows, test))]
-fn is_network_share(text: &str) -> bool {
-    const VERBATIM: &str = r"\\?\";
-    let is_separator = |character| character == '\\' || character == '/';
-    let mut characters = text.chars();
-    let two_separators =
-        characters.next().is_some_and(is_separator) && characters.next().is_some_and(is_separator);
-    let verbatim_drive = text.strip_prefix(VERBATIM).is_some_and(|rest| {
-        let mut characters = rest.chars();
-        characters
-            .next()
-            .is_some_and(|letter| letter.is_ascii_alphabetic())
-            && characters.next() == Some(':')
-    });
-    two_separators && !verbatim_drive
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn a_network_share_is_told_from_a_local_path() {
-        assert!(is_network_share(r"\\fileserver\team\notes.txt"));
-        assert!(is_network_share(r"\\?\UNC\fileserver\team\notes.txt"));
-        assert!(is_network_share("//fileserver/team/notes.txt"));
-        assert!(is_network_share(r"\/fileserver\team\notes.txt"));
-        assert!(is_network_share(
-            r"\\?\GLOBALROOT\Device\Mup\fileserver\team\notes.txt"
-        ));
-        assert!(!is_network_share(r"\\?\C:\work\notes.txt"));
-        assert!(!is_network_share(r"C:\work\notes.txt"));
-        assert!(!is_network_share("C:/work/notes.txt"));
-    }
 
     #[test]
     fn a_quote_cannot_add_an_argument_for_explorer() {

@@ -241,8 +241,6 @@ pub(super) fn answered(
     path: &str,
     answer: Option<ResponseBody>,
 ) {
-    use base64::Engine;
-
     let Some(copy) = state
         .page_copies
         .copies
@@ -253,8 +251,9 @@ pub(super) fn answered(
     };
     let bytes = match answer {
         Some(ResponseBody::File { text, .. }) => FileBytes::Read(text.into_bytes()),
-        Some(ResponseBody::Image { image, .. }) => base64::engine::general_purpose::STANDARD
-            .decode(image.data)
+        Some(ResponseBody::Image { image, .. }) => image
+            .data
+            .decode()
             .map_or(FileBytes::Failed, FileBytes::Read),
         Some(_) | None => FileBytes::Failed,
     };
@@ -433,7 +432,7 @@ fn unescaped(address: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use cockpit_protocol::{AgentStatus, Image, ImageMediaType};
+    use cockpit_protocol::{AgentStatus, Base64, Image, ImageMediaType};
 
     use super::*;
     use crate::state::{Drafts, apply, state_with, summary};
@@ -580,7 +579,7 @@ mod tests {
                 path: PathBuf::from("/srv/site/pages/shots/a.png"),
                 image: Image {
                     media_type: ImageMediaType::Png,
-                    data: "iVBO".to_owned(),
+                    data: Base64::new("iVBO".to_owned()),
                 },
             }),
         );

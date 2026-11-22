@@ -2,7 +2,7 @@
 //! prevented only in the page, so the script decides which key presses to take, from the mode
 //! Rust sends it, and passes them on with the window's focus and pasted images.
 
-use cockpit_protocol::{AgentId, Image, ImageMediaType, ItemBody};
+use cockpit_protocol::{AgentId, Base64, Image, ImageMediaType, ItemBody};
 use dioxus::dioxus_core::{queue_effect, spawn_forever};
 use dioxus::prelude::*;
 use serde::{Deserialize, Serialize};
@@ -889,7 +889,10 @@ fn receive(cockpit: Cockpit, voice: VoiceDesk, message: BridgeMessage) {
                 tracing::warn!("cannot attach an image of type {media_type}");
                 return;
             };
-            let image = Image { media_type, data };
+            let image = Image {
+                media_type,
+                data: Base64::new(data),
+            };
             let added = cockpit.with_drafts(|state, drafts| {
                 let agent = state.ui.selected?;
                 Some(actions::add_image(drafts, agent, image))
@@ -915,7 +918,11 @@ pub fn mime_type(media_type: ImageMediaType) -> String {
 
 /// A `data:` URL that shows an image in the page.
 pub fn image_url(image: &Image) -> String {
-    format!("data:{};base64,{}", mime_type(image.media_type), image.data)
+    format!(
+        "data:{};base64,{}",
+        mime_type(image.media_type),
+        image.data.as_str()
+    )
 }
 
 pub fn copy_to_clipboard(text: String) {

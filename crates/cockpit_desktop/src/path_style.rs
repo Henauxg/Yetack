@@ -348,6 +348,24 @@ pub fn shown(path: &Path) -> String {
     PathStyle::of_text(&text).shown(&text).into_owned()
 }
 
+/// Whether a Windows path may be on a network share: it starts with two separators, `\` or `/`,
+/// as `\\host\share`, `//host/share` and `\\?\UNC\host\share` do, and is no verbatim drive path
+/// (`\\?\C:\`). Opening such a path makes Windows send its host a hash of the user's login.
+pub fn is_network_share(text: &str) -> bool {
+    let is_separator = |character| PathStyle::Windows.is_separator(character);
+    let mut characters = text.chars();
+    let two_separators =
+        characters.next().is_some_and(is_separator) && characters.next().is_some_and(is_separator);
+    let verbatim_drive = text.strip_prefix(VERBATIM).is_some_and(|rest| {
+        let mut characters = rest.chars();
+        characters
+            .next()
+            .is_some_and(|letter| letter.is_ascii_alphabetic())
+            && characters.next() == Some(DRIVE_MARK)
+    });
+    two_separators && !verbatim_drive
+}
+
 /// The key of the path with the folded `root` and `names`.
 fn key_of(root: &str, names: &[String]) -> String {
     format!("{root}\0{}", names.join("/"))
@@ -380,6 +398,20 @@ mod tests {
     use super::*;
 
     use PathStyle::{Unix, Windows};
+
+    #[test]
+    fn a_network_share_is_told_from_a_local_path() {
+        assert!(is_network_share(r"\\fileserver\team\notes.txt"));
+        assert!(is_network_share(r"\\?\UNC\fileserver\team\notes.txt"));
+        assert!(is_network_share("//fileserver/team/notes.txt"));
+        assert!(is_network_share(r"\/fileserver\team\notes.txt"));
+        assert!(is_network_share(
+            r"\\?\GLOBALROOT\Device\Mup\fileserver\team\notes.txt"
+        ));
+        assert!(!is_network_share(r"\\?\C:\work\notes.txt"));
+        assert!(!is_network_share(r"C:\work\notes.txt"));
+        assert!(!is_network_share("C:/work/notes.txt"));
+    }
 
     #[test]
     fn an_absolute_path_tells_its_machine() {

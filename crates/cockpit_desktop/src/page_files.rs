@@ -80,7 +80,7 @@ fn local_path(folder: &Path, names: &[String]) -> Option<PathBuf> {
 
 /// Whether `name` names one file in a folder, on Linux as on Windows. Windows reads a name such
 /// as `NUL` or `nul.png` as a device, and `a:b` as a stream of the file `a`.
-fn is_plain_name(name: &str) -> bool {
+pub fn is_plain_name(name: &str) -> bool {
     let mut components = Path::new(name).components();
     let single = matches!(components.next(), Some(Component::Normal(only)) if only == name)
         && components.next().is_none();
