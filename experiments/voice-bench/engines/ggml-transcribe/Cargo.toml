@@ -1,0 +1,15 @@
+[package]
+name = "engine_transcribe_cpp"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+bench_core.workspace = true
+# The ggml runtime: its C++ source ships in the crate and builds with cmake, with no download.
+transcribe-cpp = { version = "=0.4.2", default-features = false }
+
+[features]
+vulkan = ["transcribe-cpp/vulkan"]
+cuda = ["transcribe-cpp/cuda"]

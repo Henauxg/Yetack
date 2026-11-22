@@ -1,0 +1,20 @@
+# A bench of speech-to-text engines for the desktop app's dictation. Its own workspace, so the
+# app's `just check` never builds these C++ and ONNX dependencies.
+[workspace]
+resolver = "3"
+members = ["core", "driver", "engines/*", "kernels/candle"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+publish = false
+license = "MPL-2.0"
+
+[workspace.dependencies]
+bench_core = { path = "core" }
+anyhow = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[profile.release]
+debug = 1

@@ -1,0 +1,123 @@
+# The prompts to read for the bench. `text` is what you say, as you would say it; the word error
+# rate compares against it. `terms` are the written forms that must come out recognizable, in
+# any spacing or punctuation ("cockpit daemon" counts for cockpit_daemon).
+
+[[prompt]]
+id = "01-check"
+text = "Run just check in the worktree and fix the clippy warnings in cockpit desktop."
+terms = ["just check", "clippy", "cockpit_desktop"]
+
+[[prompt]]
+id = "02-store"
+text = "Open store dot rs in the cockpit daemon crate and explain when it writes serve dot lock."
+terms = ["store.rs", "cockpit_daemon", "serve.lock"]
+
+[[prompt]]
+id = "03-rename"
+text = "Rename apply transcript item to apply item and update every call site."
+terms = ["apply_transcript_item", "apply_item"]
+
+[[prompt]]
+id = "04-path"
+text = "The test in accounts dot rs fails on Windows because the path has backslashes. Build it with path join instead."
+terms = ["accounts.rs", "Windows", "backslashes", "path join"]
+
+[[prompt]]
+id = "05-tokio"
+text = "Add a tokio task that reads the daemon events and sends them over an mpsc channel."
+terms = ["tokio", "mpsc", "daemon"]
+
+[[prompt]]
+id = "06-dioxus"
+text = "Bump the Dioxus fork revision in Cargo dot toml and check that the web view still builds."
+terms = ["Dioxus", "Cargo.toml", "web view"]
+
+[[prompt]]
+id = "07-fedora"
+text = "Why does the WebKitGTK build fail on Fedora? Look at the requires list of the RPM."
+terms = ["WebKitGTK", "Fedora", "RPM"]
+
+[[prompt]]
+id = "08-quotes"
+text = "Write a test for the quotes module: a reply that quotes two passages must keep them in order."
+terms = ["quotes", "passages"]
+
+[[prompt]]
+id = "09-serde"
+text = "Use serde JSON with a borrowed str instead of allocating a String for each event."
+terms = ["serde", "JSON", "str", "String"]
+
+[[prompt]]
+id = "10-stop"
+text = "Stop. Don't push to origin. Squash merge the branch into main first, then show me the diff."
+terms = ["origin", "squash", "main", "diff"]
+
+[[prompt]]
+id = "11-unwrap"
+text = "Clippy denies unwrap used and expect used. Replace them with question marks and anyhow context."
+terms = ["unwrap", "expect", "anyhow"]
+
+[[prompt]]
+id = "12-css"
+text = "Make the sidebar animate its height with a CSS transition, about two hundred milliseconds, ease out."
+terms = ["sidebar", "CSS", "ease out"]
+
+[[prompt]]
+id = "13-nix"
+text = "Look at the Nix flake and add pkg config and alsa lib to the build inputs."
+terms = ["Nix", "flake", "pkg-config", "alsa-lib"]
+
+[[prompt]]
+id = "14-musl"
+text = "Run cargo test with the musl target in WSL and paste the output of the failing test."
+terms = ["cargo test", "musl", "WSL"]
+
+[[prompt]]
+id = "15-ssh"
+text = "The update over SSH exits with status five. Read update daemon dot sh and tell me which step failed."
+terms = ["SSH", "update-daemon.sh"]
+
+[[prompt]]
+id = "16-regex"
+text = "Replace the regex in format dot rs with a plain split on colons. It is slower than it needs to be."
+terms = ["regex", "format.rs", "colons"]
+
+[[prompt]]
+id = "17-cpal"
+text = "Can you explain what the cpal input callback does when the buffer runs out?"
+terms = ["cpal", "callback", "buffer"]
+
+[[prompt]]
+id = "18-subagents"
+text = "Refactor the agent map so subagents are keyed by their tool use ID rather than their index."
+terms = ["agent map", "subagents", "tool use ID"]
+
+[[prompt]]
+id = "19-allow"
+text = "Yes, allow it, but only for this session. Then go on with the plan."
+terms = ["allow", "session", "plan"]
+
+[[prompt]]
+id = "20-readme"
+text = "Open the README and shorten the install section for Gentoo and Arch."
+terms = ["README", "Gentoo", "Arch"]
+
+[[prompt]]
+id = "21-deny"
+text = "Add a GitHub Actions job that runs cargo deny on every pull request."
+terms = ["GitHub Actions", "cargo deny", "pull request"]
+
+[[prompt]]
+id = "22-paste"
+text = "In the terminal feed, handle bracketed paste and the OSC fifty two sequence for the clipboard."
+terms = ["bracketed paste", "OSC 52", "clipboard"]
+
+[[prompt]]
+id = "23-tls"
+text = "Use rustls with the platform verifier instead of native TLS, so we don't link OpenSSL."
+terms = ["rustls", "platform verifier", "native TLS", "OpenSSL"]
+
+[[prompt]]
+id = "24-reconnect"
+text = "I've been thinking about the reconnect logic. When the laptop sleeps and wakes up, the client keeps the old TCP connection and waits for the heartbeat to time out, which takes about thirty seconds. Instead, listen for the resume event, drop the connection, and reconnect right away with exponential backoff, capped at five seconds. Keep the drafts and the scroll position, and show a small banner while it reconnects."
+terms = ["TCP", "heartbeat", "exponential backoff", "drafts", "banner"]

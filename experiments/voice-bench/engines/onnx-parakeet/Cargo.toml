@@ -1,0 +1,17 @@
+[package]
+name = "engine_parakeet_rs"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+bench_core.workspace = true
+# Microsoft's ONNX Runtime DLL, loaded at run time from ORT_DYLIB_PATH: nothing downloads during
+# the build. The burn backend runs the same model files in pure Rust.
+ort = { version = "=2.0.0-rc.15", default-features = false, features = ["std", "ndarray", "load-dynamic", "api-28"] }
+parakeet-rs = { version = "=0.4.4", default-features = false, features = ["cpu", "api-28", "burn"] }
+
+[features]
+# burn on the GPU through wgpu (DX12 or Vulkan on Windows), still pure Rust.
+wgpu = ["parakeet-rs/wgpu"]

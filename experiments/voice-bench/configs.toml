@@ -1,0 +1,200 @@
+# What the bench compares: an engine binary, a model from models.toml, and the engine's
+# arguments. The driver adds `--model <path>` and `--threads <n>`.
+
+# ggml (transcribe.cpp): streaming models.
+[[config]]
+name = "ggml-nemotron-en"
+engine = "engine_transcribe_cpp"
+model = "nemotron-en-q8"
+
+[[config]]
+name = "ggml-nemotron-en-160ms"
+engine = "engine_transcribe_cpp"
+model = "nemotron-en-q8"
+args = ["--att-right", "1"]
+
+[[config]]
+name = "ggml-nemotron-en-q4"
+engine = "engine_transcribe_cpp"
+model = "nemotron-en-q4"
+
+[[config]]
+name = "ggml-unified-en"
+engine = "engine_transcribe_cpp"
+model = "unified-en-q8"
+
+[[config]]
+name = "ggml-unified-en-final"
+engine = "engine_transcribe_cpp"
+model = "unified-en-q8"
+args = ["--final-pass"]
+
+[[config]]
+name = "ggml-moonshine-medium"
+engine = "engine_transcribe_cpp"
+model = "moonshine-medium-q8"
+
+# ggml (transcribe.cpp): offline models, live text by transcribing the utterance again.
+[[config]]
+name = "ggml-tdt-v3-rerun"
+engine = "engine_transcribe_cpp"
+model = "tdt-v3-q8"
+args = ["--strategy", "rerun", "--step-ms", "500"]
+
+[[config]]
+name = "ggml-ultra-rerun"
+engine = "engine_transcribe_cpp"
+model = "ultra-q8"
+args = ["--strategy", "rerun", "--step-ms", "500"]
+
+[[config]]
+name = "ggml-whisper-turbo-rerun"
+engine = "engine_transcribe_cpp"
+model = "whisper-turbo-q8"
+args = ["--strategy", "rerun", "--step-ms", "1000"]
+
+[[config]]
+name = "ggml-whisper-turbo-offline"
+engine = "engine_transcribe_cpp"
+model = "whisper-turbo-q8"
+args = ["--strategy", "offline"]
+
+[[config]]
+name = "ggml-qwen3-asr-rerun"
+engine = "engine_transcribe_cpp"
+model = "qwen3-asr-0.6b-q8"
+args = ["--strategy", "rerun", "--step-ms", "1000"]
+
+# ONNX Runtime (parakeet-rs).
+[[config]]
+name = "onnx-nemotron-en"
+engine = "engine_parakeet_rs"
+model = "nemotron-en-onnx"
+args = ["--backend", "ort", "--kind", "nemotron"]
+
+[[config]]
+name = "onnx-unified-en"
+engine = "engine_parakeet_rs"
+model = "unified-en-onnx"
+args = ["--backend", "ort", "--kind", "unified"]
+
+[[config]]
+name = "onnx-unified-en-final"
+engine = "engine_parakeet_rs"
+model = "unified-en-onnx"
+args = ["--backend", "ort", "--kind", "unified", "--final-pass"]
+
+# Pure Rust (parakeet-rs on burn).
+[[config]]
+name = "burn-nemotron-en"
+engine = "engine_parakeet_rs"
+model = "nemotron-en-onnx"
+args = ["--backend", "burn", "--kind", "nemotron"]
+
+[[config]]
+name = "burn-unified-en"
+engine = "engine_parakeet_rs"
+model = "unified-en-onnx"
+args = ["--backend", "burn", "--kind", "unified"]
+
+
+# Cut at pauses: each finished segment is transcribed once while the user goes on.
+[[config]]
+name = "ggml-ultra-segmented"
+engine = "engine_transcribe_cpp"
+model = "ultra-q8"
+args = ["--strategy", "segmented", "--step-ms", "500"]
+
+[[config]]
+name = "ggml-tdt-v3-segmented"
+engine = "engine_transcribe_cpp"
+model = "tdt-v3-q8"
+args = ["--strategy", "segmented", "--step-ms", "500"]
+
+# Live text from Nemotron at 160 ms, final text from Parakeet Ultra between pauses.
+[[config]]
+name = "ggml-nemotron-160ms-ultra"
+engine = "engine_transcribe_cpp"
+model = "nemotron-en-q8"
+final_model = "ultra-q8"
+args = ["--att-right", "1"]
+
+[[config]]
+name = "ggml-qwen3-asr-segmented"
+engine = "engine_transcribe_cpp"
+model = "qwen3-asr-0.6b-q8"
+args = ["--strategy", "segmented", "--step-ms", "1000"]
+
+# The same, with the pauses from Silero VAD.
+[[config]]
+name = "ggml-ultra-segmented-vad"
+engine = "engine_transcribe_cpp"
+model = "ultra-q8"
+vad_model = "silero-vad"
+args = ["--strategy", "segmented", "--step-ms", "500"]
+
+[[config]]
+name = "ggml-nemotron-160ms-ultra-vad"
+engine = "engine_transcribe_cpp"
+model = "nemotron-en-q8"
+final_model = "ultra-q8"
+vad_model = "silero-vad"
+args = ["--att-right", "1"]
+
+[[config]]
+name = "ggml-qwen3-asr-segmented-vad"
+engine = "engine_transcribe_cpp"
+model = "qwen3-asr-0.6b-q8"
+vad_model = "silero-vad"
+args = ["--strategy", "segmented", "--step-ms", "1000"]
+
+# burn on the GPU through wgpu: build engine_parakeet_rs with --features wgpu.
+[[config]]
+name = "wgpu-nemotron-en"
+engine = "engine_parakeet_rs"
+model = "nemotron-en-onnx"
+args = ["--backend", "burn-wgpu", "--kind", "nemotron"]
+
+[[config]]
+name = "wgpu-unified-en"
+engine = "engine_parakeet_rs"
+model = "unified-en-onnx"
+args = ["--backend", "burn-wgpu", "--kind", "unified", "--final-pass"]
+
+# Pauses by level; Silero checks each finished segment and skips the ones without speech.
+[[config]]
+name = "ggml-ultra-segmented-check"
+engine = "engine_transcribe_cpp"
+model = "ultra-q8"
+vad_model = "silero-vad"
+args = ["--strategy", "segmented", "--step-ms", "500", "--vad-mode", "check"]
+
+[[config]]
+name = "ggml-nemotron-160ms-ultra-check"
+engine = "engine_transcribe_cpp"
+model = "nemotron-en-q8"
+final_model = "ultra-q8"
+vad_model = "silero-vad"
+args = ["--att-right", "1", "--vad-mode", "check"]
+
+[[config]]
+name = "ggml-qwen3-asr-segmented-check"
+engine = "engine_transcribe_cpp"
+model = "qwen3-asr-0.6b-q8"
+vad_model = "silero-vad"
+args = ["--strategy", "segmented", "--step-ms", "1000", "--vad-mode", "check"]
+
+# Ultra cut at pauses with fewer live refreshes, for slower CPUs.
+[[config]]
+name = "ggml-ultra-segmented-check-1s"
+engine = "engine_transcribe_cpp"
+model = "ultra-q8"
+vad_model = "silero-vad"
+args = ["--strategy", "segmented", "--step-ms", "1000", "--vad-mode", "check"]
+
+[[config]]
+name = "ggml-ultra-segmented-check-2s"
+engine = "engine_transcribe_cpp"
+model = "ultra-q8"
+vad_model = "silero-vad"
+args = ["--strategy", "segmented", "--step-ms", "2000", "--vad-mode", "check"]

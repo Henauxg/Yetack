@@ -1,0 +1,10 @@
+[package]
+name = "kernel_bench_candle"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+candle-core = "=0.11.1"
+serde_json.workspace = true
