@@ -498,7 +498,7 @@ fn outside_roots(tree: &FileTree, folder: &Path, footprint: &Footprint) -> Vec<P
         {
             continue;
         }
-        let root = outside_root(folder, path);
+        let root = listed_spelling(tree, style, outside_root(folder, path));
         match roots.entry(style.key(&root.to_string_lossy())) {
             Entry::Vacant(vacant) => {
                 vacant.insert(root);
@@ -513,6 +513,18 @@ fn outside_roots(tree: &FileTree, folder: &Path, footprint: &Footprint) -> Vec<P
     let mut roots: Vec<PathBuf> = roots.into_values().collect();
     roots.sort();
     roots
+}
+
+/// `root` as `tree` listed it, if it did. The listing's key may write it with other separators,
+/// which only a Windows host's `PathBuf` takes as the same path.
+fn listed_spelling(tree: &FileTree, style: PathStyle, root: PathBuf) -> PathBuf {
+    let text = root.to_string_lossy();
+    let listed = tree
+        .listings
+        .keys()
+        .find(|listed| style.same_path(&listed.to_string_lossy(), &text))
+        .cloned();
+    listed.unwrap_or(root)
 }
 
 /// `found`, a folder outside the agent's, as `roots` writes it: its row takes that spelling, and on
