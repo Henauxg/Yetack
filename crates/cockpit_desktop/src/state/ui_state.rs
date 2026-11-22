@@ -14,7 +14,7 @@ use strum::{EnumString, IntoStaticStr, VariantArray};
 
 use super::accounts::{AccountsView, AddAccountForm};
 use super::agent_map::MapView;
-use super::app_state::Loadable;
+use super::app_state::{self, Loadable};
 use super::find::FindFocus;
 use super::mcp_reconnect::Reconnects;
 use super::projects::{ProjectKey, RuleKind};
@@ -385,7 +385,8 @@ pub struct ClosedAgent {
     pub serial: u32,
     pub agent: AgentId,
     pub title: String,
-    /// `None` for an agent Claude Code gave no session yet: nothing can bring it back.
+    /// `None` for an agent with no session of its own yet, such as a fork that has not started
+    /// one: nothing can bring it back.
     pub session: Option<ClaudeSessionId>,
     /// The account whose folder holds the session.
     pub account: AccountId,
@@ -791,7 +792,8 @@ impl UiState {
             serial: self.next_closed,
             agent: summary.id,
             title: summary.title.clone(),
-            session: summary.session.clone(),
+            // A fork that has not started its own session would come back as its original.
+            session: app_state::own_session(summary).cloned(),
             account: summary.account,
             before,
             project,

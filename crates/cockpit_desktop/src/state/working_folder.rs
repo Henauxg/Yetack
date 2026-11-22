@@ -7,13 +7,14 @@
 
 use std::path::PathBuf;
 
-use cockpit_protocol::{AgentId, AgentStatus, FolderParams, Request, ResponseBody};
+use cockpit_protocol::{AgentId, AgentStatus, FolderParams, Request, ResponseBody, SessionUse};
 
 use super::app_state::AppState;
 use super::drafts::Drafts;
 use super::requests::{Outgoing, Purpose};
 use super::ui_state::{Dialog, FolderAction, Popover, WorkingFolderForm};
 use super::{actions, folder_field};
+use crate::format;
 use crate::machine::MachineId;
 
 /// Why the action cannot run now, for its menu item's tooltip; `None` when it can.
@@ -22,9 +23,14 @@ pub fn blocked(state: &AppState, agent: AgentId, action: FolderAction) -> Option
     if summary.session.is_none() {
         return Some("The agent has no Claude session yet");
     }
-    let working = summary.status == AgentStatus::Working;
-    (action == FolderAction::Move && working)
-        .then_some("The agent is working: wait for the turn to end, or stop it")
+    if action == FolderAction::Fork {
+        return None;
+    }
+    if summary.status == AgentStatus::Working {
+        return Some("The agent is working: wait for the turn to end, or stop it");
+    }
+    // Its session file is the one it copies: moved, it could replace its source's own.
+    (summary.session_use == SessionUse::Fork).then_some("Send the fork a message before moving it")
 }
 
 /// Opens the dialog for the agent, its field on the folder that holds the agent's folder, where
@@ -106,7 +112,7 @@ pub fn answered(state: &mut AppState, action: FolderAction, result: Result<Respo
         FolderAction::Fork => "The agent was not forked",
         FolderAction::Move => "The agent was not moved",
     };
-    let message = format!("{what}: {failed}");
+    let message = format!("{what}. {}", format::sentence(&failed));
     match &mut state.ui.dialog {
         Some(Dialog::WorkingFolder(form)) => {
             form.sending = false;
@@ -124,11 +130,11 @@ fn close(state: &mut AppState) {
 
 #[cfg(test)]
 mod tests {
-    use cockpit_protocol::ClaudeSessionId;
+    use cockpit_protocol::{ClaudeSessionId, Event, EventRecord, Seq};
 
     use super::*;
-    use crate::state::ConnectionState;
     use crate::state::app_state::tests::{state_with, summary};
+    use crate::state::{ConnectionState, apply};
 
     fn agent() -> AgentId {
         AgentId::new(1)
@@ -178,6 +184,60 @@ mod tests {
     }
 
     #[test]
+    fn a_fork_without_its_own_session_forks_but_does_not_move() {
+        let mut state = state();
+        if let Some(entry) = state.agents.get_mut(&agent()) {
+            entry.summary.session_use = SessionUse::Fork;
+        }
+
+        assert_eq!(blocked(&state, agent(), FolderAction::Fork), None);
+        assert_eq!(
+            blocked(&state, agent(), FolderAction::Move),
+            Some("Send the fork a message before moving it")
+        );
+    }
+
+    /// Until its `claude` reports its own session, a fork on its first turn still names the one
+    /// it copies.
+    #[test]
+    fn a_fork_on_its_first_turn_is_working() {
+        let mut state = state();
+        if let Some(entry) = state.agents.get_mut(&agent()) {
+            entry.summary.session_use = SessionUse::Fork;
+            entry.summary.status = AgentStatus::Working;
+        }
+
+        assert_eq!(
+            blocked(&state, agent(), FolderAction::Move),
+            Some("The agent is working: wait for the turn to end, or stop it")
+        );
+    }
+
+    #[test]
+    fn a_fork_moves_once_it_has_its_own_session() {
+        let mut state = state();
+        let mut drafts = Drafts::default();
+        if let Some(entry) = state.agents.get_mut(&agent()) {
+            entry.summary.session_use = SessionUse::Fork;
+        }
+        let mut own = state.agents[&agent()].summary.clone();
+        own.session = Some(ClaudeSessionId::new("session-2".to_owned()));
+        own.session_use = SessionUse::Own;
+
+        apply::apply(
+            &mut state,
+            &mut drafts,
+            EventRecord {
+                seq: Seq::new(1),
+                event: Event::AgentUpdated(own),
+            },
+            MachineId::THIS,
+        );
+
+        assert_eq!(blocked(&state, agent(), FolderAction::Move), None);
+    }
+
+    #[test]
     fn a_submit_sends_the_folder_once_and_a_relative_path_stays() {
         let mut state = state();
         let mut drafts = Drafts::default();
@@ -222,7 +282,7 @@ mod tests {
         assert!(matches!(
             &state.ui.dialog,
             Some(Dialog::WorkingFolder(form))
-                if !form.sending && form.error.as_deref() == Some("The agent was not moved: no such folder")
+                if !form.sending && form.error.as_deref() == Some("The agent was not moved. No such folder.")
         ));
         assert!(state.ui.errors.is_empty(), "the dialog says it, not a note");
 
@@ -233,5 +293,30 @@ mod tests {
         );
         assert_eq!(state.ui.dialog, None);
         assert_eq!(state.ui.selected, Some(agent()));
+    }
+
+    /// The daemon's reason has a colon of its own, before what to do.
+    #[test]
+    fn a_refusal_reads_as_its_own_sentence() {
+        let mut state = state();
+        let mut drafts = Drafts::default();
+        open(&mut state, &mut drafts, agent(), FolderAction::Fork);
+        let _ = submit(&mut state, &drafts);
+
+        answered(
+            &mut state,
+            FolderAction::Fork,
+            Err("a fork of this agent already waits for its first message in that folder: send it one, or close it, before forking there again".to_owned()),
+        );
+
+        let Some(Dialog::WorkingFolder(form)) = &state.ui.dialog else {
+            panic!("the dialog closed");
+        };
+        assert_eq!(
+            form.error.as_deref(),
+            Some(
+                "The agent was not forked. A fork of this agent already waits for its first message in that folder: send it one, or close it, before forking there again."
+            )
+        );
     }
 }

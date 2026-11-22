@@ -112,6 +112,10 @@ pub struct AgentSummary {
     pub turn_started_at: Option<Timestamp>,
     /// `None` until Claude Code reports its session.
     pub session: Option<ClaudeSessionId>,
+    /// Whether `session` is the agent's own, or the one a fork copies until its `claude` reports
+    /// its own. `Own` when missing, as from a daemon that predates forks being told apart.
+    #[serde(default)]
+    pub session_use: SessionUse,
     /// Where the agent shows in the list. An event logged before positions existed reads 0.
     #[serde(default)]
     pub position: Position,
@@ -214,6 +218,20 @@ impl FromStoredBool for SignInWait {
             Self::NotWaiting
         }
     }
+}
+
+/// What an agent does with the session its summary names.
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize, VariantArray,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum SessionUse {
+    /// The session is the agent's: it carries on with it.
+    #[default]
+    Own,
+    /// The agent is a fork that has not started its own session yet: its `claude` starts a new
+    /// session from a copy of this one. Another agent may hold this session.
+    Fork,
 }
 
 /// A reminder you put on an agent.

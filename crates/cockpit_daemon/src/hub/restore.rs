@@ -5,8 +5,8 @@ use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
 
 use cockpit_protocol::{
-    AccountId, AgentDetails, AgentId, AgentSummary, Event, ItemId, PlanUsage, Seq, SlashCommand,
-    TranscriptItem,
+    AccountId, AgentDetails, AgentId, AgentSummary, Event, ItemId, PlanUsage, Seq, SessionUse,
+    SlashCommand, TranscriptItem,
 };
 
 use crate::hub::agents::initial_summary;
@@ -106,6 +106,8 @@ pub(crate) fn restore(state: &StateDir, default_folder: &Path) -> Result<Restore
                 (None, None) => AgentDetails::default(),
             };
             let mut view = AgentView::restore(summary, agent_details, logged.commands, items, ttl);
+            // Set on the built view: when the logged summary lacks it, the next publish sends it.
+            view.set_session_use(SessionUse::from(record.resume_as));
             let account = settings.accounts.get(record.account, default_folder);
             if let (Some(file), Some(account)) = (&record.past, account) {
                 view.show_past(sessions::past_items(&account.folder, &record.folder, file));
@@ -390,6 +392,56 @@ mod tests {
             .map(|(_, view)| view.summary().mark)
             .collect();
         assert_eq!(marks, [Mark::ToHandle, Mark::Unmarked]);
+    }
+
+    /// A daemon that predates `session_use` logged a fork's summary, which reads `Own`. The
+    /// restored fork takes `Fork` from its record, and a client that replays the log gets it as an
+    /// update.
+    #[test]
+    fn a_fork_logged_without_its_session_use_gets_it_from_its_record() {
+        let temp = tempfile::tempdir().unwrap();
+        let state = StateDir::create(temp.path()).unwrap();
+        let fork = AgentRecord {
+            session: Some(ClaudeSessionId::new(
+                "11111111-2222-3333-4444-555555555555".to_owned(),
+            )),
+            running: false,
+            resume_as: ResumeAs::Fork,
+            ..record(1)
+        };
+        AgentsFile {
+            next_agent: AgentId::new(2),
+            replay_floor: None,
+            agents: vec![fork.clone()],
+        }
+        .save(&state.agents_file())
+        .unwrap();
+        let mut logs = EventLogs::new(state.events(), state.details());
+        let older = AgentSummary {
+            status: AgentStatus::Exited,
+            session_use: SessionUse::Own,
+            ..initial_summary(&fork)
+        };
+        log(
+            &mut logs,
+            LogName::Agent(AgentId::new(1)),
+            1,
+            Event::AgentAdded(older),
+        );
+
+        let mut restored = restore(&state, &temp.path().join("claude")).unwrap();
+
+        let (_, view) = &mut restored.agents[0];
+        assert_eq!(view.summary().session_use, SessionUse::Fork);
+        let updates: Vec<SessionUse> = view
+            .take_events()
+            .into_iter()
+            .filter_map(|event| match event {
+                Event::AgentUpdated(summary) => Some(summary.session_use),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(updates, [SessionUse::Fork]);
     }
 
     /// Each log applies in its own order, wherever the other logs put their numbers, and a line

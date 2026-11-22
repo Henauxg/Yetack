@@ -10,7 +10,7 @@ use cockpit_protocol::{
     Position, ReadFileParams, Request, ResponseBody, Seq, TerminalId, Timestamp,
 };
 
-use super::app_state::{AgentEntry, AppState, FileRead, Loadable, MachineState, Reread};
+use super::app_state::{self, AgentEntry, AppState, FileRead, Loadable, MachineState, Reread};
 use super::chat_images::ImageKey;
 use super::drafts::{Draft, Drafts};
 use super::file_tree::Gone;
@@ -250,7 +250,7 @@ pub fn needed_requests(state: &mut AppState) -> Vec<Outgoing> {
             .find(|entry| {
                 MachineId::of(entry.id()) == reopening.machine
                     && entry.summary.account == reopening.account
-                    && entry.summary.session.as_ref() == Some(&reopening.session)
+                    && app_state::own_session(&entry.summary) == Some(&reopening.session)
             })
             .map(AgentEntry::id);
         if let Some(agent) = back {

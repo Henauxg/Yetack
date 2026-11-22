@@ -34,10 +34,10 @@ use cockpit_protocol::{
     QuestionAnswer, QuestionOption, QueuedPromptParams, RateLimitStatus, ReadFileParams,
     ReleaseVersion, Remote, RenameParams, Repository, Request, RequestId, ResourceUse,
     ResponseBody, ResponseResult, Selection, Seq, ServerLoad, ServerMessage, ServerPoint,
-    SessionResumeParams, SetEffortParams, SetModeParams, SetModelParams, Settings, SignIn,
-    SignInWait, SlashCommand, Snapshot, StartParams, StopProcessParams, StopTaskParams, Subagent,
-    SubagentRun, SubagentStatus, SubagentToolCall, TaskListItem, TaskProgress, TaskStatus,
-    TerminalChange, TerminalExit, TerminalId, TerminalInfo, TerminalInputParams,
+    SessionResumeParams, SessionUse, SetEffortParams, SetModeParams, SetModelParams, Settings,
+    SignIn, SignInWait, SlashCommand, Snapshot, StartParams, StopProcessParams, StopTaskParams,
+    Subagent, SubagentRun, SubagentStatus, SubagentToolCall, TaskListItem, TaskProgress,
+    TaskStatus, TerminalChange, TerminalExit, TerminalId, TerminalInfo, TerminalInputParams,
     TerminalOpenParams, TerminalParams, TerminalResizeParams, TerminalSize, TerminalUpdate,
     Timestamp, TokenUsage, ToolCall, ToolCallStatus, TranscriptItem, TurnEnd, TurnOutcome,
     Upstream, UsageWindow, UserMessage, WaitingPrompt, WaitingState, WindowUsage,
@@ -87,6 +87,7 @@ fn summary() -> AgentSummary {
         quiet_since: Some(at(1_700_000_240_000)),
         turn_started_at: Some(at(1_700_000_200_000)),
         session: Some(session_id()),
+        session_use: SessionUse::Fork,
         position: Position::new(2048),
         account: work_account().id,
         sign_in_wait: SignInWait::Waiting,
@@ -119,6 +120,7 @@ fn idle_summary() -> AgentSummary {
         quiet_since: None,
         turn_started_at: None,
         session: None,
+        session_use: SessionUse::Own,
         position: Position::new(1024),
         account: AccountId::DEFAULT,
         sign_in_wait: SignInWait::NotWaiting,
@@ -1590,6 +1592,7 @@ fn words_are_pinned() {
     assert_eq!(words::<EffortSource>(), ["chosen", "claude_code_default"]);
     assert_eq!(words::<SignInWait>(), ["not_waiting", "waiting"]);
     assert_eq!(words::<Mark>(), ["unmarked", "to_handle", "to_handle_kept"]);
+    assert_eq!(words::<SessionUse>(), ["own", "fork"]);
     assert_eq!(words::<Selection>(), ["single", "multiple"]);
     assert_eq!(
         words::<TurnOutcome>(),
@@ -2489,6 +2492,7 @@ fn an_agent_update_on_the_wire() {
                 "quiet_since": 1_700_000_240_000_u64,
                 "turn_started_at": 1_700_000_200_000_u64,
                 "session": "0b7e1c2a-3d4f-4a5b-8c6d-7e8f9a0b1c2d",
+                "session_use": "fork",
                 "position": 2048,
                 "account": 2,
                 "sign_in_wait": "waiting",
@@ -2501,19 +2505,22 @@ fn an_agent_update_on_the_wire() {
 }
 
 /// A summary from a daemon that predates the count has nothing running in the background, and
-/// one that predates the mark is not to handle. One that predates the last output has none.
+/// one that predates the mark is not to handle. One that predates the last output has none, and
+/// one that predates forks being told apart has its own session.
 #[test]
 fn a_summary_without_its_background_count_reads_none_running() {
     let mut older = serde_json::to_value(summary()).unwrap();
     older.as_object_mut().unwrap().remove("background_running");
     older.as_object_mut().unwrap().remove("mark");
     older.as_object_mut().unwrap().remove("quiet_since");
+    older.as_object_mut().unwrap().remove("session_use");
 
     let read: AgentSummary = serde_json::from_value(older).unwrap();
 
     assert_eq!(read.background_running, 0);
     assert_eq!(read.mark, Mark::Unmarked);
     assert_eq!(read.quiet_since, None);
+    assert_eq!(read.session_use, SessionUse::Own);
 }
 
 /// A task names the call that started it, and a task without one leaves the field out.

@@ -1166,7 +1166,7 @@ fn FolderRows(list: FolderList, escape: &'static str) -> Element {
                         }
                     },
                     Loadable::Failed(error) => rsx! {
-                        span { class: "dialog-empty", "{open_file_view::sentence(error)}" }
+                        span { class: "dialog-empty", "{format::sentence(error)}" }
                     },
                     Loadable::Loaded(listing) => rsx! {
                         if folder_rows == 0 {

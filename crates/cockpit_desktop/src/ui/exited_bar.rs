@@ -12,7 +12,6 @@ use crate::connection::{Clock, Cockpit};
 use crate::format;
 use crate::state::resume::{self, FolderState, Resume};
 use crate::state::{FolderAction, working_folder};
-use crate::ui::open_file;
 use crate::ui::presence::use_agent_presence;
 
 /// The bar's main button.
@@ -65,7 +64,7 @@ fn BarContent(agent: AgentId, resuming: bool) -> Element {
         }
     };
     if let Some(refusal) = resume::refusal(entry) {
-        let reason = open_file::sentence(&refusal.reason);
+        let reason = format::sentence(&refusal.reason);
         let folder_gone = refusal.folder_state == FolderState::Gone
             && working_folder::blocked(&state, agent, FolderAction::Move).is_none();
         return rsx! {

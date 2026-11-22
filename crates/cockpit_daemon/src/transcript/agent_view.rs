@@ -19,9 +19,9 @@ use cockpit_protocol::{
     BackgroundTask, BackgroundTaskId, BackgroundTaskStatus, ClaudeCodeVersion, ClaudeSessionId,
     CommandChanges, ContextUsage, CostUsd, Effort, EffortSource, Event, Image, ItemBody, ItemId,
     Mark, McpServer, NoticeKind, PendingId, PermissionMode, Plan, Position, Prompt, PromptId,
-    Question, Repository, SignInWait, SlashCommand, SubagentRun, SubagentStatus, SubagentToolCall,
-    Timestamp, TokenUsage, ToolCall, ToolCallStatus, TranscriptItem, TurnEnd, TurnOutcome,
-    UserMessage, WaitingPrompt, WaitingState,
+    Question, Repository, SessionUse, SignInWait, SlashCommand, SubagentRun, SubagentStatus,
+    SubagentToolCall, Timestamp, TokenUsage, ToolCall, ToolCallStatus, TranscriptItem, TurnEnd,
+    TurnOutcome, UserMessage, WaitingPrompt, WaitingState,
 };
 use serde_json::{Map, Value};
 use strum::{EnumString, IntoStaticStr, VariantArray};
@@ -327,6 +327,7 @@ impl AgentView {
             quiet_since: None,
             turn_started_at: None,
             session: None,
+            session_use: SessionUse::Own,
             position: Position::default(),
             account: AccountId::DEFAULT,
             sign_in_wait: SignInWait::NotWaiting,
@@ -980,6 +981,10 @@ impl AgentView {
 
     pub(crate) fn set_repository(&mut self, repository: Option<Repository>) {
         self.summary.repository = repository;
+    }
+
+    pub(crate) fn set_session_use(&mut self, session_use: SessionUse) {
+        self.summary.session_use = session_use;
     }
 
     pub(crate) fn set_position(&mut self, position: Position) {
@@ -2290,6 +2295,7 @@ mod tests {
             quiet_since: None,
             turn_started_at: None,
             session: None,
+            session_use: SessionUse::Own,
             position: Position::default(),
             account: AccountId::DEFAULT,
             sign_in_wait: SignInWait::NotWaiting,

@@ -7,7 +7,7 @@ use std::path::PathBuf;
 use cockpit_protocol::{AccountId, AgentId, AgentParams, AgentStatus, ClaudeSessionId, Request};
 
 use super::actions;
-use super::app_state::{AgentEntry, AppState};
+use super::app_state::{self, AgentEntry, AppState};
 use super::requests::{Outgoing, Purpose};
 use crate::machine::MachineId;
 
@@ -102,7 +102,7 @@ pub fn session_refused(
         MachineId::of(entry.id()) == machine
             && entry.summary.status == AgentStatus::Exited
             && entry.summary.account == account
-            && entry.summary.session.as_ref() == Some(session)
+            && app_state::own_session(&entry.summary) == Some(session)
     });
     let Some((agent, folder)) = holder.map(|entry| (entry.id(), entry.summary.folder.clone()))
     else {
@@ -135,7 +135,7 @@ pub fn refusal(entry: &AgentEntry) -> Option<&ResumeRefusal> {
 
 #[cfg(test)]
 mod tests {
-    use cockpit_protocol::ClaudeSessionId;
+    use cockpit_protocol::{ClaudeSessionId, SessionUse};
 
     use super::*;
     use crate::state::app_state::tests::{state_with, summary};
@@ -216,6 +216,26 @@ mod tests {
 
         refused(&mut state, agent(), PathBuf::from("/work/shop"), gone());
 
+        assert_eq!(state.agents[&agent()].resume, Resume::NotAsked);
+    }
+
+    #[test]
+    fn a_refused_session_does_not_open_a_fork_that_copies_it() {
+        let mut state = state();
+        if let Some(entry) = state.agents.get_mut(&agent()) {
+            entry.summary.session_use = SessionUse::Fork;
+        }
+        let session = ClaudeSessionId::new("session-1".to_owned());
+
+        let opened = session_refused(
+            &mut state,
+            MachineId::THIS,
+            &session,
+            AccountId::DEFAULT,
+            "the folder /work/project-1 no longer exists",
+        );
+
+        assert!(!opened, "the session is the original's");
         assert_eq!(state.agents[&agent()].resume, Resume::NotAsked);
     }
 }

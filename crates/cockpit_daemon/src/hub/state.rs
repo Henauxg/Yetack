@@ -19,7 +19,7 @@ use tokio::time::MissedTickBehavior;
 
 use crate::daemon_config::DaemonConfig;
 use crate::hub::closed_choices::ClosedChoices;
-use crate::hub::folders::PendingMove;
+use crate::hub::folders::{ForkCopy, PendingMove};
 use crate::hub::input::{ControlPurpose, HubInput, Joined, Registration};
 use crate::hub::restore::Restored;
 use crate::hub::start::StartingAgent;
@@ -74,6 +74,8 @@ pub(crate) struct Hub {
     pub(super) repository_reads: BTreeSet<PathBuf>,
     /// The new agents whose first `claude` starts. Each is listed once it runs.
     pub(super) new_agents: BTreeMap<AgentId, StartingAgent>,
+    /// The forks whose copy of the session is under way. They are not agents yet.
+    pub(super) fork_copies: Vec<ForkCopy>,
 }
 
 pub(super) struct Agent {
@@ -245,6 +247,7 @@ impl Hub {
             closed_choices: ClosedChoices::default(),
             repository_reads: BTreeSet::new(),
             new_agents: BTreeMap::new(),
+            fork_copies: Vec::new(),
         }
     }
 

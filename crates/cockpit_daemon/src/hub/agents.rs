@@ -11,8 +11,8 @@ use cockpit_protocol::{
     AccountId, AgentId, AgentStatus, AgentSummary, AnswerParams, COMMAND_PREFIX, ClaudeSessionId,
     CostUsd, EffortSource, ErrorBody, ErrorCode, Event, MAX_TITLE_CHARS, Mark, MarkParams,
     Position, Prompt, PromptDelivery, PromptId, QueuedPromptParams, RenameParams, Repository,
-    ResponseBody, ResponseResult, SetEffortParams, SignInWait, StartParams, TranscriptItem,
-    WaitingState,
+    ResponseBody, ResponseResult, SessionUse, SetEffortParams, SignInWait, StartParams,
+    TranscriptItem, WaitingState,
 };
 use tokio::runtime::Handle;
 use tokio::time;
@@ -342,6 +342,7 @@ impl Hub {
             agent.record.session = session;
             // A fork has its own session from now on.
             agent.record.resume_as = ResumeAs::Same;
+            agent.view.set_session_use(SessionUse::Own);
         }
         // Claude Code names the session itself after a `/rename` typed in the composer.
         let title_changed = agent.view.summary().title != agent.record.title;
@@ -904,6 +905,7 @@ pub(super) fn initial_summary(record: &AgentRecord) -> AgentSummary {
         quiet_since: None,
         turn_started_at: None,
         session: record.session.clone(),
+        session_use: SessionUse::from(record.resume_as),
         position: record.position,
         account: record.account,
         sign_in_wait: SignInWait::NotWaiting,

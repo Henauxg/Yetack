@@ -22,8 +22,8 @@ Ideas and fixes noted for later. None of them is planned yet.
 - **Notes on an agent.** A short Markdown note per agent session, which the user writes and edits by hand: what the agent is for, what to check next. Open question: whether the agent can read the note too, or write to it.
 - **Smaller fixes, not done:**
   - `settings.set` takes a value of any size. Give it a limit.
-  - The app tells agents apart by `summary.session`, which a fork shares with its original until its first `system/init`. So undoing the close of an original whose fork is still listed starts a new agent but does not put it back in the closed agent's place (`state/actions.rs`), and `session_refused` (`state/resume.rs`) can pick an exited fork. The app cannot tell a fork from its summary today.
-  - A closed fork's kept choices are stored under its original's session, so resuming the original within 30 seconds takes the fork's model, effort and mode.
+  - `sessions.resume` copies nothing, but when the session's recorded folder is in the project of a fork of that session waiting for its first message, the resumed agent writes into the file that fork starts from.
+  - A session copy for a fork or a move that passes its 2-minute limit keeps running, and may still put the file in place after the daemon stopped tracking it.
   - `terminal.close` sends the shell only SIGHUP, so a shell that ignores it runs on until the daemon stops.
   - On Windows, the files pane keys the names below a top folder by their exact case, so `notes\b.md` and `NOTES\c.md` show as two folders, and "Show in the files pane" can miss a row whose subfolder differs only in case.
   - Undo after closing an agent brings it back under a new id, so it loses its files pane (open or closed) and its notification level. Carry both through the undo (`ui.closed`, `Reopening`).

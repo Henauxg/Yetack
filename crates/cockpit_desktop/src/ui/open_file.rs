@@ -118,7 +118,7 @@ pub fn OpenFileDialog(view: OpenFileView) -> Element {
                         }
                     },
                     Loadable::Failed(error) => rsx! {
-                        span { class: "dialog-empty", "{sentence(error)}" }
+                        span { class: "dialog-empty", "{format::sentence(error)}" }
                     },
                     Loadable::Loaded(listing) => rsx! {
                         if entry_rows == 0 || (entry_rows == 1 && rows.first() == Some(&Row::Up)) {
@@ -149,7 +149,7 @@ pub fn OpenFileDialog(view: OpenFileView) -> Element {
                             }
                         },
                         Loadable::Failed(error) => rsx! {
-                            span { class: "dialog-empty", "{sentence(error)}" }
+                            span { class: "dialog-empty", "{format::sentence(error)}" }
                         },
                         Loadable::Loaded(matches) => rsx! {
                             if matches.is_empty() {
@@ -238,18 +238,6 @@ pub fn entry_parts(entry: &DirEntry) -> Element {
         span { class: "spacer" }
         span { class: "open-file-size mono", "{size}" }
     }
-}
-
-/// The daemon's message as a sentence.
-pub fn sentence(message: &str) -> String {
-    let mut characters = message.chars();
-    let first: String = characters
-        .next()
-        .map(char::to_uppercase)
-        .into_iter()
-        .flatten()
-        .collect();
-    format!("{first}{}.", characters.as_str())
 }
 
 /// Keeps the typed text, lists the folder it names at once, and searches for a bare name once

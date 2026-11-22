@@ -6,7 +6,7 @@
 //! be hundreds of megabytes: the copy runs in a blocking task, and the hub carries on when its
 //! result comes back as a [`HubInput`].
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use cockpit_protocol::{
@@ -46,6 +46,38 @@ pub(crate) struct ForkOf {
     account: AccountId,
 }
 
+/// A fork whose copy of the session is under way.
+pub(crate) struct ForkCopy {
+    account: AccountId,
+    session: ClaudeSessionId,
+    /// The fork's folder.
+    folder: PathBuf,
+}
+
+impl ForkCopy {
+    fn of(fork: &ForkOf) -> Self {
+        Self {
+            account: fork.account,
+            session: fork.session.clone(),
+            folder: fork.target.clone(),
+        }
+    }
+
+    fn is_of(&self, fork: &ForkOf) -> bool {
+        self.account == fork.account && self.session == fork.session && self.folder == fork.target
+    }
+}
+
+/// Another agent that needs a session's file in a Claude Code project, which a copy of the
+/// session there would replace.
+enum FileUser {
+    /// A fork that waits there for its first message, or whose copy goes there.
+    WaitingFork,
+    HasSession,
+    /// An agent of the session that moves there.
+    Moving,
+}
+
 /// A move under way, from the request until the copy's result: the agent waits for its process
 /// to exit, which ends the session file, then for the copy. It does not resume meanwhile.
 pub(crate) struct PendingMove {
@@ -80,6 +112,7 @@ impl Hub {
             Ok(prepared) => prepared,
             Err(error) => return respond(reply, Err(error)),
         };
+        self.fork_copies.push(ForkCopy::of(&fork));
         let inputs = self.inputs.clone();
         tokio::spawn(async move {
             let account = fork.account;
@@ -116,14 +149,38 @@ impl Hub {
 
     fn fork_of(&self, id: AgentId, target: PathBuf) -> Result<ForkOf, ErrorBody> {
         let record = &self.agent(id)?.record;
+        let session = record
+            .session
+            .clone()
+            .ok_or_else(|| errors::no_session(id))?;
+        // Its session file is the one it copies: copied into another project, it would replace
+        // the session file there, its source's own once the source has left.
+        if record.resume_as == ResumeAs::Fork
+            && sessions::project_name(&target) != sessions::project_name(&record.folder)
+        {
+            return Err(errors::invalid(
+                "send the fork a message before forking it into another folder".to_owned(),
+            ));
+        }
+        if let Some(user) = self.file_user(&session, record.account, &target, id) {
+            let refused = match user {
+                FileUser::WaitingFork => {
+                    "a fork of this agent already waits for its first message in that folder: send it one, or close it, before forking there again"
+                }
+                FileUser::HasSession => {
+                    "the agent this fork copies is in that folder: fork that agent there instead"
+                }
+                FileUser::Moving => {
+                    "the agent with this session moves to that folder: wait for the move to end"
+                }
+            };
+            return Err(errors::invalid(refused.to_owned()));
+        }
         Ok(ForkOf {
             title: fork_title(&record.title),
             folder: record.folder.clone(),
             target,
-            session: record
-                .session
-                .clone()
-                .ok_or_else(|| errors::no_session(id))?,
+            session,
             model: record.model.clone(),
             effort: record.effort,
             mode: record.mode,
@@ -139,6 +196,9 @@ impl Hub {
         found: Result<Box<FoundSession>, String>,
         reply: Reply,
     ) {
+        if let Some(index) = self.fork_copies.iter().position(|copy| copy.is_of(&fork)) {
+            self.fork_copies.swap_remove(index);
+        }
         let past = match found {
             Ok(found) => found.past,
             Err(error) => return respond(reply, Err(copy_failed(error))),
@@ -198,17 +258,80 @@ impl Hub {
         }
     }
 
-    /// The folder the agent moves to, or `None` when it already runs there.
+    /// The folder the agent moves to, or `None` when it already runs there. A move copies the
+    /// agent's session file into the folder's project, so it is refused while another agent needs
+    /// the file there.
     fn move_target(&self, id: AgentId, folder: PathBuf) -> Result<Option<PathBuf>, ErrorBody> {
         let agent = self.agent(id)?;
-        if agent.record.session.is_none() {
+        let Some(session) = &agent.record.session else {
             return Err(errors::no_session(id));
+        };
+        // Its session file is the one it forks: in its source's folder, it would replace the
+        // source's own.
+        if agent.record.resume_as == ResumeAs::Fork {
+            return Err(errors::invalid(
+                "send the fork a message before moving it".to_owned(),
+            ));
         }
         let working = agent.process.is_some() && agent.view.is_busy();
         if agent.moving.is_some() || agent.starting || working {
             return Err(errors::agent_working(id));
         }
+        if self
+            .file_user(session, agent.record.account, &folder, id)
+            .is_some()
+        {
+            return Err(errors::invalid(
+                "a fork of this agent waits for its first message in that folder: send it one, or close it, before moving this agent there"
+                    .to_owned(),
+            ));
+        }
         Ok((folder != agent.record.folder).then_some(folder))
+    }
+
+    /// The agent that needs the file of `session` in the Claude Code project of `folder`: an
+    /// agent there other than `except`, a fork whose copy goes there, or an agent that moves
+    /// there, `except` included.
+    fn file_user(
+        &self,
+        session: &ClaudeSessionId,
+        account: AccountId,
+        folder: &Path,
+        except: AgentId,
+    ) -> Option<FileUser> {
+        let project = sessions::project_name(folder)?;
+        let in_project = |folder: &Path| sessions::project_name(folder).as_ref() == Some(&project);
+        let of_session = |record: &AgentRecord| {
+            record.account == account && record.session.as_ref() == Some(session)
+        };
+        let listed = self.agents.iter().map(|(id, agent)| (*id, &agent.record));
+        let starting = self
+            .new_agents
+            .iter()
+            .map(|(id, starting)| (*id, &starting.record));
+        let there = listed
+            .chain(starting)
+            .find(|(id, record)| *id != except && of_session(record) && in_project(&record.folder));
+        if let Some((_, record)) = there {
+            return Some(match record.resume_as {
+                ResumeAs::Fork => FileUser::WaitingFork,
+                ResumeAs::Same => FileUser::HasSession,
+            });
+        }
+        let copying = self.fork_copies.iter().any(|copy| {
+            copy.account == account && copy.session == *session && in_project(&copy.folder)
+        });
+        if copying {
+            return Some(FileUser::WaitingFork);
+        }
+        let moving = self.agents.values().any(|agent| {
+            of_session(&agent.record)
+                && agent
+                    .moving
+                    .as_ref()
+                    .is_some_and(|pending| in_project(&pending.folder))
+        });
+        moving.then_some(FileUser::Moving)
     }
 
     /// The agent's process exited: a move waiting for it carries on.
@@ -317,10 +440,13 @@ mod tests {
     use std::path::Path;
     use std::time::Duration;
 
-    use cockpit_protocol::{Repository, Request, ResponseResult, StartParams};
+    use claude_protocol::OutputLine;
+    use cockpit_protocol::{Event, Repository, Request, ResponseResult, SessionUse, StartParams};
     use tokio::sync::{mpsc, oneshot};
 
     use super::*;
+    use crate::process::ProcessEvent;
+    use crate::store::{LogName, for_each_event};
     use crate::test_script::write_script;
 
     const SESSION: &str = "11111111-2222-3333-4444-555555555555";
@@ -407,6 +533,242 @@ mod tests {
             temp.path().join("app"),
             "the original stays"
         );
+        assert_eq!(
+            hub.agents[&agent].view.summary().session_use,
+            SessionUse::Fork,
+            "the summary names the session it copies"
+        );
+        let init = serde_json::json!({
+            "type": "system", "subtype": "init", "session_id": "fork-session",
+            "model": "opus", "permissionMode": "default"
+        });
+        let line: OutputLine = init.to_string().parse().unwrap();
+        let generation = hub.agents[&agent].generation;
+        hub.handle(HubInput::Process {
+            agent,
+            generation,
+            event: ProcessEvent::Line(Box::new(line)),
+        });
+        let summary = hub.agents[&agent].view.summary();
+        assert_eq!(summary.session_use, SessionUse::Own, "its own session now");
+        assert_eq!(
+            summary.session.as_ref().map(ClaudeSessionId::as_str),
+            Some("fork-session")
+        );
+        assert_eq!(hub.agents[&agent].record.resume_as, ResumeAs::Same);
+        let mut published = Vec::new();
+        for_each_event(&hub.logs.path(LogName::Agent(agent)), |record| {
+            if let Event::AgentAdded(summary) | Event::AgentUpdated(summary) = record.event {
+                published.push(summary.session_use);
+            }
+        })
+        .unwrap();
+        assert_eq!(published.first(), Some(&SessionUse::Fork));
+        assert_eq!(
+            published.last(),
+            Some(&SessionUse::Own),
+            "the clients get the change"
+        );
+    }
+
+    /// The original of `hub_with_agent`, forked into `app_fix`: the fork, which waits for its
+    /// first message, and its folder.
+    async fn forked(
+        hub: &mut Hub,
+        inputs: &mut mpsc::Receiver<HubInput>,
+        original: AgentId,
+        temp: &Path,
+    ) -> (AgentId, PathBuf) {
+        let fork_folder = temp.join("app_fix");
+        std::fs::create_dir_all(&fork_folder).unwrap();
+        let (reply, answered) = oneshot::channel();
+        hub.fork_to(original, fork_folder.clone(), reply);
+        let Ok(ResponseBody::AgentStarted { agent }) = hub.await_answer(inputs, answered).await
+        else {
+            panic!("the fork did not start");
+        };
+        (agent, fork_folder)
+    }
+
+    /// A fork that has not had its first message forks the session file of its folder's project:
+    /// moved to its source's folder, it would copy that file over the source's own.
+    #[tokio::test]
+    async fn a_fork_without_its_own_session_does_not_move() {
+        let temp = tempfile::tempdir().unwrap();
+        let (mut hub, mut inputs, original) = hub_with_agent(temp.path()).await;
+        let source_folder = hub.agents[&original].record.folder.clone();
+        let (fork, fork_folder) = forked(&mut hub, &mut inputs, original, temp.path()).await;
+        let source_session = std::fs::read(session_file(&hub, &source_folder)).unwrap();
+        let (reply, answered) = oneshot::channel();
+
+        hub.move_to(fork, source_folder.clone(), reply);
+        let refused = hub.await_answer(&mut inputs, answered).await.unwrap_err();
+
+        assert_eq!(refused.code, ErrorCode::InvalidRequest);
+        assert_eq!(refused.message, "send the fork a message before moving it");
+        assert_eq!(hub.agents[&fork].record.folder, fork_folder);
+        assert_eq!(
+            std::fs::read(session_file(&hub, &source_folder)).unwrap(),
+            source_session,
+            "the source keeps its session"
+        );
+    }
+
+    /// Its session copied there would replace the one the fork starts from.
+    #[tokio::test]
+    async fn an_agent_does_not_move_or_fork_again_where_its_fork_waits_for_its_first_message() {
+        let temp = tempfile::tempdir().unwrap();
+        let (mut hub, mut inputs, original) = hub_with_agent(temp.path()).await;
+        let source_folder = hub.agents[&original].record.folder.clone();
+        let (_fork, fork_folder) = forked(&mut hub, &mut inputs, original, temp.path()).await;
+        let fork_copy = std::fs::read(session_file(&hub, &fork_folder)).unwrap();
+        let (moving, moved) = oneshot::channel();
+        let (forking, forked_again) = oneshot::channel();
+
+        hub.move_to(original, fork_folder.clone(), moving);
+        let move_refused = hub.await_answer(&mut inputs, moved).await.unwrap_err();
+        hub.fork_to(original, fork_folder.clone(), forking);
+        let fork_refused = hub
+            .await_answer(&mut inputs, forked_again)
+            .await
+            .unwrap_err();
+
+        assert_eq!(move_refused.code, ErrorCode::InvalidRequest);
+        assert!(
+            move_refused
+                .message
+                .starts_with("a fork of this agent waits"),
+            "{move_refused:?}"
+        );
+        assert_eq!(fork_refused.code, ErrorCode::InvalidRequest);
+        assert!(
+            fork_refused
+                .message
+                .starts_with("a fork of this agent already waits"),
+            "{fork_refused:?}"
+        );
+        assert_eq!(hub.agents[&original].record.folder, source_folder);
+        assert_eq!(
+            std::fs::read(session_file(&hub, &fork_folder)).unwrap(),
+            fork_copy,
+            "the fork keeps the copy it starts from"
+        );
+    }
+
+    /// The fork's file is its source's session as it was at the fork: copied to the source's
+    /// folder, it would replace the source's own, and lose the turns since.
+    #[tokio::test]
+    async fn a_fork_of_a_fork_does_not_replace_the_session_of_the_agent_it_copies() {
+        let temp = tempfile::tempdir().unwrap();
+        let (mut hub, mut inputs, original) = hub_with_agent(temp.path()).await;
+        let source_folder = hub.agents[&original].record.folder.clone();
+        let (fork, _) = forked(&mut hub, &mut inputs, original, temp.path()).await;
+        let source_file = session_file(&hub, &source_folder);
+        let mut source_session = std::fs::read(&source_file).unwrap();
+        let later_turn = r#"{"type":"user","cwd":"/app","message":{"role":"user","content":"Then the checkout"}}"#;
+        source_session.extend_from_slice(format!("{later_turn}\n").as_bytes());
+        std::fs::write(&source_file, &source_session).unwrap();
+        let elsewhere = temp.path().join("app_other");
+        std::fs::create_dir_all(&elsewhere).unwrap();
+        let (to_source, source_answer) = oneshot::channel();
+        let (to_elsewhere, elsewhere_answer) = oneshot::channel();
+
+        hub.fork_to(fork, source_folder, to_source);
+        let refused = hub
+            .await_answer(&mut inputs, source_answer)
+            .await
+            .unwrap_err();
+        hub.fork_to(fork, elsewhere, to_elsewhere);
+        let refused_elsewhere = hub
+            .await_answer(&mut inputs, elsewhere_answer)
+            .await
+            .unwrap_err();
+
+        for refused in [refused, refused_elsewhere] {
+            assert_eq!(refused.code, ErrorCode::InvalidRequest);
+            assert_eq!(
+                refused.message,
+                "send the fork a message before forking it into another folder"
+            );
+        }
+        assert_eq!(hub.agents.len(), 2, "no other fork");
+        assert_eq!(
+            std::fs::read(&source_file).unwrap(),
+            source_session,
+            "the source keeps its session"
+        );
+    }
+
+    /// A fork is listed once its copy is done and its `claude` runs. A move or another fork
+    /// there meanwhile would replace its copy all the same.
+    #[tokio::test]
+    async fn an_agent_does_not_move_or_fork_where_the_copy_of_its_fork_is_under_way() {
+        let temp = tempfile::tempdir().unwrap();
+        let (mut hub, mut inputs, original) = hub_with_agent(temp.path()).await;
+        let source_folder = hub.agents[&original].record.folder.clone();
+        let fork_folder = temp.path().join("app_fix");
+        std::fs::create_dir_all(&fork_folder).unwrap();
+        let (forking, forked) = oneshot::channel();
+        let (moving, moved) = oneshot::channel();
+        let (forking_again, forked_again) = oneshot::channel();
+
+        hub.fork_to(original, fork_folder.clone(), forking);
+        hub.move_to(original, fork_folder.clone(), moving);
+        hub.fork_to(original, fork_folder, forking_again);
+        let move_refused = hub.await_answer(&mut inputs, moved).await.unwrap_err();
+        let fork_refused = hub
+            .await_answer(&mut inputs, forked_again)
+            .await
+            .unwrap_err();
+        let started = hub.await_answer(&mut inputs, forked).await;
+
+        assert!(
+            move_refused
+                .message
+                .starts_with("a fork of this agent waits"),
+            "{move_refused:?}"
+        );
+        assert!(
+            fork_refused
+                .message
+                .starts_with("a fork of this agent already waits"),
+            "{fork_refused:?}"
+        );
+        assert!(matches!(started, Ok(ResponseBody::AgentStarted { .. })));
+        assert_eq!(hub.agents.len(), 2, "one fork");
+        let source = &hub.agents[&original];
+        assert_eq!(source.record.folder, source_folder);
+        assert!(
+            source.moving.is_none() && source.process.is_some(),
+            "it runs on"
+        );
+        assert!(hub.fork_copies.is_empty());
+    }
+
+    /// The move copies the session once the agent's process exits, which would replace the copy
+    /// of a fork made there meanwhile.
+    #[tokio::test]
+    async fn an_agent_does_not_fork_into_the_folder_it_moves_to() {
+        let temp = tempfile::tempdir().unwrap();
+        let (mut hub, mut inputs, original) = hub_with_agent(temp.path()).await;
+        let target = temp.path().join("app_moved");
+        std::fs::create_dir_all(&target).unwrap();
+        let (moving, moved) = oneshot::channel();
+        let (forking, forked) = oneshot::channel();
+
+        hub.move_to(original, target.clone(), moving);
+        hub.fork_to(original, target.clone(), forking);
+        let refused = hub.await_answer(&mut inputs, forked).await.unwrap_err();
+        let move_result = hub.await_answer(&mut inputs, moved).await;
+
+        assert_eq!(refused.code, ErrorCode::InvalidRequest);
+        assert_eq!(
+            refused.message,
+            "the agent with this session moves to that folder: wait for the move to end"
+        );
+        assert_eq!(move_result, Ok(ResponseBody::Done));
+        assert_eq!(hub.agents.len(), 1, "no fork");
+        assert_eq!(hub.agents[&original].record.folder, target);
     }
 
     #[tokio::test]

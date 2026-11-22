@@ -19,7 +19,9 @@ use cockpit_protocol::{
 };
 use strum::VariantArray;
 
-use super::app_state::{AgentEntry, AppState, FileFreshness, FileRead, Loadable, MachineState};
+use super::app_state::{
+    self, AgentEntry, AppState, FileFreshness, FileRead, Loadable, MachineState,
+};
 use super::apply::forget_agent;
 use super::drafts::{Drafts, NewAgentDraft, Palette, QuestionDraft, SlashWord, SwitcherDraft};
 use super::projects::ProjectKey;
@@ -2243,11 +2245,11 @@ pub fn undo_close(state: &mut AppState) -> Vec<Outgoing> {
         return Vec::new();
     };
     let machine = MachineId::of(closed.agent);
-    // A fork keeps its source's session until its first turn: the daemon answers with the agent
-    // that has the session, which keeps its own place and project.
+    // The daemon answers with the agent that already has the session, which keeps its own place
+    // and project.
     let shared = state.agents.values().any(|entry| {
         MachineId::of(entry.id()) == machine
-            && entry.summary.session.as_ref() == Some(&session)
+            && app_state::own_session(&entry.summary) == Some(&session)
             && entry.summary.account == closed.account
     });
     if !shared {
@@ -2577,7 +2579,7 @@ pub fn resumable_sessions<'state>(
     let running: BTreeSet<&ClaudeSessionId> = state
         .agents
         .values()
-        .filter_map(|entry| entry.summary.session.as_ref())
+        .filter_map(|entry| app_state::own_session(&entry.summary))
         .collect();
     let mut sessions: Vec<&PastSession> = state
         .machines
@@ -2684,8 +2686,8 @@ mod tests {
     use cockpit_protocol::{
         Account, AgentDetails, AskedQuestion, ChangedFile, CommandKind, CredentialSource,
         EditTexts, ErrorBody, ErrorCode, FileEdit, HistoryPage, ImageMediaType, Method, NoticeKind,
-        OlderItems, Position, QuestionOption, Repository, ResponseBody, Timestamp, ToolCall,
-        ToolCallStatus, TranscriptItem, UserMessage,
+        OlderItems, Position, QuestionOption, Repository, ResponseBody, SessionUse, Timestamp,
+        ToolCall, ToolCallStatus, TranscriptItem, UserMessage,
     };
 
     use super::*;
@@ -3768,15 +3770,14 @@ mod tests {
     }
 
     #[test]
-    fn undo_of_a_fork_without_a_turn_leaves_its_source_in_place() {
+    fn a_fork_without_its_own_session_closes_without_undo() {
         let mut state = idle_ordered();
         let mut drafts = Drafts::default();
         let fork = AgentId::new(3);
         if let Some(entry) = state.agents.get_mut(&fork) {
             entry.summary.session = Some(ClaudeSessionId::new("session-1".to_owned()));
+            entry.summary.session_use = SessionUse::Fork;
         }
-        let work = ProjectKey::Kept(projects::create(&mut state, "Work"));
-        projects::move_agent(&mut state, fork, &work);
         let source =
             |state: &AppState| projects::project_of(state, &state.agents[&AgentId::new(1)]);
         let source_project = source(&state);
@@ -3787,23 +3788,94 @@ mod tests {
             event(cockpit_protocol::Event::AgentRemoved { agent: fork }),
             MachineId::THIS,
         );
+        let closed_session = state
+            .ui
+            .closed
+            .as_ref()
+            .and_then(|closed| closed.session.clone());
 
-        undo_close(&mut state);
-        // The daemon answers with the agent that has the session.
-        apply_response(
+        let undone = undo_close(&mut state);
+
+        assert_eq!(
+            closed_session, None,
+            "undoing would bring back its source's session"
+        );
+        assert!(undone.is_empty(), "{undone:?}");
+        assert_eq!(source(&state), source_project);
+    }
+
+    #[test]
+    fn undo_of_an_agent_whose_fork_is_listed_brings_it_back_to_its_place() {
+        let mut state = idle_ordered();
+        let mut drafts = Drafts::default();
+        let closed = AgentId::new(1);
+        let fork = AgentId::new(3);
+        let session = state.agents[&closed].summary.session.clone();
+        if let Some(entry) = state.agents.get_mut(&fork) {
+            entry.summary.session.clone_from(&session);
+            entry.summary.session_use = SessionUse::Fork;
+        }
+        let work = ProjectKey::Kept(projects::create(&mut state, "Work"));
+        projects::move_agent(&mut state, closed, &work);
+        let mut back = state.agents[&closed].summary.clone();
+        request_close(&mut state, &mut drafts, closed);
+        crate::state::apply::apply(
             &mut state,
             &mut drafts,
-            Method::SessionsResume,
-            Purpose::Reopen,
-            Ok(ResponseBody::AgentStarted {
-                agent: AgentId::new(1),
-            }),
+            event(cockpit_protocol::Event::AgentRemoved { agent: closed }),
             MachineId::THIS,
         );
-        let moves = needed_requests(&mut state);
 
-        assert_eq!(source(&state), source_project);
-        assert_eq!(sent_move(&moves), None);
+        undo_close(&mut state);
+        back.id = AgentId::new(4);
+        crate::state::apply::apply(
+            &mut state,
+            &mut drafts,
+            event(cockpit_protocol::Event::AgentAdded(back)),
+            MachineId::THIS,
+        );
+        needed_requests(&mut state);
+
+        assert_eq!(
+            projects::project_of(&state, &state.agents[&AgentId::new(4)]),
+            work,
+            "the fork does not count as holding the session"
+        );
+    }
+
+    #[test]
+    fn undo_leaves_an_agent_that_already_runs_the_session_in_its_place() {
+        let mut state = idle_ordered();
+        let mut drafts = Drafts::default();
+        let closed = AgentId::new(1);
+        let work = ProjectKey::Kept(projects::create(&mut state, "Work"));
+        projects::move_agent(&mut state, closed, &work);
+        let mut resumed = state.agents[&closed].summary.clone();
+        request_close(&mut state, &mut drafts, closed);
+        crate::state::apply::apply(
+            &mut state,
+            &mut drafts,
+            event(cockpit_protocol::Event::AgentRemoved { agent: closed }),
+            MachineId::THIS,
+        );
+        // Another window resumes the session before this one's undo.
+        resumed.id = AgentId::new(4);
+        crate::state::apply::apply(
+            &mut state,
+            &mut drafts,
+            event(cockpit_protocol::Event::AgentAdded(resumed)),
+            MachineId::THIS,
+        );
+        let project =
+            |state: &AppState| projects::project_of(state, &state.agents[&AgentId::new(4)]);
+        let resumed_project = project(&state);
+
+        undo_close(&mut state);
+        needed_requests(&mut state);
+
+        assert_eq!(state.ui.reopening, None);
+        assert_eq!(project(&state), resumed_project);
+        assert_ne!(resumed_project, work);
     }
 
     #[test]
@@ -6368,6 +6440,27 @@ mod tests {
             turns: 4,
             account: AccountId::DEFAULT,
         }
+    }
+
+    #[test]
+    fn a_session_only_a_fork_names_is_one_to_resume() {
+        let mut fork = summary(1, AgentStatus::Idle);
+        fork.session = Some(ClaudeSessionId::new("lexer".to_owned()));
+        fork.session_use = SessionUse::Fork;
+        let mut state = state_with(vec![fork]);
+        state.machines.this.sessions = Loadable::Loaded(vec![past_session(
+            "lexer",
+            "Speed up the lexer",
+            "/work/parser",
+            30,
+        )]);
+
+        let listed: Vec<&str> = resumable_sessions(&state, "", None)
+            .iter()
+            .map(|session| session.id.as_str())
+            .collect();
+
+        assert_eq!(listed, ["lexer"]);
     }
 
     #[test]

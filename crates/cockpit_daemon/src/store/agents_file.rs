@@ -2,7 +2,7 @@ use std::path::{Path, PathBuf};
 
 use cockpit_protocol::{
     AccountId, AgentId, ClaudeSessionId, Effort, Mark, PermissionMode, Position, ProcessId, Seq,
-    Timestamp,
+    SessionUse, Timestamp,
 };
 use serde::{Deserialize, Serialize};
 
@@ -68,6 +68,15 @@ pub(crate) enum ResumeAs {
     Same,
     /// Starts a new session from a copy of the conversation (`--fork-session`).
     Fork,
+}
+
+impl From<ResumeAs> for SessionUse {
+    fn from(resume_as: ResumeAs) -> Self {
+        match resume_as {
+            ResumeAs::Same => Self::Own,
+            ResumeAs::Fork => Self::Fork,
+        }
+    }
 }
 
 /// A process, told apart from a later one that reuses its id by when it started.

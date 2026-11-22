@@ -298,6 +298,11 @@ pub fn mcp_status_class(status: McpServerStatus) -> &'static str {
     }
 }
 
+/// The daemon's message as a sentence.
+pub fn sentence(message: &str) -> String {
+    format!("{}.", capitalized(message))
+}
+
 /// "3 files", "1 file".
 pub fn count(number: usize, singular: &str, plural: &str) -> String {
     let noun = if number == 1 { singular } else { plural };

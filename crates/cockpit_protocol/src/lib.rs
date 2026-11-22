@@ -41,7 +41,7 @@ pub use account::{
 };
 pub use agent::{
     AgentStatus, AgentSummary, ClaudeCodeVersion, Effort, EffortSource, Mark, PermissionMode,
-    SignInWait, TaskProgress,
+    SessionUse, SignInWait, TaskProgress,
 };
 pub use details::{
     AgentDetails, BackgroundTask, BackgroundTaskKind, BackgroundTaskStatus, ChangedFile,

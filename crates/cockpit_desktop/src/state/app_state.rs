@@ -6,9 +6,9 @@ use std::time::{Duration, Instant, SystemTime};
 
 use cockpit_protocol::{
     Account, AccountId, AgentDetails, AgentId, AgentStatus, AgentSummary, AnswerState,
-    BackgroundTask, BackgroundTaskStatus, BuildCommit, FileEdit, Image, ItemBody, ItemId,
-    PastSession, PendingId, PlanUsage, ReleaseVersion, Seq, Settings, SlashCommand, Timestamp,
-    ToolCallStatus, TranscriptItem, WaitingPrompt, list_order,
+    BackgroundTask, BackgroundTaskStatus, BuildCommit, ClaudeSessionId, FileEdit, Image, ItemBody,
+    ItemId, PastSession, PendingId, PlanUsage, ReleaseVersion, Seq, SessionUse, Settings,
+    SlashCommand, Timestamp, ToolCallStatus, TranscriptItem, WaitingPrompt, list_order,
 };
 use strum::VariantArray;
 
@@ -261,6 +261,15 @@ pub struct BlockingCall {
     pub since: Option<Instant>,
     /// The step's other running calls.
     pub others: usize,
+}
+
+/// The agent's own session. `None` for a fork that has not started its own yet: its summary names
+/// the session it copies, which another agent may hold.
+pub fn own_session(summary: &AgentSummary) -> Option<&ClaudeSessionId> {
+    match summary.session_use {
+        SessionUse::Own => summary.session.as_ref(),
+        SessionUse::Fork => None,
+    }
 }
 
 impl AgentEntry {
@@ -818,7 +827,7 @@ pub(crate) mod tests {
     use cockpit_protocol::{
         AnswerState, Approval, ApprovalAnswer, ApprovalDecision, BackgroundTaskId,
         BackgroundTaskKind, Catchup, CostUsd, EffortSource, Mark, PendingId, PermissionMode,
-        Position, SignInWait,
+        Position, SessionUse, SignInWait,
     };
 
     use super::*;
@@ -845,6 +854,7 @@ pub(crate) mod tests {
             quiet_since: None,
             turn_started_at: None,
             session: None,
+            session_use: SessionUse::Own,
             position: Position::default(),
             account: AccountId::DEFAULT,
             sign_in_wait: SignInWait::NotWaiting,

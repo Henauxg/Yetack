@@ -22,10 +22,10 @@ use cockpit_protocol::{
     PROTOCOL_VERSION, PastSession, PendingId, PermissionMode, Plan, PlanUsage, Position, ProcessId,
     Prompt, PromptId, Question, QuestionAnswer, QuestionOption, RateLimitStatus, ReleaseVersion,
     Remote, Repository, Request, ResourceUse, ResponseBody, Selection, ServerLoad, ServerPoint,
-    SignIn, SignInWait, SlashCommand, Subagent, SubagentRun, SubagentStatus, SubagentToolCall,
-    TaskListItem, TaskProgress, TaskStatus, TerminalId, TerminalInfo, Timestamp, TokenUsage,
-    ToolCall, ToolCallStatus, TranscriptItem, TurnEnd, TurnOutcome, Upstream, UsageWindow,
-    UserMessage, WaitingPrompt, WaitingState, WindowUsage,
+    SessionUse, SignIn, SignInWait, SlashCommand, Subagent, SubagentRun, SubagentStatus,
+    SubagentToolCall, TaskListItem, TaskProgress, TaskStatus, TerminalId, TerminalInfo, Timestamp,
+    TokenUsage, ToolCall, ToolCallStatus, TranscriptItem, TurnEnd, TurnOutcome, Upstream,
+    UsageWindow, UserMessage, WaitingPrompt, WaitingState, WindowUsage,
 };
 use dioxus::prelude::{Signal, WritableExt};
 use serde_json::Value;
@@ -3405,6 +3405,7 @@ fn summary(parts: SummaryParts<'_>, now: SystemTime) -> AgentSummary {
         quiet_since: turn_started.map(|_| at(now, DEMO_QUIET_SECONDS)),
         turn_started_at: turn_started.map(|seconds| at(now, seconds)),
         session: Some(ClaudeSessionId::new(format!("demo-session-{}", parts.id))),
+        session_use: SessionUse::Own,
         position: Position::default(),
         account: AccountId::DEFAULT,
         sign_in_wait: SignInWait::NotWaiting,

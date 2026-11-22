@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 
 use cockpit_protocol::{AccountId, ClaudeSessionId, Effort, PermissionMode};
 
-use crate::store::AgentRecord;
+use crate::store::{AgentRecord, ResumeAs};
 
 /// How long after its close an agent's choices wait for a resume. The app's undo lasts 8 s. A
 /// later resume, from the past sessions, starts with Claude Code's defaults as before.
@@ -44,6 +44,11 @@ impl ClosedChoices {
         let Some(session) = &record.session else {
             return;
         };
+        // A fork that has not started its own session names its original's, whose choices these
+        // are not.
+        if record.resume_as == ResumeAs::Fork {
+            return;
+        }
         self.kept.retain(|kept| {
             (&kept.session, kept.account) != (session, record.account)
                 && now.duration_since(kept.closed_at) <= KEPT_FOR
@@ -96,7 +101,6 @@ mod tests {
     use cockpit_protocol::{AgentId, Mark, Position, Timestamp};
 
     use super::*;
-    use crate::store::ResumeAs;
 
     fn record(session: &str, account: AccountId, mode: PermissionMode) -> AgentRecord {
         AgentRecord {
@@ -184,6 +188,22 @@ mod tests {
 
         assert_eq!(default_account.mode, Some(PermissionMode::AcceptEdits));
         assert_eq!(other_account.mode, Some(PermissionMode::Plan));
+    }
+
+    #[test]
+    fn a_fork_without_its_own_session_keeps_no_choices() {
+        let mut closed = ClosedChoices::default();
+        let now = Instant::now();
+        let mut fork = record("session-1", AccountId::DEFAULT, PermissionMode::Plan);
+        fork.resume_as = ResumeAs::Fork;
+
+        closed.keep(&fork, now);
+
+        assert_eq!(
+            closed.find(&session("session-1"), AccountId::DEFAULT, now),
+            Choices::default(),
+            "the session is its original's"
+        );
     }
 
     #[test]
