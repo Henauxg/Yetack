@@ -5938,14 +5938,134 @@ html.reordering * {
   gap: 5px;
 }
 
-/* The model of the other language, still on this computer, under the model row. */
-.voice-other-model {
-  margin-top: -6px;
-  animation: fade-in var(--motion-in) var(--ease-out) backwards;
+/* Settings' speech models: a list with a row per language, whose left part chooses it and
+   whose right part shows its model's state. */
+.model-intro {
+  margin: 0 0 4px;
+  color: var(--muted);
+  font-size: 12.5px;
+  line-height: 1.45;
 }
 
-.presence.leaving > .voice-other-model {
-  animation: fade-out var(--motion-out) var(--ease-in) forwards;
+/* The dialog's body is a flex column: a box that clips its content would shrink in it. */
+.model-list {
+  flex: none;
+  overflow: hidden;
+  border: 1px solid var(--line-control);
+  border-radius: 10px;
+  background: var(--well);
+}
+
+.model-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding-right: 14px;
+  transition: background-color var(--motion-hover) var(--ease);
+}
+
+.model-row + .model-row {
+  border-top: 1px solid var(--line);
+}
+
+.model-row.chosen {
+  background: var(--selected);
+}
+
+.model-row:not(.chosen):has(> .model-choice:hover) {
+  background: var(--hover);
+}
+
+.model-row:not(.chosen):has(> .model-choice:active) {
+  background: var(--pressed);
+}
+
+.model-choice {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 0 12px 14px;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+}
+
+.model-row.chosen > .model-choice {
+  cursor: default;
+}
+
+.model-choice:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: -2px;
+}
+
+.model-radio {
+  flex: none;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  box-shadow: inset 0 0 0 1.5px var(--line-control);
+  transition: box-shadow var(--motion-hover) var(--ease);
+}
+
+.model-choice:hover > .model-radio {
+  box-shadow: inset 0 0 0 1.5px var(--faint);
+}
+
+.model-row.chosen .model-radio {
+  box-shadow: inset 0 0 0 5px var(--teal);
+}
+
+.model-text {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.model-title {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.model-language {
+  color: var(--text);
+  font-size: 13.5px;
+  font-weight: 600;
+}
+
+.model-name {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.model-help {
+  color: var(--dim);
+  font-size: 11.5px;
+  line-height: 1.4;
+}
+
+.model-state {
+  flex: none;
+  width: 196px;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.model-state .voice-model-progress {
+  width: 100%;
+}
+
+.model-missing {
+  color: var(--dim);
+  font-size: 12.5px;
 }
 
 /* Settings' microphone: a menu button, and its menu under it. */
@@ -6151,15 +6271,6 @@ html.reordering * {
 }
 
 /* Settings' Voice tab. */
-.voice-model-state {
-  display: flex;
-  flex: none;
-  align-items: center;
-  justify-content: flex-end;
-  gap: 8px;
-  min-width: 230px;
-}
-
 .voice-model-ready {
   display: inline-flex;
   align-items: center;
@@ -6173,10 +6284,6 @@ html.reordering * {
   height: 8px;
   border-radius: 50%;
   background: var(--green);
-}
-
-.voice-model-progress {
-  width: 230px;
 }
 
 .voice-model-progress .update-bar {

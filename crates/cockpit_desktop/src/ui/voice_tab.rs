@@ -19,8 +19,6 @@ use crate::voice_desk::{VoiceCommand, VoiceDesk};
 const DICTATION_LABEL_ID: &str = "voice-dictation-label";
 const AFTER_LABEL_ID: &str = "voice-after-label";
 const MICROPHONE_LABEL_ID: &str = "voice-microphone-label";
-const LANGUAGE_LABEL_ID: &str = "voice-language-label";
-const MODEL_LABEL_ID: &str = "voice-model-label";
 const LIVE_LABEL_ID: &str = "voice-live-label";
 
 fn after_label(after: AfterDictation) -> &'static str {
@@ -30,23 +28,94 @@ fn after_label(after: AfterDictation) -> &'static str {
     }
 }
 
-/// What the model row says of the model, after its name.
-fn model_help(language: DictationLanguage, size: &str) -> String {
+/// What the list says of the model of `language`, under its name.
+fn model_help(language: DictationLanguage) -> &'static str {
     match language {
-        DictationLanguage::English => format!(
-            "English only, on this computer: your voice never leaves it. {size}. By NVIDIA. NVIDIA Open Model License."
-        ),
-        DictationLanguage::Multilingual => format!(
-            "English and 24 other European languages, on this computer: your voice never leaves it. {size}. By Moondream, after NVIDIA's Parakeet. License CC-BY-4.0."
-        ),
+        DictationLanguage::English => {
+            "Trained on English alone: it never switches to another language. By NVIDIA. NVIDIA Open Model License."
+        }
+        DictationLanguage::Multilingual => {
+            "Picks the language of each sentence: English, French, German, Spanish and 21 others. By Moondream, after NVIDIA's Parakeet. CC-BY-4.0."
+        }
     }
 }
 
-/// The language that is not `language`.
-fn other_language(language: DictationLanguage) -> DictationLanguage {
-    match language {
-        DictationLanguage::English => DictationLanguage::Multilingual,
-        DictationLanguage::Multilingual => DictationLanguage::English,
+/// A language in the list, with its model and the model's state. A click on the language chooses
+/// it. Only the language chosen offers its model's download.
+#[component]
+fn ModelRow(language: DictationLanguage, chosen: bool, status: ModelStatus) -> Element {
+    let cockpit: Cockpit = use_context();
+    let voice: VoiceDesk = use_context();
+    let remove = if chosen {
+        VoiceCommand::RemoveModel
+    } else {
+        VoiceCommand::RemoveOtherModel
+    };
+    rsx! {
+        div { class: if chosen { "model-row chosen" } else { "model-row" },
+            button {
+                class: "model-choice",
+                role: "radio",
+                aria_checked: chosen,
+                onclick: move |_| {
+                    if !chosen {
+                        cockpit.update(|state| settings::set_voice_language(state, language));
+                        voice.send(VoiceCommand::LanguageChanged);
+                    }
+                },
+                span { class: "model-radio", aria_hidden: true }
+                span { class: "model-text",
+                    span { class: "model-title",
+                        span { class: "model-language", "{language_label(language)}" }
+                        span { class: "model-name",
+                            "{model_name(language)} · {format::bytes(model_size(language))}"
+                        }
+                    }
+                    span { class: "model-help", "{model_help(language)}" }
+                }
+            }
+            div { class: "model-state",
+                match status {
+                    ModelStatus::Ready => rsx! {
+                        span { class: "voice-model-ready",
+                            span { class: "voice-ok", aria_hidden: true }
+                            "Downloaded"
+                        }
+                        button {
+                            class: "button small",
+                            onclick: move |_| voice.send(remove),
+                            "Remove"
+                        }
+                    },
+                    ModelStatus::Missing => rsx! {
+                        span { class: "model-missing", "Not downloaded" }
+                        if chosen {
+                            button {
+                                class: "button small primary",
+                                onclick: move |_| voice.send(VoiceCommand::Download(DownloadFrom::Settings)),
+                                "Download"
+                            }
+                        }
+                    },
+                    ModelStatus::Downloading { done, total, .. } => rsx! {
+                        div { class: "voice-model-progress",
+                            DownloadBar { done, total }
+                            div { class: "voice-card-count",
+                                span { class: "mono", "{format::bytes(done)}" }
+                                " of "
+                                span { class: "mono", "{format::bytes(total)}" }
+                                span { class: "spacer" }
+                                button {
+                                    class: "button small",
+                                    onclick: move |_| voice.send(VoiceCommand::CancelDownload),
+                                    "Cancel"
+                                }
+                            }
+                        }
+                    },
+                }
+            }
+        }
     }
 }
 
@@ -173,7 +242,6 @@ pub fn VoiceTab(recording: Option<Command>, refused: Option<RefusedChord>) -> El
         (state.model, state.other_model, state.microphones.clone())
     };
     let language = prefs.language;
-    let other = other_language(language);
     // Listed at each opening of the tab, so a microphone plugged in since then shows.
     use_hook(move || voice.send(VoiceCommand::ListMicrophones));
     let mut menu = use_signal(|| false);
@@ -247,89 +315,20 @@ pub fn VoiceTab(recording: Option<Command>, refused: Option<RefusedChord>) -> El
                 MicrophoneChoice { chosen: prefs.microphone, microphones, menu }
             }
             h3 { class: "settings-title", "Speech model" }
-            div { class: "setting-row",
-                div { class: "setting-text",
-                    span { id: LANGUAGE_LABEL_ID, class: "setting-label", "Language" }
-                    span { class: "setting-help",
-                        "English uses a model trained on English alone, which never switches to another language. 25 languages lets the model pick the language of each sentence: English, French, German, Spanish and 21 others."
-                    }
-                }
-                div { class: "segmented", role: "group", aria_labelledby: LANGUAGE_LABEL_ID,
-                    for &choice in DictationLanguage::VARIANTS {
-                        button {
-                            key: "{language_label(choice)}",
-                            class: if choice == language { "segment chosen" } else { "segment" },
-                            aria_pressed: choice == language,
-                            onclick: move |_| {
-                                if choice != language {
-                                    cockpit.update(|state| settings::set_voice_language(state, choice));
-                                    voice.send(VoiceCommand::LanguageChanged);
-                                }
-                            },
-                            "{language_label(choice)}"
-                        }
-                    }
-                }
+            p { class: "model-intro",
+                "Dictate in English, or in one of 25 languages. Each has its own model, which runs on this computer: your voice never leaves it."
             }
-            div { class: "setting-row voice-model-row",
-                div { class: "setting-text",
-                    span { id: MODEL_LABEL_ID, class: "setting-label", "{model_name(language)}" }
-                    span { class: "setting-help",
-                        "{model_help(language, &format::bytes(model_size(language)))}"
-                    }
-                }
-                div { class: "voice-model-state", aria_labelledby: MODEL_LABEL_ID,
-                    match model {
-                        ModelStatus::Ready => rsx! {
-                            span { class: "voice-model-ready",
-                                span { class: "voice-ok", aria_hidden: true }
-                                "On this computer"
-                            }
-                            button {
-                                class: "button small",
-                                onclick: move |_| voice.send(VoiceCommand::RemoveModel),
-                                "Remove"
-                            }
+            div { class: "model-list", role: "radiogroup", aria_label: "Language",
+                for &choice in DictationLanguage::VARIANTS {
+                    ModelRow {
+                        key: "{language_label(choice)}",
+                        language: choice,
+                        chosen: choice == language,
+                        status: match (choice == language, other_model) {
+                            (true, _) => model,
+                            (false, true) => ModelStatus::Ready,
+                            (false, false) => ModelStatus::Missing,
                         },
-                        ModelStatus::Missing => rsx! {
-                            button {
-                                class: "button small primary",
-                                onclick: move |_| voice.send(VoiceCommand::Download(DownloadFrom::Settings)),
-                                "Download"
-                            }
-                        },
-                        ModelStatus::Downloading { done, total, .. } => rsx! {
-                            div { class: "voice-model-progress",
-                                DownloadBar { done, total }
-                                div { class: "voice-card-count",
-                                    span { class: "mono", "{format::bytes(done)}" }
-                                    " of "
-                                    span { class: "mono", "{format::bytes(total)}" }
-                                    span { class: "spacer" }
-                                    button {
-                                        class: "button small",
-                                        onclick: move |_| voice.send(VoiceCommand::CancelDownload),
-                                        "Cancel"
-                                    }
-                                }
-                            }
-                        },
-                    }
-                }
-            }
-            Presence { open: other_model,
-                div { class: "setting-row voice-other-model",
-                    div { class: "setting-text",
-                        span { class: "setting-help",
-                            "{model_name(other)}, for the other choice of language, is also on this computer: {format::bytes(model_size(other))}."
-                        }
-                    }
-                    div { class: "voice-model-state",
-                        button {
-                            class: "button small",
-                            onclick: move |_| voice.send(VoiceCommand::RemoveOtherModel),
-                            "Remove"
-                        }
                     }
                 }
             }
