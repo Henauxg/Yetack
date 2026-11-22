@@ -54,6 +54,10 @@ pub(super) const FILE_DIFF_CONTEXT: usize = 3;
 const AFTER_TOO_LARGE_NOTE: &str =
     "An earlier edit of the file is too large to show, so this diff starts after it.";
 
+/// On the first of the edits that another change of the file keeps apart.
+const APART_HINT: &str =
+    "The file changed since these edits, so they no longer line up with it: each shows on its own.";
+
 /// Above the diff of a file in no git checkout.
 const OUTSIDE_GIT_NOTE: &str = "Not in a git checkout: the diff shows only this agent's edits.";
 
@@ -384,13 +388,18 @@ fn FileShown(agent: AgentId) -> Element {
                         }
                     }
                 },
-                Loadable::Failed(error) => rsx! {
-                    p { class: "file-note", "Cannot read the file: {error}" }
-                    if let Some(source) = PdfSource::unread(&full, on_this_computer) {
-                        div { class: "file-pdf",
-                            OpenPdfButton { source }
+                Loadable::Failed(error) => match PdfSource::unread(&full, on_this_computer) {
+                    Some(source) => rsx! {
+                        PdfCard {
+                            path: full.clone(),
+                            details: "PDF · not sent by the daemon".to_owned(),
+                            note: Some(format::sentence(&error)),
+                            source,
                         }
-                    }
+                    },
+                    None => rsx! {
+                        p { class: "file-note", "Cannot read the file: {error}" }
+                    },
                 },
                 Loadable::Loaded(FileRead::Missing(sentence)) => rsx! {
                     p { class: "file-note", "{sentence}." }
@@ -505,16 +514,36 @@ fn OpenInBrowserButton(
     }
 }
 
-/// A PDF at `path`, absolute, which the view does not show: its size, and the button that opens
-/// it outside the app.
+/// A PDF at `path`, absolute, which the daemon sent and the view does not show.
 #[component]
 fn PdfFile(path: String, bytes: Arc<[u8]>, on_this_computer: bool) -> Element {
     let size = format::bytes(u64::try_from(bytes.len()).unwrap_or(u64::MAX));
     let source = PdfSource::of_read(&path, on_this_computer, &bytes);
     rsx! {
+        PdfCard { path, details: format!("PDF · {size}"), note: None, source }
+    }
+}
+
+/// A PDF at `path`, absolute, as a card in the middle of the view: its name, `details` such as its
+/// size, and the button that opens it outside the app. `note` says more under the button.
+#[component]
+fn PdfCard(path: String, details: String, note: Option<String>, source: PdfSource) -> Element {
+    let name = PathStyle::of_text(&path)
+        .file_name(&path)
+        .unwrap_or_default()
+        .to_owned();
+    rsx! {
         div { class: "file-pdf",
-            p { class: "file-note", "A PDF of {size}, which the file view does not show." }
+            div { class: "pdf-tile", aria_hidden: true,
+                Icon { kind: IconKind::File, size: 30 }
+                span { class: "pdf-tile-label", "PDF" }
+            }
+            span { class: "pdf-name", title: "{path}", "{name}" }
+            span { class: "pdf-details", "{details}" }
             OpenPdfButton { source }
+            if let Some(note) = note {
+                p { class: "pdf-note", "{note}" }
+            }
         }
     }
 }
@@ -528,7 +557,7 @@ fn OpenPdfButton(source: PdfSource) -> Element {
     };
     rsx! {
         button {
-            class: "button small",
+            class: "button primary small",
             title,
             onclick: move |_| {
                 let source = source.clone();
@@ -936,11 +965,18 @@ fn FileContent(
         if too_large {
             p { class: "file-note", "{AFTER_TOO_LARGE_NOTE}" }
         }
-        p { class: "file-note",
-            "The file changed since these edits, so each shows on its own, without line numbers."
-        }
         for (index, diff) in diffs.iter().enumerate() {
-            p { class: "edit-title", "Edit {index + 1} of {count}" }
+            div { class: "edit-title",
+                span { "Edit {index + 1} of {count}" }
+                if index == 0 {
+                    // Focusable, so that the keys can show its explanation too.
+                    span { class: "edit-hint tooltip-anchor", role: "note", tabindex: 0,
+                        Icon { kind: IconKind::Info, size: 12 }
+                        "No line numbers"
+                        span { class: "tooltip", role: "tooltip", "{APART_HINT}" }
+                    }
+                }
+            }
             div { class: "diff-rows",
                 for row in diff.rows.iter() {
                     {diff_row(row, LineNumbers::Hidden, LineMarks::marked(None))}

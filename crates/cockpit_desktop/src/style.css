@@ -9062,18 +9062,75 @@ html.splitting * {
   padding-bottom: 8px;
 }
 
-/* A PDF, which opens outside the app: its size, then the button that opens it. The file's body
-   is monospace for text, which a button does not take. */
+/* A PDF, which opens outside the app: a card in the middle of the view, with the file's name, its
+   size and the button that opens it. The file's body is monospace for text, which the card does
+   not take. */
 .file-pdf {
   display: flex;
   flex-direction: column;
-  align-items: flex-start;
-  padding-bottom: 8px;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-height: 100%;
+  box-sizing: border-box;
+  padding: 24px 16px;
   font-family: var(--sans);
+  text-align: center;
+}
+
+.pdf-tile {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 56px;
+  height: 64px;
+  margin-bottom: 4px;
+  border: 1px solid var(--line-strong);
+  border-radius: 10px;
+  background: var(--raised);
+  color: var(--dim);
+}
+
+.pdf-tile .icon {
+  margin-top: -10px;
+}
+
+.pdf-tile-label {
+  position: absolute;
+  bottom: 7px;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  color: var(--red);
+}
+
+.pdf-name {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.pdf-details {
+  font-size: 12px;
+  color: var(--dim);
 }
 
 .file-pdf .button {
-  margin: 0 12px;
+  margin-top: 8px;
+}
+
+/* Breaks a path it names anywhere: in the centred column, a line wider than the view would go
+   past its left edge, where no scroll reaches. */
+.pdf-note {
+  max-width: 100%;
+  margin: 2px 0 0;
+  overflow-wrap: anywhere;
+  font-size: 11.5px;
+  color: var(--dim);
 }
 
 .file-choice {
@@ -9094,10 +9151,45 @@ html.splitting * {
 }
 
 .edit-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
   margin: 10px 12px 4px;
   font-family: var(--sans);
   font-size: 12px;
   color: var(--muted);
+}
+
+/* On the first of the edits shown apart: its tooltip, under the pointer or the keyboard's focus,
+   says why they have no line numbers. */
+.edit-hint {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 1px 7px;
+  border: 1px solid var(--line-strong);
+  border-radius: 999px;
+  font-size: 11px;
+  color: var(--dim);
+  cursor: help;
+  transition:
+    color var(--motion-hover) var(--ease),
+    border-color var(--motion-hover) var(--ease);
+}
+
+.edit-hint:hover,
+.edit-hint:focus-visible {
+  border-color: var(--line-control);
+  color: var(--text-soft);
+}
+
+/* The sentence is longer than the chip's line: it wraps within the view. */
+.edit-hint .tooltip {
+  width: max-content;
+  max-width: 260px;
+  white-space: normal;
+  line-height: 1.4;
 }
 
 /* What the agent did to the file, when the text was read, and Reload. */

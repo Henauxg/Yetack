@@ -5402,7 +5402,11 @@ mod tests {
         );
 
         let read = &state.agents[&agent()].files[Path::new("docs/report.pdf")];
-        assert!(matches!(read, Loadable::Failed(_)), "{read:?}");
+        let Loadable::Failed(message) = read else {
+            panic!("{read:?}");
+        };
+        // The PDF card makes a sentence of it, as of the daemon's failures.
+        assert!(!format::sentence(message).ends_with(".."), "{message}");
     }
 
     #[test]

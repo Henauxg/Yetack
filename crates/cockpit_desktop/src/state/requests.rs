@@ -718,7 +718,7 @@ pub fn apply_response(
                         actions::show_read_file(state, agent, &path, &found, read, now);
                         return;
                     }
-                    Err(_) => Loadable::Failed(format!("{method} sent a PDF that is not base64.")),
+                    Err(_) => Loadable::Failed(format!("{method} sent a PDF that is not base64")),
                 },
                 Ok(ResponseBody::FileMatches { matches }) => {
                     Loadable::Loaded(FileRead::Choices(matches))
