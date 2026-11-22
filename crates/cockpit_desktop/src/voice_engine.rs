@@ -13,11 +13,13 @@ use tokio::sync::mpsc::{self, UnboundedReceiver as Receiver};
 
 use crate::bridge::{self, COMPOSER_ID};
 use crate::connection::Cockpit;
-use crate::prefs::{AfterDictation, LiveTextRefresh};
+use crate::prefs::LiveTextRefresh;
 use crate::state::voice::{
-    DownloadFrom, LiveWords, ModelStatus, VoiceCard, VoiceState, WorkerOrder, dictation_target,
+    self, Dictation, DownloadFrom, Field, Landing, LiveWords, ModelStatus, VoiceCard, VoiceState,
+    WorkerOrder, dictation_target,
 };
 use crate::state::{Drafts, actions};
+use crate::ui::COMMENT_FIELD_ID;
 use crate::voice_desk::VoiceCommand;
 use crate::voice_models::{self, DownloadNews};
 
@@ -99,14 +101,24 @@ async fn next_news(news: &mut Option<Receiver<DownloadNews>>) -> Option<Download
 
 impl Desk {
     async fn command(&mut self, command: VoiceCommand) {
-        let target = dictation_target(&self.cockpit.state.peek());
         let now = Instant::now();
         let order = match command {
-            VoiceCommand::Press => self.state.write().press(target, now),
-            VoiceCommand::Click => self.state.write().click(target, now),
+            VoiceCommand::Press(field) => {
+                let target = self.target(field);
+                self.state.write().press(target, now)
+            }
+            VoiceCommand::Click(field) => {
+                let target = self.target(field);
+                self.state.write().click(target, now)
+            }
             VoiceCommand::Release => self.state.write().release(now),
             VoiceCommand::Blur => self.state.write().blur(),
             VoiceCommand::Cancel => self.state.write().cancel(),
+            VoiceCommand::Stop => self.state.write().stop(),
+            VoiceCommand::CommentChanged => self
+                .state
+                .write()
+                .comment_changed(&self.cockpit.drafts.peek()),
             VoiceCommand::Download(from) => {
                 self.start_download(from);
                 WorkerOrder::Nothing
@@ -134,6 +146,13 @@ impl Desk {
             }
             self.state.write().failed(sentence(&error));
         }
+    }
+
+    /// The dictation a press or a click in `field` would start.
+    fn target(&self, field: Field) -> Option<Dictation> {
+        let agent = dictation_target(&self.cockpit.state.peek())?;
+        let to = voice::destination(field, agent, &self.cockpit.drafts.peek());
+        Some(Dictation { agent, to })
     }
 
     fn order(&mut self, order: WorkerOrder) -> Result<(), VoiceError> {
@@ -180,9 +199,9 @@ impl Desk {
             }
             Event::Finishing | Event::Cancelled => {}
             Event::Done(text) => {
-                let agent = self.state.write().done();
-                if let Some(agent) = agent {
-                    insert(self.cockpit, agent, &text);
+                let dictation = self.state.write().done();
+                if let Some(dictation) = dictation {
+                    insert(self.cockpit, dictation, &text);
                 }
             }
             Event::Failed(error) => {
@@ -258,23 +277,31 @@ fn remove_when_free(folder: &Path) -> io::Result<()> {
     }
 }
 
-/// The text goes in the message of the agent it was dictated to: at the cursor when that
-/// message shows, at its end otherwise, or at its end and sent.
-fn insert(cockpit: Cockpit, agent: AgentId, text: &str) {
+/// The text goes in the message or the comment of the agent it was dictated to, as
+/// [`voice::landing`] decides: at the cursor when that field shows, at its end otherwise, or at
+/// the message's end and sent.
+fn insert(cockpit: Cockpit, dictation: Dictation, text: &str) {
     let text = text.trim();
     if text.is_empty() {
         return;
     }
-    let (after, shown) = {
+    let agent = dictation.agent;
+    let landing = {
         let state = cockpit.state.peek();
-        (state.prefs.voice.after, state.ui.selected == Some(agent))
+        let shown = state.ui.selected == Some(agent);
+        voice::landing(
+            dictation,
+            shown,
+            state.prefs.voice.after,
+            &cockpit.drafts.peek(),
+        )
     };
-    match after {
-        AfterDictation::Insert if shown => bridge::insert_at_caret(COMPOSER_ID, text),
-        AfterDictation::Insert => {
-            cockpit.with_drafts(|_, drafts| append(drafts, agent, text));
-        }
-        AfterDictation::InsertAndSend => cockpit.change_with_drafts(|state, drafts| {
+    match landing {
+        Landing::MessageCaret => bridge::insert_at_caret(COMPOSER_ID, text),
+        Landing::CommentCaret => bridge::insert_at_caret(COMMENT_FIELD_ID, text),
+        Landing::MessageEnd => cockpit.with_drafts(|_, drafts| append(drafts, agent, text)),
+        Landing::CommentEnd => cockpit.with_drafts(|_, drafts| append_to_comment(drafts, text)),
+        Landing::MessageEndAndSend => cockpit.change_with_drafts(|state, drafts| {
             append(drafts, agent, text);
             actions::send_prompt(state, drafts, agent, None, PromptDelivery::Steer)
         }),
@@ -288,6 +315,16 @@ fn append(drafts: &mut Drafts, agent: AgentId, text: &str) {
     }
     draft.text.push_str(text);
     drafts.draft_written(agent);
+}
+
+/// Adds `text` at the end of the open comment, whose field shows it when it opens again.
+fn append_to_comment(drafts: &mut Drafts, text: &str) {
+    if let Some(editor) = &mut drafts.quote_editor {
+        if !editor.text.is_empty() && !editor.text.ends_with(char::is_whitespace) {
+            editor.text.push(' ');
+        }
+        editor.text.push_str(text);
+    }
 }
 
 /// The error as the card shows it: a sentence.
@@ -333,6 +370,40 @@ mod tests {
                 .map(|draft| draft.text.as_str()),
             Some("Hello")
         );
+    }
+
+    #[test]
+    fn a_comment_out_of_sight_takes_the_text_at_its_end() {
+        use crate::state::Utf16Offset;
+        use crate::state::quotes::{self, Passage, QuoteAnchor};
+        use cockpit_protocol::ItemId;
+
+        let agent = AgentId::new(2);
+        let mut drafts = Drafts::default();
+        append_to_comment(&mut drafts, "Nothing is open");
+        let passage = Passage {
+            anchor: QuoteAnchor {
+                item: ItemId::new(1),
+                start: Utf16Offset::new(0),
+                end: Utf16Offset::new(5),
+            },
+            raw: "lexer".to_owned(),
+            text: "lexer".to_owned(),
+            code: false,
+        };
+        quotes::start(&mut drafts, agent, passage);
+        quotes::type_comment(&mut drafts, "Count from 1".to_owned());
+
+        append_to_comment(&mut drafts, "in the lexer.");
+
+        assert_eq!(
+            drafts
+                .quote_editor
+                .as_ref()
+                .map(|editor| editor.text.as_str()),
+            Some("Count from 1 in the lexer.")
+        );
+        assert_eq!(drafts.draft(agent), None);
     }
 
     #[test]

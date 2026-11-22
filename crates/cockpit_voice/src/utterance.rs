@@ -4,7 +4,7 @@ use crate::live_text::LiveText;
 use crate::pauses::Pauses;
 use crate::voice::LiveRefresh;
 use crate::voice_error::VoiceError;
-use crate::{SAMPLE_RATE, samples};
+use crate::{SAMPLE_RATE, fillers, samples};
 
 /// Turns a segment of speech into text.
 pub(crate) trait Transcribe {
@@ -83,7 +83,7 @@ impl<'models, M: Transcribe, C: SpeechCheck> Utterance<'models, M, C> {
         }
         self.refreshed_at = self.segment.len();
         let started = Instant::now();
-        let hearing = text_of(&mut *self.model, &self.segment)?;
+        let hearing = fillers::without_fillers(&text_of(&mut *self.model, &self.segment)?);
         self.adapt(started.elapsed());
         Ok(Some(LiveText {
             said: self.said.clone(),
@@ -135,7 +135,7 @@ impl<'models, M: Transcribe, C: SpeechCheck> Utterance<'models, M, C> {
         let settled = self.segment.get(..len).unwrap_or_default();
         if !settled.is_empty() && self.check.has_speech(settled)? {
             let text = text_of(&mut *self.model, settled)?;
-            join(&mut self.said, &text);
+            fillers::push_without_fillers(&mut self.said, &text);
         }
         self.segment.drain(..len);
         self.refreshed_at = 0;
@@ -178,32 +178,26 @@ fn quietest_end(segment: &[f32]) -> usize {
     quietest.1
 }
 
-/// Appends `text` after a space.
-fn join(to: &mut String, text: &str) {
-    let text = text.trim();
-    if text.is_empty() {
-        return;
-    }
-    if !to.is_empty() {
-        to.push(' ');
-    }
-    to.push_str(text);
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     /// Writes one word per 300 ms of audio, and keeps the length of each audio it transcribes.
+    /// `answers` come first, one per transcription, then `words` for each.
     #[derive(Default)]
     struct FakeModel {
         heard: Vec<usize>,
+        answers: Vec<&'static str>,
         words: Option<&'static str>,
     }
 
     impl Transcribe for FakeModel {
         fn transcribe(&mut self, pcm: &[f32]) -> Result<String, VoiceError> {
+            let answer = self.answers.get(self.heard.len());
             self.heard.push(pcm.len());
+            if let Some(answer) = answer {
+                return Ok((*answer).to_owned());
+            }
             if let Some(words) = self.words {
                 return Ok(words.to_owned());
             }
@@ -340,13 +334,30 @@ mod tests {
     #[test]
     fn text_too_long_for_its_audio_is_dropped() {
         let mut model = FakeModel {
-            heard: Vec::new(),
             words: Some("tokio Dioxus anyhow musl Gentoo Arch serde rustls JSON clippy cargo"),
+            ..FakeModel::default()
         };
         let mut check = FakeCheck;
         let mut utterance = Utterance::new(&mut model, &mut check, LiveRefresh::Off);
         let _ = utterance.feed(&speech(1000));
         assert_eq!(utterance.finish(&[]).ok().as_deref(), Some(""));
+    }
+
+    #[test]
+    fn a_filler_after_a_pause_leaves_its_stop_to_the_words_before_the_pause() {
+        let mut model = FakeModel {
+            answers: vec!["Let me check the parser", "Um."],
+            ..FakeModel::default()
+        };
+        let mut check = FakeCheck;
+        let mut utterance = Utterance::new(&mut model, &mut check, LiveRefresh::Off);
+        let _ = utterance.feed(&speech(1200));
+        let _ = utterance.feed(&quiet(500));
+        let _ = utterance.feed(&speech(1200));
+        assert_eq!(
+            utterance.finish(&[]).ok().as_deref(),
+            Some("Let me check the parser.")
+        );
     }
 
     /// The real models on a recording: `VOICE_TEST_MODELS` names the models folder, and

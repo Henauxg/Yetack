@@ -5843,6 +5843,11 @@ html.reordering * {
   color: var(--muted);
 }
 
+/* The comment field's mic: a tiny button, with a ring of its size. */
+.mic-button.tiny.recording {
+  box-shadow: 0 0 0 2px rgba(244, 112, 103, 0.16);
+}
+
 /* Off for an exited agent, as its message field is. */
 .mic-button:disabled,
 .mic-button:disabled:hover {
@@ -6788,6 +6793,67 @@ html.reordering * {
   color: var(--muted);
   font-family: var(--sans);
   font-size: 11px;
+}
+
+/* The key hints, or a dictation's words in their place. They share one cell while they swap, and
+   a script animates the foot's height as they change. */
+.quote-field-foot {
+  overflow: hidden;
+}
+
+.quote-field-foot-body {
+  display: grid;
+}
+
+.quote-field-foot-body > * {
+  grid-area: 1 / 1;
+  min-width: 0;
+}
+
+.quote-hint.returning,
+.quote-voice {
+  animation: fade-in var(--motion-in) var(--ease-out) backwards;
+}
+
+.quote-hint.leaving,
+.quote-voice.leaving {
+  animation: fade-out var(--motion-out) var(--ease-in) forwards;
+}
+
+/* In a narrow field, the keys go under the words. */
+.quote-voice {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: 2px 8px;
+  font-size: 12px;
+  line-height: 17px;
+}
+
+.quote-voice > .voice-meter {
+  flex: none;
+  margin-top: 1.5px;
+}
+
+.quote-voice > .spinner {
+  margin-top: 2.5px;
+}
+
+/* The last three lines of the words: the older ones go out at the top. */
+.quote-voice-words {
+  flex: 1 1 120px;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  max-height: 3lh;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+}
+
+.quote-voice-keys {
+  flex: none;
+  margin-left: auto;
 }
 
 /* The composer's list: one line per quote. At most four show; more scroll inside the list. */

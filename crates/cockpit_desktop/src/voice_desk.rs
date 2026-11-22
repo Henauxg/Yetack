@@ -1,5 +1,5 @@
 //! Dictation in the window: the talk key and the mic button start and stop recordings, the
-//! worker's events update [`VoiceState`], and the final text goes into the message.
+//! worker's events update [`VoiceState`], and the final text goes into the message or a comment.
 //!
 //! The state and the level are signals of their own: the level changes 30 times a second, and
 //! only the meter reads it.
@@ -7,21 +7,25 @@
 use dioxus::prelude::*;
 
 use crate::connection::Cockpit;
-use crate::state::voice::{DownloadFrom, VoiceState};
+use crate::state::voice::{DownloadFrom, Field, VoiceState};
 
 /// What the window asks of dictation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum VoiceCommand {
-    /// The talk key went down.
-    Press,
+    /// The talk key went down, in the field it names.
+    Press(Field),
     /// The talk key came up.
     Release,
     /// The window lost the focus with the talk key down.
     Blur,
-    /// The mic button.
-    Click,
+    /// The mic button of the message or of the comment field.
+    Click(Field),
     /// Esc, or dictation turned off.
     Cancel,
+    /// Enter in the field the dictation goes to.
+    Stop,
+    /// The comment field closed, or another one opened.
+    CommentChanged,
     Download(DownloadFrom),
     CancelDownload,
     RemoveModel,
@@ -48,6 +52,19 @@ pub fn use_voice(cockpit: Cockpit) -> VoiceDesk {
     let level = use_signal(|| 0.0_f32);
     let commands = use_coroutine(move |commands: UnboundedReceiver<VoiceCommand>| {
         run(cockpit, state, level, commands)
+    });
+    // A comment that closes, or gives way to another, stops the recording into it.
+    let comment = use_memo(move || {
+        cockpit
+            .drafts
+            .read()
+            .quote_editor
+            .as_ref()
+            .map(|editor| editor.opening)
+    });
+    use_effect(move || {
+        comment();
+        commands.send(VoiceCommand::CommentChanged);
     });
     use_context_provider(|| VoiceDesk {
         state,

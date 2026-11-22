@@ -1,6 +1,7 @@
 //! A dialog's height follows its content with an animation: a list that gets shorter, a tab
 //! switch or a note that shows. CSS cannot animate a height that follows the content, so a page
 //! script watches each dialog's parts and animates the dialog from its last height to its new one.
+//! [`follow_content`] does the same for one element that is no dialog.
 
 use dioxus::prelude::*;
 use serde::Serialize;
@@ -165,8 +166,8 @@ if (!window.agentsCockpitDialogHeight) {
 }
 "#;
 
-/// The names the script reads: the motion tokens of the interface rules, a growth's and a
-/// shrink's, and the classes it finds dialogs by.
+/// The names the scripts read: the motion tokens of the interface rules, a growth's and a
+/// shrink's, and, for the dialogs' script, the classes it finds dialogs by.
 #[derive(Serialize)]
 struct Settings {
     dialog_class: &'static str,
@@ -185,6 +186,81 @@ const SETTINGS: Settings = Settings {
     shrink_duration: "--motion-out",
     shrink_easing: "--ease-in",
 };
+
+/// What [`follow_content`]'s element sends, bubbling, once its height changed or started to: a
+/// script that places it by its height places it again, in the same frame.
+pub const HEIGHT_EVENT: &str = "cockpit-height";
+
+/// Animates one element's height as its content grows or shrinks, such as text that wraps onto
+/// more lines. Given the element's id, it watches the element's first child, its content, and
+/// animates the element from its last height to the new one. The element clips its content. An
+/// element in a `leaving` one plays that exit alone. It reads the motion tokens of `Settings`.
+const FOLLOW_SCRIPT: &str = r#"
+const id = await dioxus.recv();
+const heightEvent = await dioxus.recv();
+const settings = await dioxus.recv();
+const clip = document.getElementById(id);
+const body = clip?.firstElementChild;
+if (body) {
+  const token = (name) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+  const millis = (name) => {
+    const value = token(name);
+    const number = parseFloat(value);
+    if (Number.isNaN(number)) {
+      return 0;
+    }
+    return value.endsWith("ms") ? number : number * 1000;
+  };
+  let height = body.offsetHeight;
+  let running = null;
+  const resize = new ResizeObserver(() => {
+    if (!clip.isConnected) {
+      resize.disconnect();
+      return;
+    }
+    const to = body.offsetHeight;
+    if (Math.abs(to - height) < 1) {
+      return;
+    }
+    // A running animation goes on from where it is.
+    const from = running === null ? height : clip.offsetHeight;
+    running?.cancel();
+    running = null;
+    height = to;
+    const grows = to > from;
+    const duration = millis(grows ? settings.grow_duration : settings.shrink_duration);
+    if (duration > 0 && clip.closest(".leaving") === null) {
+      const animation = clip.animate(
+        [{ height: `${from}px` }, { height: `${to}px` }],
+        { duration, easing: token(grows ? settings.grow_easing : settings.shrink_easing) },
+      );
+      animation.onfinish = () => {
+        if (running === animation) {
+          running = null;
+        }
+      };
+      running = animation;
+    }
+    // Sent from here, after the animation starts: an observer of the element's own size sees
+    // the new content's full height first in this frame.
+    clip.dispatchEvent(new Event(heightEvent, { bubbles: true }));
+  });
+  resize.observe(body);
+}
+"#;
+
+/// Animates the height of the element `id` names, which is on the page, as its content changes.
+/// Run it when the element mounts.
+pub fn follow_content(id: &'static str) {
+    let script = document::eval(FOLLOW_SCRIPT);
+    let sent = script
+        .send(id)
+        .and_then(|()| script.send(HEIGHT_EVENT))
+        .and_then(|()| script.send(SETTINGS));
+    if let Err(error) = sent {
+        tracing::warn!("cannot animate the height of {id}: {error}");
+    }
+}
 
 /// Starts the script once, for every dialog the window shows from then on.
 pub fn start() {
@@ -209,6 +285,34 @@ mod tests {
                 SCRIPT.contains(&format!("settings.{name}")),
                 "the script does not read {name}"
             );
+        }
+    }
+
+    /// A name the script reads that the app does not send is `undefined` there, with no error.
+    #[test]
+    fn the_follow_script_reads_the_motion_settings_the_app_sends() {
+        let value = serde_json::to_value(SETTINGS).unwrap();
+        let sent = value.as_object().unwrap();
+        let read: Vec<&str> = FOLLOW_SCRIPT
+            .split("settings.")
+            .skip(1)
+            .filter_map(|rest| {
+                rest.split(|c: char| !c.is_ascii_alphanumeric() && c != '_')
+                    .next()
+            })
+            .collect();
+
+        assert_eq!(
+            read,
+            [
+                "grow_duration",
+                "shrink_duration",
+                "grow_easing",
+                "shrink_easing"
+            ]
+        );
+        for name in read {
+            assert!(sent.contains_key(name), "the app does not send {name}");
         }
     }
 }

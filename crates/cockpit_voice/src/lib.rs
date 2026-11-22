@@ -6,10 +6,11 @@
 //!
 //! The speech is cut at its pauses. Each finished segment is transcribed once, while the user
 //! goes on, so only the last one is left when the recording stops. Silero checks each segment and
-//! skips the ones without speech. The investigation behind these choices is in
-//! docs/voice/investigation.md.
+//! skips the ones without speech, and the text drops filler words (um, uh). The investigation
+//! behind these choices is in docs/voice/investigation.md.
 
 mod catalog;
+mod fillers;
 mod level_control;
 mod live_text;
 mod microphone;

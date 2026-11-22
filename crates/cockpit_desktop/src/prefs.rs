@@ -1853,6 +1853,7 @@ mod tests {
                 new_agents: PaneState::Open,
                 agents: BTreeMap::new(),
                 width: Some(300),
+                cleared: BTreeMap::new(),
             },
             blocks: BlocksPrefs::default(),
             accounts: AccountPrefs::default(),

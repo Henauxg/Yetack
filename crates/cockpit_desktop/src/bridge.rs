@@ -10,12 +10,15 @@ use serde::{Deserialize, Serialize};
 use crate::connection::Cockpit;
 use crate::keymap::{Command, Reach};
 use crate::state::sidebar_keys::SidebarItem;
-use crate::state::voice::{VoiceState, dictation_target};
+use crate::state::voice::{Field, VoiceState, dictation_target};
 use crate::state::{
     ANSWER_KEYS, AppState, Dialog, KeyPress, PAGE_RELOAD_KEY, PaletteOrigin, Popover, Utf16Offset,
     WaitingKind, accounts, actions, agent_map, find, handle_key, sidebar_keys,
 };
-use crate::ui::{FILE_VIEW_ID, FILES_PANE_ID, FIND_FIELD_IDS, focus_after_find, sidebar_item_id};
+use crate::ui::{
+    COMMENT_FIELD_ID, FILE_VIEW_ID, FILES_PANE_ID, FIND_FIELD_IDS, focus_after_find,
+    sidebar_item_id,
+};
 use crate::voice_desk::{VoiceCommand, VoiceDesk};
 
 /// The composer's text area, whose keys the script treats apart.
@@ -71,11 +74,13 @@ const PASTED_IMAGE: &str = "The pasted image";
 /// `BridgeMessage`, `KeyPress`, `KeyTarget` and `KeyMode`.
 const SCRIPT: &str = r#"
 const settings = await dioxus.recv();
-let mode = { answer_letters: false, answer_numbers: false, question_tabs: false, palette: false, dialog: false, bindings: [], talk: null, dictating: false };
+let mode = { answer_letters: false, answer_numbers: false, question_tabs: false, palette: false, dialog: false, bindings: [], talk: null, dictating: false, enter_stops: null };
 const send = (message) => dioxus.send(message);
 // The talk key's binding while it is down: its release, or the window's blur, stops the
 // dictation it holds. Kept from the press, since the mode may drop the talk key meanwhile.
 let talking = null;
+// An Enter that stopped a dictation is down: its repeats send nothing, even once the text is in.
+let enterStopped = false;
 // The sidebar row or machine header that has the focus, as the app names it.
 const sidebarItem = (element) => {
   const data = element?.dataset;
@@ -99,6 +104,7 @@ window.addEventListener("focus", () => send({ type: "focus", focused: true }));
 window.addEventListener("blur", () => {
   send({ type: "focus", focused: false });
   // A key that comes up in another window sends no keyup here.
+  enterStopped = false;
   if (talking !== null) {
     talking = null;
     send({ type: "talk", action: "blur" });
@@ -229,6 +235,24 @@ document.addEventListener("keydown", (event) => {
   }
   const command = event.ctrlKey || event.metaKey;
   const plain = !command && !event.altKey;
+  const comment = target !== null && target.id === settings.comment_field_id;
+  // Enter stops the dictation, as the talk key does, and the next one sends the message or adds
+  // the quote. A button keeps its Enter.
+  const stops = mode.enter_stops === "message"
+    ? composer || (where === "page" && !(target !== null && target.matches('button, [role="button"]')))
+    : mode.enter_stops === "comment" && comment;
+  if (key === "Enter" && stops && plain && !event.shiftKey && !mode.dialog) {
+    event.preventDefault();
+    if (!event.repeat) {
+      enterStopped = true;
+      send({ type: "talk", action: "stop" });
+    }
+    return;
+  }
+  if (key === "Enter" && event.repeat && enterStopped) {
+    event.preventDefault();
+    return;
+  }
   const letter = key.length === 1 ? key.toLowerCase() : "";
   if (command && !event.altKey && (letter === "z" || (letter === "y" && !event.shiftKey)) && isTextField(target)) {
     event.preventDefault();
@@ -256,11 +280,11 @@ document.addEventListener("keydown", (event) => {
   // The talk key dictates: its press and its release go to the app, and its repeats nowhere.
   const talk = mode.talk;
   if (talk != null && pressed === talk.key && talk.ctrl === command && talk.alt === event.altKey
-    && talk.shift === event.shiftKey && where !== "field" && !mode.dialog) {
+    && talk.shift === event.shiftKey && (where !== "field" || comment) && !mode.dialog) {
     event.preventDefault();
     if (!event.repeat && talking === null) {
       talking = talk;
-      send({ type: "talk", action: "press" });
+      send({ type: "talk", action: "press", field: comment ? "comment" : "message" });
     }
     return;
   }
@@ -331,6 +355,9 @@ document.addEventListener("keydown", (event) => {
 }, true);
 // The talk key's release, or the release of one of its modifiers, stops the dictation it holds.
 document.addEventListener("keyup", (event) => {
+  if (event.key === "Enter") {
+    enterStopped = false;
+  }
   const talk = talking;
   if (talk === null) {
     return;
@@ -576,6 +603,8 @@ struct FieldText {
 #[derive(Debug, Serialize)]
 struct Settings {
     composer_id: &'static str,
+    /// A quote's comment field, where the talk key dictates too.
+    comment_field_id: &'static str,
     /// Its text goes to the app with the caret, as the composer's does, for its "/" palette.
     new_agent_prompt_id: &'static str,
     /// The fields where Backspace at the end of the text goes up a folder.
@@ -640,6 +669,9 @@ struct KeyMode {
     talk: Option<Binding>,
     /// A dictation runs: Esc stops it first.
     dictating: bool,
+    /// The field on screen a dictation runs into, where Enter stops it rather than send the
+    /// message or add the quote.
+    enter_stops: Option<Field>,
 }
 
 impl KeyMode {
@@ -681,6 +713,10 @@ impl KeyMode {
             bindings: bindings(state),
             talk: talks.then(|| binding(state, Command::Talk)),
             dictating,
+            enter_stops: voice
+                .writing()
+                .filter(|dictation| state.ui.selected == Some(dictation.agent))
+                .map(|dictation| dictation.to.field()),
         }
     }
 }
@@ -738,6 +774,9 @@ enum BridgeMessage {
     },
     Talk {
         action: TalkAction,
+        /// Where a press happened. The other actions name no field.
+        #[serde(default)]
+        field: Field,
     },
 }
 
@@ -751,6 +790,8 @@ enum TalkAction {
     Blur,
     /// Esc, while a dictation runs.
     Cancel,
+    /// Enter, in the field on screen a dictation runs into.
+    Stop,
 }
 
 /// Runs the script for the window's life, and keeps its key mode in step with the state.
@@ -759,6 +800,7 @@ pub fn use_bridge(cockpit: Cockpit, voice: VoiceDesk) {
         let mut script = document::eval(SCRIPT);
         if let Err(error) = script.send(Settings {
             composer_id: COMPOSER_ID,
+            comment_field_id: COMMENT_FIELD_ID,
             new_agent_prompt_id: NEW_AGENT_PROMPT_ID,
             path_field_ids: [OPEN_FILE_FIELD_ID, FOLDER_FIELD_ID],
             title_field_ids: [HEADER_TITLE_FIELD_ID, ROW_TITLE_FIELD_ID],
@@ -800,11 +842,12 @@ pub fn use_bridge(cockpit: Cockpit, voice: VoiceDesk) {
 
 fn receive(cockpit: Cockpit, voice: VoiceDesk, message: BridgeMessage) {
     match message {
-        BridgeMessage::Talk { action } => voice.send(match action {
-            TalkAction::Press => VoiceCommand::Press,
+        BridgeMessage::Talk { action, field } => voice.send(match action {
+            TalkAction::Press => VoiceCommand::Press(field),
             TalkAction::Release => VoiceCommand::Release,
             TalkAction::Blur => VoiceCommand::Blur,
             TalkAction::Cancel => VoiceCommand::Cancel,
+            TalkAction::Stop => VoiceCommand::Stop,
         }),
         BridgeMessage::Key(press) => {
             let mut find_closed = false;
@@ -1053,7 +1096,7 @@ mod tests {
     use crate::machine::MachineId;
     use crate::state::find::FindPane;
     use crate::state::projects::ProjectKey;
-    use crate::state::voice::VoicePhase;
+    use crate::state::voice::{Destination, VoicePhase};
     use crate::state::{state_with, summary};
 
     #[test]
@@ -1119,6 +1162,7 @@ mod tests {
         let recording = VoiceState {
             phase: VoicePhase::Recording {
                 agent: AgentId::new(1),
+                to: Destination::Message,
                 since: Instant::now(),
                 latched: true,
             },
@@ -1145,6 +1189,59 @@ mod tests {
         assert_eq!(off.talk, None);
         assert!(!on.dictating);
         assert!(exited_recording.dictating);
+    }
+
+    #[test]
+    fn enter_stops_a_dictation_in_the_field_it_writes_into_on_screen() {
+        let mut state = state_with(vec![
+            summary(1, AgentStatus::Idle),
+            summary(2, AgentStatus::Idle),
+        ]);
+        state.ui.selected = Some(AgentId::new(1));
+        let ready = VoiceState {
+            available: true,
+            ..VoiceState::default()
+        };
+        let recording = |to| VoiceState {
+            phase: VoicePhase::Recording {
+                agent: AgentId::new(1),
+                to,
+                since: Instant::now(),
+                latched: true,
+            },
+            ..ready.clone()
+        };
+        let finishing = |to| VoiceState {
+            phase: VoicePhase::Finishing {
+                agent: AgentId::new(1),
+                to,
+            },
+            ..ready.clone()
+        };
+        let comment = Destination::Comment { opening: 5 };
+        let enter_stops =
+            |state: &AppState, voice: &VoiceState| KeyMode::new(state, voice).enter_stops;
+
+        assert_eq!(enter_stops(&state, &ready), None);
+        assert_eq!(
+            enter_stops(&state, &recording(Destination::Message)),
+            Some(Field::Message)
+        );
+        assert_eq!(
+            enter_stops(&state, &recording(comment)),
+            Some(Field::Comment)
+        );
+        // The last words are not in yet: Enter sends nothing, and adds no quote.
+        assert_eq!(
+            enter_stops(&state, &finishing(Destination::Message)),
+            Some(Field::Message)
+        );
+        assert_eq!(
+            enter_stops(&state, &finishing(comment)),
+            Some(Field::Comment)
+        );
+        state.ui.selected = Some(AgentId::new(2));
+        assert_eq!(enter_stops(&state, &recording(comment)), None);
     }
 
     #[test]
@@ -1218,6 +1315,7 @@ mod tests {
 
         let settings = Settings {
             composer_id: COMPOSER_ID,
+            comment_field_id: COMMENT_FIELD_ID,
             new_agent_prompt_id: NEW_AGENT_PROMPT_ID,
             path_field_ids: [OPEN_FILE_FIELD_ID, FOLDER_FIELD_ID],
             title_field_ids: [HEADER_TITLE_FIELD_ID, ROW_TITLE_FIELD_ID],
@@ -1257,6 +1355,7 @@ mod tests {
                 reach: Reach::OutsideFields,
             }),
             dictating: true,
+            enter_stops: Some(Field::Comment),
         };
         let field_text = FieldText {
             field_id: COMPOSER_ID,
@@ -1270,6 +1369,7 @@ mod tests {
             serde_json::to_value(settings).unwrap(),
             json!({
                 "composer_id": "composer",
+                "comment_field_id": "quote-comment",
                 "new_agent_prompt_id": "new-agent-prompt",
                 "path_field_ids": ["open-file-path", "new-agent-folder"],
                 "title_field_ids": ["agent-title-field", "row-title-field"],
@@ -1312,6 +1412,7 @@ mod tests {
                     "reach": "outside_fields",
                 },
                 "dictating": true,
+                "enter_stops": "comment",
             })
         );
         for (action, expected) in [
@@ -1319,11 +1420,19 @@ mod tests {
             ("release", TalkAction::Release),
             ("blur", TalkAction::Blur),
             ("cancel", TalkAction::Cancel),
+            ("stop", TalkAction::Stop),
         ] {
             let message = format!(r#"{{"type":"talk","action":"{action}"}}"#);
             assert!(matches!(
                 serde_json::from_str(&message).unwrap(),
-                BridgeMessage::Talk { action } if action == expected
+                BridgeMessage::Talk { action, field: Field::Message } if action == expected
+            ));
+        }
+        for (field, expected) in [("message", Field::Message), ("comment", Field::Comment)] {
+            let message = format!(r#"{{"type":"talk","action":"press","field":"{field}"}}"#);
+            assert!(matches!(
+                serde_json::from_str(&message).unwrap(),
+                BridgeMessage::Talk { action: TalkAction::Press, field } if field == expected
             ));
         }
         assert_eq!(

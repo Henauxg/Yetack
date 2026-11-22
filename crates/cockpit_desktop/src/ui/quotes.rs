@@ -19,13 +19,16 @@ use crate::state::quotes::{self, EditorTarget, Passage, Quote, QuoteAnchor, Quot
 use crate::state::{AppState, Drafts, terminals};
 use crate::ui::blocks::{BLOCK_CARD_CLASS, BLOCKS_CLASS};
 use crate::ui::chat_scroll::{CHAT_SCROLL_ID, ENTRY_CLASS, REVEALED_CLASS};
+use crate::ui::dialog_height;
 use crate::ui::icons::{Icon, IconKind};
 use crate::ui::markdown::MARKDOWN_CLASS;
 use crate::ui::presence::{Shown, use_presence};
 use crate::ui::transcript::USER_BUBBLE_CLASS;
+use crate::ui::voice::{CommentMic, CommentWords};
+use crate::voice_desk::VoiceDesk;
 
 /// The field where a comment is written.
-const COMMENT_FIELD_ID: &str = "quote-comment";
+pub const COMMENT_FIELD_ID: &str = "quote-comment";
 /// Covers the chat area. The script places its children.
 const LAYER_ID: &str = "quote-layer";
 const REPLY_BUTTON_ID: &str = "quote-reply";
@@ -52,6 +55,11 @@ const FIELD_CLASS: &str = "quote-editor";
 const COMMENT_TEXT_CLASS: &str = "quote-comment";
 /// A field that closes and plays its exit, which the script leaves where it is.
 const LEAVING_CLASS: &str = "leaving";
+/// Marks the comment field while a dictation runs into it: Enter there stops the dictation (the
+/// page's key script sends it) and adds no quote.
+const DICTATING_ATTRIBUTE: &str = "data-dictating";
+/// The comment field's last row, the key hints or a dictation's words, whose height follows them.
+const FIELD_FOOT_ID: &str = "quote-field-foot";
 
 /// How the comment field shows: as a note in the strip, or as a card under its passage.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, IntoStaticStr, VariantArray)]
@@ -282,7 +290,8 @@ const place = () => {
     highlight("quote-pending", []);
     return;
   }
-  watch(box);
+  const editor = document.querySelector(`#${settings.layer_id} .${settings.field_class}:not(.${settings.leaving_class})`);
+  watch(box, editor);
   const view = box.getBoundingClientRect();
   const column = box.firstElementChild;
   const textRight = column === null ? view.right : column.getBoundingClientRect().right - parseFloat(getComputedStyle(column).paddingRight);
@@ -290,7 +299,6 @@ const place = () => {
   placeReply(area, view);
   // The quotes and the passage being commented, in the chat's order.
   const items = layout.quotes.map((quote) => ({ key: `${layout.agent}:${quote.id}`, id: String(quote.id), anchor: quote.anchor, raw: quote.raw }));
-  const editor = document.querySelector(`#${settings.layer_id} .${settings.field_class}:not(.${settings.leaving_class})`);
   if (layout.editor !== null) {
     const id = layout.editor.quote === null ? settings.new_field : String(layout.editor.quote);
     if (id === settings.new_field) {
@@ -360,9 +368,17 @@ const place = () => {
     }
     const first = item.rects[0];
     const last = item.rects[item.rects.length - 1];
+    // The field keeps its form, in the strip or as a card, while its passage stays where it was
+    // when the form was chosen: growing or shrinking never moves it from one to the other.
+    const passageTop = first === undefined ? "" : String(Math.round(first.top));
+    const kept = editing && editor.dataset.formAt === passageTop;
+    if (kept && editor.dataset.fallback !== undefined) {
+      continue;
+    }
     // The field is measured in the strip's width. As a card it is wider, so its text takes fewer
     // lines: measured there, it would fit, move back, grow, and fall back again on every round.
     if (editing) {
+      editor.dataset.formAt = passageTop;
       delete editor.dataset.fallback;
     }
     if (first === undefined || !(last.bottom > view.top && first.top < view.bottom)) {
@@ -373,19 +389,24 @@ const place = () => {
       }
       continue;
     }
-    shown.push({ id: item.id, group, note, editing, first, last });
+    shown.push({ id: item.id, group, note, editing, kept, first, last });
   }
   // The tops of the notes, each below the one above, and which fit above `limit`. The notes keep
   // the chat's order: once one has no room, none after it shows. A field with no room shows as a
-  // card instead, and leaves its place to the notes after it.
+  // card instead, and leaves its place to the notes after it. A field kept in the strip stays
+  // there, and moves up as far as the notes above it allow.
   const stack = (heights, limit) => {
     const tops = [];
     const fits = [];
     let below = -Infinity;
     let blocked = false;
     for (const [index, entry] of shown.entries()) {
-      const top = Math.max(entry.first.top - 10, floor, below + 8);
-      const fit = !blocked && top + heights[index] <= limit;
+      let top = Math.max(entry.first.top - 10, floor, below + 8);
+      let fit = !blocked && top + heights[index] <= limit;
+      if (entry.kept && !fit) {
+        top = Math.max(floor, below + 8, Math.min(top, limit - heights[index]));
+        fit = true;
+      }
       tops.push(top);
       fits.push(fit);
       if (fit) {
@@ -528,7 +549,14 @@ const place = () => {
       x = first === undefined ? view.left + 20 : first.left;
       x = Math.min(Math.max(x, area.left + 8), textRight - width);
       y = last === undefined ? view.bottom - height - 8 : last.bottom + 8;
-      if (y + height > view.bottom - 8 && first !== undefined) {
+      // The side is chosen where the passage is, and kept while only the field grows or shrinks:
+      // a field under its passage that grows past the view would jump above it.
+      const passageTop = first === undefined ? "" : String(Math.round(first.top));
+      if (editor.dataset.passageAt !== passageTop) {
+        editor.dataset.passageAt = passageTop;
+        editor.dataset.passageSide = y + height > view.bottom - 8 && first !== undefined ? "up" : "down";
+      }
+      if (editor.dataset.passageSide === "up" && first !== undefined) {
         y = first.top - height - 8;
       }
     }
@@ -775,10 +803,18 @@ const schedule = () => {
     });
   }
 };
-const resizes = new ResizeObserver(schedule);
+// The comment field's own height places it in the same frame: a field above its passage that
+// grows would cover the passage for a frame.
+const resizes = new ResizeObserver((entries) => {
+  if (entries.some((entry) => entry.target.classList.contains(settings.field_class))) {
+    place();
+  } else {
+    schedule();
+  }
+});
 let watched = [];
-const watch = (box) => {
-  const now = [box, box.firstElementChild, document.querySelector(`.${settings.blocks_class}`), layer()].filter((element) => element !== null);
+const watch = (box, editor) => {
+  const now = [box, box.firstElementChild, document.querySelector(`.${settings.blocks_class}`), layer(), editor].filter((element) => element !== null);
   if (now.length === watched.length && now.every((element, index) => element === watched[index])) {
     return;
   }
@@ -800,6 +836,12 @@ document.addEventListener("scroll", () => {
   }
 }, { capture: true, passive: true });
 document.addEventListener("selectionchange", schedule);
+// A part of the comment field that animates its height has set its first frame.
+document.addEventListener(settings.height_event, (event) => {
+  if (event.target instanceof Element && event.target.closest(`.${settings.field_class}`) !== null) {
+    place();
+  }
+});
 window.addEventListener("resize", schedule);
 // A press on Reply keeps the selection it replies to.
 document.addEventListener("pointerdown", (event) => {
@@ -919,7 +961,11 @@ document.addEventListener("keydown", (event) => {
   }
   if (target instanceof HTMLTextAreaElement && target.id === settings.comment_field_id && event.key === "Enter" && !event.shiftKey) {
     event.preventDefault();
-    send({ type: "commit", text: target.value });
+    // That Enter stops the dictation: the page's key script sends it. Its repeats add nothing,
+    // even once the dictation's text is in.
+    if (!event.repeat && !target.hasAttribute(settings.dictating_attribute)) {
+      send({ type: "commit", text: target.value });
+    }
     return;
   }
   if (target instanceof Element && target.matches("[data-quote-link]") && (event.key === "Enter" || event.key === " ")) {
@@ -950,6 +996,10 @@ struct Settings {
     links_id: &'static str,
     replied_host_id: &'static str,
     comment_field_id: &'static str,
+    /// Marks the comment field while a dictation runs into it: Enter there adds no quote.
+    dictating_attribute: &'static str,
+    /// What a part of the comment field sends once its height changed or started to.
+    height_event: &'static str,
     revealed_class: &'static str,
     reply_key: &'static str,
     /// Marks the element that records a shortcut, whose keys the script leaves alone.
@@ -996,6 +1046,8 @@ impl Settings {
             links_id: LINKS_ID,
             replied_host_id: REPLIED_HOST_ID,
             comment_field_id: COMMENT_FIELD_ID,
+            dictating_attribute: DICTATING_ATTRIBUTE,
+            height_event: dialog_height::HEIGHT_EVENT,
             revealed_class: REVEALED_CLASS,
             reply_key: REPLY_KEY,
             records_keys_attribute: bridge::RECORDS_KEYS_ATTRIBUTE,
@@ -1431,7 +1483,8 @@ fn RemoveButton(agent: AgentId, id: QuoteId) -> Element {
 }
 
 /// The comment field: a note in the strip, or a card under the passage. Enter adds the quote or
-/// saves the comment, and Esc closes it.
+/// saves the comment, and Esc closes it. While a dictation runs into it, its words show under it
+/// in the place of the key hints, and Enter and Esc stop and cancel the dictation first.
 #[component]
 fn CommentField(
     editor: QuoteEditor,
@@ -1440,7 +1493,12 @@ fn CommentField(
     leaving: bool,
 ) -> Element {
     let cockpit: Cockpit = use_context();
+    let voice: VoiceDesk = use_context();
     let agent = editor.agent;
+    let opening = editor.opening;
+    // A memo: the words change twice a second, and only the row under the field shows them.
+    let dictating = use_memo(move || voice.state.read().writes_comment(opening))();
+    let hints = use_presence((!dictating).then_some(()));
     let (quote, passage, hint) = match &editor.target {
         EditorTarget::New(passage) => (NEW_FIELD.to_owned(), Some(passage.text.clone()), "adds it"),
         EditorTarget::Existing(id) => (id.get().to_string(), None, "saves it"),
@@ -1470,6 +1528,7 @@ fn CommentField(
                 }
                 span { class: "quote-note-state", "{state}" }
                 span { class: "spacer" }
+                CommentMic { agent, opening }
                 button {
                     class: "icon-button tiny",
                     title: "Cancel (Esc)",
@@ -1491,13 +1550,31 @@ fn CommentField(
                 aria_label: "Your comment on the quote",
                 placeholder: "Your comment",
                 initial_value: "{editor.text}",
+                "data-dictating": dictating.then_some(""),
                 oninput: move |event: FormEvent| cockpit.with_drafts(|_, drafts| quotes::type_comment(drafts, event.value())),
             }
-            span { class: "quote-hint",
-                kbd { "Enter" }
-                " {hint} · "
-                kbd { "Esc" }
-                " cancels"
+            div {
+                id: (!leaving).then_some(FIELD_FOOT_ID),
+                class: "quote-field-foot",
+                onmounted: move |_| dialog_height::follow_content(FIELD_FOOT_ID),
+                // The hints and the words share one place while they swap.
+                div { class: "quote-field-foot-body",
+                    if let Some(hints) = hints {
+                        span {
+                            // The hints of a field just opened take no entrance of their own.
+                            class: match (hints.leaving, hints.opening > 1) {
+                                (true, _) => "quote-hint leaving",
+                                (false, true) => "quote-hint returning",
+                                (false, false) => "quote-hint",
+                            },
+                            kbd { "Enter" }
+                            " {hint} · "
+                            kbd { "Esc" }
+                            " cancels"
+                        }
+                    }
+                    CommentWords { opening }
+                }
             }
         }
     }

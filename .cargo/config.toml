@@ -6,3 +6,6 @@ CLIPPY_CONF_DIR = { value = "docs/standards/rust", relative = true, force = true
 # not for the building machine's own: a release must run on other CPUs. cockpit_voice::supported
 # checks the same at run time. ARM builds ignore these.
 TRANSCRIBE_CMAKE_ARGS = "-DGGML_NATIVE=OFF -DGGML_AVX2=ON -DGGML_FMA=ON -DGGML_F16C=ON -DGGML_BMI2=ON"
+# Visual Studio's build compiles transcribe.cpp's files one at a time, since many share a name
+# (model.cpp). Its MultiToolTask compiles them in parallel: 78 s down to 22 s on 28 threads.
+UseMultiToolTask = "true"
