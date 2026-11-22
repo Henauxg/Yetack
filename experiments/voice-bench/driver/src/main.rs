@@ -24,7 +24,7 @@ const HELP: &str = "voice-bench <command>
   tts --set <name> [--again]   recordings made by Windows' speech synthesis, for smoke tests
   run --set <name> --config <name,...|all> [--threads 4] [--pace realtime|fast]
       [--chunk-ms 100] [--terms] [--only <id,...>] [--affinity <hex mask>]
-      [--normalize] [--engine-args='--backend vulkan']
+      [--normalize] [--level-control] [--engine-args='--backend vulkan']
                                runs engines on a set of recordings and reports the results
   live --config <name> [--threads 4] [--terms]
                                talk to one engine through the microphone

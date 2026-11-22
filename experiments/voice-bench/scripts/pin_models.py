@@ -12,6 +12,7 @@ MODELS = [
     ("nemotron-en-q8", "handy-computer/nemotron-speech-streaming-en-0.6b-gguf", ["nemotron-speech-streaming-en-0.6b-Q8_0.gguf"], "NVIDIA Open Model License", "English, cache-aware streaming"),
     ("nemotron-en-q4", "handy-computer/nemotron-speech-streaming-en-0.6b-gguf", ["nemotron-speech-streaming-en-0.6b-Q4_K_M.gguf"], "NVIDIA Open Model License", "the same, 4-bit"),
     ("unified-en-q8", "handy-computer/parakeet-unified-en-0.6b-gguf", ["parakeet-unified-en-0.6b-Q8_0.gguf"], "NVIDIA Open Model License", "English, offline and buffered streaming"),
+    ("tdt-v2-q8", "handy-computer/parakeet-tdt-0.6b-v2-gguf", ["parakeet-tdt-0.6b-v2-Q8_0.gguf"], "CC-BY-4.0", "English, offline"),
     ("tdt-v3-q8", "handy-computer/parakeet-tdt-0.6b-v3-gguf", ["parakeet-tdt-0.6b-v3-Q8_0.gguf"], "CC-BY-4.0", "25 languages, offline"),
     ("ultra-q8", "handy-computer/parakeet-ultra-gguf", ["parakeet-ultra-Q8_0.gguf"], "CC-BY-4.0", "Moondream's tuned Parakeet TDT, 25 languages, offline"),
     ("whisper-turbo-q8", "handy-computer/whisper-large-v3-turbo-gguf", ["whisper-large-v3-turbo-Q8_0.gguf"], "MIT", "99 languages, offline, initial prompt"),

@@ -184,6 +184,21 @@ model = "qwen3-asr-0.6b-q8"
 vad_model = "silero-vad"
 args = ["--strategy", "segmented", "--step-ms", "1000", "--vad-mode", "check"]
 
+# English-only models cut at pauses, as the app runs Ultra.
+[[config]]
+name = "ggml-tdt-v2-segmented-check"
+engine = "engine_transcribe_cpp"
+model = "tdt-v2-q8"
+vad_model = "silero-vad"
+args = ["--strategy", "segmented", "--step-ms", "500", "--vad-mode", "check"]
+
+[[config]]
+name = "ggml-unified-en-segmented-check"
+engine = "engine_transcribe_cpp"
+model = "unified-en-q8"
+vad_model = "silero-vad"
+args = ["--strategy", "segmented", "--step-ms", "500", "--vad-mode", "check"]
+
 # Ultra cut at pauses with fewer live refreshes, for slower CPUs.
 [[config]]
 name = "ggml-ultra-segmented-check-1s"

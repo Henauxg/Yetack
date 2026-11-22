@@ -155,6 +155,36 @@ On the slow CPU, Ultra cut at pauses uses most of its time to transcribe the cur
 
 With a 1 s step, Ultra alone stays within 1 to 2 s on the slow CPU. The hybrid gives smoother live text there, at the cost of a second model: 730 MB more to download and about 600 MB more memory. Its live text is also rougher (18.8% against 11.6% on the fast CPU), and it changes at each pause when Ultra's text replaces Nemotron's.
 
+### English-only models
+
+Parakeet Ultra takes no language setting: it picks the language of each segment itself, and an English sentence with a French-sounding word can come out in French. Two English-only models, run as the app runs Ultra: cut at pauses, Silero check, and the app's own level control over each recording (`--level-control`), in the same runs as Ultra. Both GGUF files come from the Handy team's conversions, and transcribe.cpp 0.4.2 runs them offline.
+
+On four fast cores:
+
+| Model | WER | Live WER | Terms | Final (p90) | Delay | First text | Busy | Private | Recordings with French |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| Parakeet unified EN | 10.7% (46 errors) | 10.2% | 72% | 0.23 s (0.49 s) | 0.15 s | 0.51 s | 34% | 582 MB | 0 of 24 |
+| Parakeet Ultra | 11.4% (49 errors) | 11.4% | 71% | 0.25 s (0.50 s) | 0.16 s | 1.03 s | 36% | 619 MB | 1 of 24 |
+| Parakeet TDT 0.6B v2 | 14.4% (62 errors) | 14.7% | 68% | 0.23 s (0.50 s) | 0.00 s¹ | 0.51 s | 34% | 581 MB | 0 of 24 |
+
+On four efficiency cores, the final WER is the same:
+
+| Model | Live WER | Final (p90) | Delay | Busy |
+| --- | --- | --- | --- | --- |
+| Parakeet unified EN | 16.3% | 1.03 s (2.31 s) | 0.47 s | 84% |
+| Parakeet Ultra | 18.1% | 1.03 s (2.03 s) | 0.49 s | 85% |
+| Parakeet TDT 0.6B v2 | 21.9% | 1.02 s (2.14 s) | 0.22 s | 84% |
+
+¹ v2 writes more words than were said ("T C P" for TCP), and the delay counts words, so its count runs ahead of the speech and this number flatters it.
+
+- The 430 words of the set give 46, 49 and 62 errors. Scaling each recording to a fixed peak instead of the level control gives the same order: 10.9%, 11.6% and 14.0%.
+- Ultra wrote one recording in French: "format.rs" and "colons" came out as "format d'interest" and "colonnes". The English models never left English. Unified EN wrote "format.rs" and "colons" there.
+- Unified EN's own errors are mostly spelling: "sub-agents", "UseID", "Clippid".
+- v2 is the least accurate: it writes "T C P", "on update herical sites" for "and update every call site", and makes 11 errors in the long recording, where the others make 2 and 5.
+- The three cost the same: the same encoder size, the same CPU and the same memory. Ultra's first live text comes 0.5 s later than the others'.
+- Unified EN is under the NVIDIA Open Model License, Ultra and v2 under CC-BY-4.0.
+- One speaker and 24 prompts: 3 errors apart is within what another reading could change. The language switches are the clear difference.
+
 ## Findings
 
 - **The level matters.** Nemotron returned nothing on the quietest recording. The app must even out the microphone's level before the model.
@@ -164,6 +194,7 @@ With a 1 s step, Ultra alone stays within 1 to 2 s on the slow CPU. The hybrid g
 - **The GPU removes every limit.** The most accurate designs, with hints, give their final text in 0.1 to 0.2 s and leave the CPU almost idle.
 - **On Windows, clang builds faster ggml code than Microsoft's compiler**: 13 to 20% less CPU in the whole model.
 - **One model can serve every CPU** if the live text's step adapts to the machine: 0.5 s on a fast CPU, 1 s on a slow one.
+- **An English-only model avoids the switches to French.** Parakeet unified EN, cut at pauses, is as fast as Ultra, as accurate or a little more, and never left English. Parakeet TDT 0.6B v2 is less accurate.
 
 ## Build, packaging and supply chain
 
@@ -186,9 +217,9 @@ candle has no Vulkan backend, so such a port would run on the CPU on most laptop
 
 - Build on transcribe.cpp, with `dynamic-backends` for releases, and with clang on Windows.
 - Even out the level, cut at pauses by level, and let Silero check each segment.
-- Without a usable GPU: Ultra cut at pauses, with the live text's step set by the machine's speed. The hybrid stays an option for very slow CPUs.
+- Without a usable GPU: Ultra cut at pauses, with the live text's step set by the machine's speed, or Parakeet unified EN for English alone. The hybrid stays an option for very slow CPUs.
 - With a GPU: Qwen3 or Whisper, with the project's terms as hints.
-- Code terms on the CPU: a list of replacements per user first ("Tokyo" to "tokio"), and later the cleanup pass by an AI model.
+- Code terms on the CPU: the cleanup pass by an AI model, with the same file of terms as the hints. A list of replacements per user was set aside: too much to maintain.
 
 ## Open questions
 

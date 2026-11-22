@@ -73,7 +73,8 @@ Options of `run`:
 
 - `--threads 4`: the threads each engine may use.
 - `--affinity <hex mask>`: the logical processors the engine may run on (Windows). On an Intel CPU with efficiency cores, `F0000` gives four efficiency cores, a stand-in for a slower laptop. `55` gives four performance cores, one thread each.
-- `--normalize`: scales each recording to a peak of 0.7, as the app's level control would. Nemotron misses quiet speech without it.
+- `--normalize`: scales each recording to a peak of 0.7, a fixed stand-in for the app's level control. Nemotron misses quiet speech without it.
+- `--level-control`: runs the app's own level control over each recording, which follows the recent peak as the app does while the user talks.
 - `--terms`: passes every prompt's terms as vocabulary hints, to the models that take them.
 - `--only 01-check,24-reconnect`: some of the recordings.
 - `--pace fast`: sends the audio as fast as the engine takes it. The delays then mean nothing, but the run is quicker.

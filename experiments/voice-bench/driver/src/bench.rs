@@ -136,6 +136,9 @@ pub fn run(data: &Path, args: &Args) -> Result<()> {
         if args.has("normalize") {
             normalize_level(&mut pcm);
         }
+        if args.has("level-control") {
+            control_level(&mut pcm);
+        }
         let (onset_ms, end_ms) = speech_span_ms(&pcm);
         clips.push(Clip { prompt: prompt.clone(), pcm, onset_ms, end_ms, word_ends_ms: None });
     }
@@ -170,7 +173,7 @@ pub fn run(data: &Path, args: &Args) -> Result<()> {
                 print_summary(&summary);
                 let record = serde_json::json!({
                     "stamp": stamp, "set": set, "pace": if realtime { "realtime" } else { "fast" },
-                    "chunk_ms": chunk_ms, "terms": args.has("terms"), "normalize": args.has("normalize"), "engine_args": args.get("engine-args"), "affinity": args.get("affinity"), "summary": summary,
+                    "chunk_ms": chunk_ms, "terms": args.has("terms"), "normalize": args.has("normalize"), "level_control": args.has("level-control"), "engine_args": args.get("engine-args"), "affinity": args.get("affinity"), "summary": summary,
                     "ready": ready, "utterances": utterances,
                 });
                 let mut file = OpenOptions::new().create(true).append(true).open(results_dir.join("results.jsonl"))?;
@@ -186,7 +189,7 @@ pub fn run(data: &Path, args: &Args) -> Result<()> {
     let table = table(&summaries);
     println!("\n{table}");
     let report = results_dir.join(format!("{stamp}-{set}-{threads}t.md"));
-    std::fs::write(&report, format!("Set {set}, {} recordings, {audio_s:.0} s, {threads} threads, {} pace, terms {}\n\n{table}\n", clips.len(), if realtime { "real-time" } else { "fast" }, args.has("terms")))?;
+    std::fs::write(&report, format!("Set {set}, {} recordings, {audio_s:.0} s, {threads} threads, {} pace, terms {}, normalize {}, level control {}\n\n{table}\n", clips.len(), if realtime { "real-time" } else { "fast" }, args.has("terms"), args.has("normalize"), args.has("level-control")))?;
     println!("Report: {}", report.display());
     println!("Details: {}", results_dir.join("results.jsonl").display());
     Ok(())
@@ -418,6 +421,21 @@ fn normalize_level(pcm: &mut [f32]) {
         for sample in pcm.iter_mut() {
             *sample *= gain;
         }
+    }
+}
+
+/// The app's level control (crates/cockpit_voice/src/level_control.rs), at 16 kHz: it follows the
+/// recent peak, rising at once and halving in 3 s, and scales it to 0.7, by 10 at most. It reads
+/// each sample once, in order, so applying it to a whole recording gives what the app hears live.
+fn control_level(pcm: &mut [f32]) {
+    const TARGET: f32 = 0.7;
+    const MAX_GAIN: f32 = 10.0;
+    const FLOOR: f32 = TARGET / MAX_GAIN;
+    const DECAY: f32 = 0.999_985_6;
+    let mut peak = FLOOR;
+    for sample in pcm.iter_mut() {
+        peak = (peak * DECAY).max(sample.abs()).max(FLOOR);
+        *sample = (*sample * TARGET / peak).clamp(-1.0, 1.0);
     }
 }
 
