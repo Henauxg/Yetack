@@ -10,11 +10,13 @@ use serde::{Deserialize, Serialize};
 use crate::connection::Cockpit;
 use crate::keymap::{Command, Reach};
 use crate::state::sidebar_keys::SidebarItem;
+use crate::state::voice::{VoiceState, dictation_target};
 use crate::state::{
     ANSWER_KEYS, AppState, Dialog, KeyPress, PAGE_RELOAD_KEY, PaletteOrigin, Popover, Utf16Offset,
     WaitingKind, accounts, actions, agent_map, find, handle_key, sidebar_keys,
 };
 use crate::ui::{FILE_VIEW_ID, FILES_PANE_ID, FIND_FIELD_IDS, focus_after_find, sidebar_item_id};
+use crate::voice_desk::{VoiceCommand, VoiceDesk};
 
 /// The composer's text area, whose keys the script treats apart.
 pub const COMPOSER_ID: &str = "composer";
@@ -69,8 +71,11 @@ const PASTED_IMAGE: &str = "The pasted image";
 /// `BridgeMessage`, `KeyPress`, `KeyTarget` and `KeyMode`.
 const SCRIPT: &str = r#"
 const settings = await dioxus.recv();
-let mode = { answer_letters: false, answer_numbers: false, question_tabs: false, palette: false, dialog: false, bindings: [] };
+let mode = { answer_letters: false, answer_numbers: false, question_tabs: false, palette: false, dialog: false, bindings: [], talk: null, dictating: false };
 const send = (message) => dioxus.send(message);
+// The talk key's binding while it is down: its release, or the window's blur, stops the
+// dictation it holds. Kept from the press, since the mode may drop the talk key meanwhile.
+let talking = null;
 // The sidebar row or machine header that has the focus, as the app names it.
 const sidebarItem = (element) => {
   const data = element?.dataset;
@@ -91,7 +96,14 @@ const sidebarItem = (element) => {
   }
 })();
 window.addEventListener("focus", () => send({ type: "focus", focused: true }));
-window.addEventListener("blur", () => send({ type: "focus", focused: false }));
+window.addEventListener("blur", () => {
+  send({ type: "focus", focused: false });
+  // A key that comes up in another window sends no keyup here.
+  if (talking !== null) {
+    talking = null;
+    send({ type: "talk", action: "blur" });
+  }
+});
 // A window that opens behind another gets no blur.
 send({ type: "focus", focused: document.hasFocus() });
 // A menu that takes the focus remembers where it took it from, for Esc to give it back. A menu
@@ -208,6 +220,13 @@ document.addEventListener("keydown", (event) => {
     && (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.tagName === "SELECT" || target.isContentEditable);
   const where = composer ? "composer" : field ? "field" : "page";
   const key = event.key;
+  // Esc first stops a dictation, and drops its text.
+  if (key === "Escape" && mode.dictating && !event.repeat) {
+    event.preventDefault();
+    talking = null;
+    send({ type: "talk", action: "cancel" });
+    return;
+  }
   const command = event.ctrlKey || event.metaKey;
   const plain = !command && !event.altKey;
   const letter = key.length === 1 ? key.toLowerCase() : "";
@@ -234,6 +253,17 @@ document.addEventListener("keydown", (event) => {
   // A command's shortcut, as the Settings dialog sets it. A key reads as one character in lower
   // case, as the app reads it.
   const pressed = key.length === 1 ? key.toLowerCase() : key;
+  // The talk key dictates: its press and its release go to the app, and its repeats nowhere.
+  const talk = mode.talk;
+  if (talk != null && pressed === talk.key && talk.ctrl === command && talk.alt === event.altKey
+    && talk.shift === event.shiftKey && where !== "field" && !mode.dialog) {
+    event.preventDefault();
+    if (!event.repeat && talking === null) {
+      talking = talk;
+      send({ type: "talk", action: "press" });
+    }
+    return;
+  }
   const bound = mode.bindings.find((binding) => binding.key === pressed && binding.ctrl === command
     && binding.alt === event.altKey && binding.shift === event.shiftKey);
   const titleField = target !== null && settings.title_field_ids.includes(target.id);
@@ -298,6 +328,20 @@ document.addEventListener("keydown", (event) => {
     selection,
     in_find: target !== null && settings.find_field_ids.includes(target.id),
   });
+}, true);
+// The talk key's release, or the release of one of its modifiers, stops the dictation it holds.
+document.addEventListener("keyup", (event) => {
+  const talk = talking;
+  if (talk === null) {
+    return;
+  }
+  const released = event.key.length === 1 ? event.key.toLowerCase() : event.key;
+  const modifier = (talk.ctrl && (released === "Control" || released === "Meta"))
+    || (talk.alt && released === "Alt") || (talk.shift && released === "Shift");
+  if (released === talk.key || modifier) {
+    talking = null;
+    send({ type: "talk", action: "release" });
+  }
 }, true);
 // The composer's text goes to the app with the caret, which tells the "/" word being typed, and
 // so does the new agent dialog's first message.
@@ -428,6 +472,30 @@ if (field !== null) {
   const end = field.value.length;
   field.setRangeText(text, end, end, "end");
   field.dispatchEvent(new InputEvent("input", { bubbles: true, data: text, inputType: "insertText" }));
+}
+"#;
+
+/// Types the text it receives at the caret of the field whose id it receives, as one step of its
+/// undo history, with a space on each side where a word touches it.
+#[cfg(feature = "voice")]
+const INSERT_AT_CARET_SCRIPT: &str = r#"
+const field_id = await dioxus.recv();
+const text = await dioxus.recv();
+const field = document.getElementById(field_id);
+if (field !== null) {
+  field.focus();
+  const start = field.selectionStart;
+  const end = field.selectionEnd;
+  const before = field.value.slice(0, start);
+  const after = field.value.slice(end);
+  const typed = (before === "" || /\s$/.test(before) ? "" : " ") + text
+    + (after === "" || /^\s/.test(after) ? "" : " ");
+  // Not typing's "insertText": the undo history would join the text to the keys typed just
+  // before or after it.
+  const inputType = "insertReplacementText";
+  field.dispatchEvent(new InputEvent("beforeinput", { bubbles: true, cancelable: true, data: typed, inputType }));
+  field.setRangeText(typed, start, end, "end");
+  field.dispatchEvent(new InputEvent("input", { bubbles: true, data: typed, inputType }));
 }
 "#;
 
@@ -567,10 +635,15 @@ struct KeyMode {
     /// Enter, outside text fields, presses the sign-in card's "Send the message again".
     send_again: bool,
     bindings: Vec<Binding>,
+    /// The talk key, while it can start a dictation or stop the one that runs. The script sends
+    /// its press and its release itself.
+    talk: Option<Binding>,
+    /// A dictation runs: Esc stops it first.
+    dictating: bool,
 }
 
 impl KeyMode {
-    fn new(state: &AppState) -> Self {
+    fn new(state: &AppState, voice: &VoiceState) -> Self {
         let map = matches!(state.ui.dialog, Some(Dialog::AgentMap(_)));
         // In the map, the keys answer the selected subagent's card, not the agent's newest one.
         let waiting = if map {
@@ -590,6 +663,10 @@ impl KeyMode {
                     })
             });
         let waiting = waiting.map(|waiting| waiting.kind);
+        let dictating = voice.dictating().is_some();
+        let talks = voice.available
+            && state.prefs.voice.enabled
+            && (dictating || dictation_target(state).is_some());
         Self {
             answer_letters: matches!(waiting, Some(WaitingKind::Approval | WaitingKind::Plan)),
             answer_numbers: !map && waiting == Some(WaitingKind::Question),
@@ -602,6 +679,8 @@ impl KeyMode {
                 .selected
                 .is_some_and(|agent| accounts::sends_again(state, agent)),
             bindings: bindings(state),
+            talk: talks.then(|| binding(state, Command::Talk)),
+            dictating,
         }
     }
 }
@@ -611,16 +690,23 @@ fn bindings(state: &AppState) -> Vec<Binding> {
 
     let mut bindings = Vec::new();
     for &command in Command::VARIANTS {
-        let chord = state.prefs.keys.chord(command);
-        bindings.push(Binding {
-            ctrl: chord.ctrl,
-            alt: chord.alt,
-            shift: chord.shift,
-            key: chord.key,
-            reach: command.reach(),
-        });
+        // The talk key has its own field, for its release.
+        if command != Command::Talk {
+            bindings.push(binding(state, command));
+        }
     }
     bindings
+}
+
+fn binding(state: &AppState, command: Command) -> Binding {
+    let chord = state.prefs.keys.chord(command);
+    Binding {
+        ctrl: chord.ctrl,
+        alt: chord.alt,
+        shift: chord.shift,
+        key: chord.key,
+        reach: command.reach(),
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -650,10 +736,25 @@ enum BridgeMessage {
         media_type: String,
         data: String,
     },
+    Talk {
+        action: TalkAction,
+    },
+}
+
+/// What the talk key did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum TalkAction {
+    Press,
+    Release,
+    /// The window lost the focus while the key was down.
+    Blur,
+    /// Esc, while a dictation runs.
+    Cancel,
 }
 
 /// Runs the script for the window's life, and keeps its key mode in step with the state.
-pub fn use_bridge(cockpit: Cockpit) {
+pub fn use_bridge(cockpit: Cockpit, voice: VoiceDesk) {
     let script = use_hook(|| {
         let mut script = document::eval(SCRIPT);
         if let Err(error) = script.send(Settings {
@@ -679,7 +780,7 @@ pub fn use_bridge(cockpit: Cockpit) {
         spawn(async move {
             loop {
                 match script.recv::<BridgeMessage>().await {
-                    Ok(message) => receive(cockpit, message),
+                    Ok(message) => receive(cockpit, voice, message),
                     Err(error) => {
                         tracing::warn!("the page's script stopped: {error}");
                         return;
@@ -689,7 +790,7 @@ pub fn use_bridge(cockpit: Cockpit) {
         });
         script
     });
-    let mode = use_memo(move || KeyMode::new(&cockpit.state.read()));
+    let mode = use_memo(move || KeyMode::new(&cockpit.state.read(), &voice.state.read()));
     use_effect(move || {
         if let Err(error) = script.send(mode()) {
             tracing::warn!("cannot update the page's script: {error}");
@@ -697,8 +798,14 @@ pub fn use_bridge(cockpit: Cockpit) {
     });
 }
 
-fn receive(cockpit: Cockpit, message: BridgeMessage) {
+fn receive(cockpit: Cockpit, voice: VoiceDesk, message: BridgeMessage) {
     match message {
+        BridgeMessage::Talk { action } => voice.send(match action {
+            TalkAction::Press => VoiceCommand::Press,
+            TalkAction::Release => VoiceCommand::Release,
+            TalkAction::Blur => VoiceCommand::Blur,
+            TalkAction::Cancel => VoiceCommand::Cancel,
+        }),
         BridgeMessage::Key(press) => {
             let mut find_closed = false;
             cockpit.change_with_drafts(|state, drafts| {
@@ -840,6 +947,15 @@ pub fn type_at_end(field_id: &'static str, text: String) {
     }
 }
 
+/// Focuses a field and types `text` at its caret, as dictation does.
+#[cfg(feature = "voice")]
+pub fn insert_at_caret(field_id: &'static str, text: &str) {
+    let script = document::eval(INSERT_AT_CARET_SCRIPT);
+    if let Err(error) = script.send(field_id).and_then(|()| script.send(text)) {
+        tracing::warn!("cannot type into the field {field_id}: {error}");
+    }
+}
+
 /// Focuses a title field as its edit asks: its text selected, or the caret at the end.
 pub fn focus_title_field(field_id: &'static str, select_all: bool) {
     if select_all {
@@ -925,15 +1041,19 @@ pub fn give_focus_back(element_id: Option<&'static str>) {
 
 #[cfg(test)]
 mod tests {
+    use std::time::Instant;
+
     use cockpit_protocol::{
         AgentStatus, AnswerState, AskedQuestion, ItemId, PendingId, Question, Selection,
         TranscriptItem,
     };
+    use strum::VariantArray;
 
     use super::*;
     use crate::machine::MachineId;
     use crate::state::find::FindPane;
     use crate::state::projects::ProjectKey;
+    use crate::state::voice::VoicePhase;
     use crate::state::{state_with, summary};
 
     #[test]
@@ -979,9 +1099,52 @@ mod tests {
         let mut mapped = with_questions(2);
         agent_map::toggle(&mut mapped);
 
-        assert!(KeyMode::new(&with_questions(2)).question_tabs);
-        assert!(!KeyMode::new(&with_questions(1)).question_tabs);
-        assert!(!KeyMode::new(&mapped).question_tabs);
+        let voice = VoiceState::default();
+        assert!(KeyMode::new(&with_questions(2), &voice).question_tabs);
+        assert!(!KeyMode::new(&with_questions(1), &voice).question_tabs);
+        assert!(!KeyMode::new(&mapped, &voice).question_tabs);
+    }
+
+    #[test]
+    fn the_script_takes_the_talk_key_only_while_dictation_can_run() {
+        let mut state = state_with(vec![
+            summary(1, AgentStatus::Idle),
+            summary(2, AgentStatus::Exited),
+        ]);
+        state.ui.selected = Some(AgentId::new(1));
+        let ready = VoiceState {
+            available: true,
+            ..VoiceState::default()
+        };
+        let recording = VoiceState {
+            phase: VoicePhase::Recording {
+                agent: AgentId::new(1),
+                since: Instant::now(),
+                latched: true,
+            },
+            ..ready.clone()
+        };
+
+        let on = KeyMode::new(&state, &ready);
+        let unavailable = KeyMode::new(&state, &VoiceState::default());
+        state.ui.selected = Some(AgentId::new(2));
+        let exited = KeyMode::new(&state, &ready);
+        // A recording that runs still stops from an exited agent.
+        let exited_recording = KeyMode::new(&state, &recording);
+        state.prefs.voice.enabled = false;
+        let off = KeyMode::new(&state, &recording);
+
+        assert_eq!(
+            on.talk.map(|talk| (talk.ctrl, talk.key)),
+            Some((true, " ".to_owned()))
+        );
+        assert_eq!(on.bindings.len() + 1, Command::VARIANTS.len());
+        assert_eq!(unavailable.talk, None);
+        assert_eq!(exited.talk, None);
+        assert!(exited_recording.talk.is_some());
+        assert_eq!(off.talk, None);
+        assert!(!on.dictating);
+        assert!(exited_recording.dictating);
     }
 
     #[test]
@@ -1086,6 +1249,14 @@ mod tests {
                 key: "ArrowUp".to_owned(),
                 reach: Reach::OutsideFields,
             }],
+            talk: Some(Binding {
+                ctrl: true,
+                alt: false,
+                shift: false,
+                key: " ".to_owned(),
+                reach: Reach::OutsideFields,
+            }),
+            dictating: true,
         };
         let field_text = FieldText {
             field_id: COMPOSER_ID,
@@ -1133,8 +1304,28 @@ mod tests {
                     "key": "ArrowUp",
                     "reach": "outside_fields",
                 }],
+                "talk": {
+                    "ctrl": true,
+                    "alt": false,
+                    "shift": false,
+                    "key": " ",
+                    "reach": "outside_fields",
+                },
+                "dictating": true,
             })
         );
+        for (action, expected) in [
+            ("press", TalkAction::Press),
+            ("release", TalkAction::Release),
+            ("blur", TalkAction::Blur),
+            ("cancel", TalkAction::Cancel),
+        ] {
+            let message = format!(r#"{{"type":"talk","action":"{action}"}}"#);
+            assert!(matches!(
+                serde_json::from_str(&message).unwrap(),
+                BridgeMessage::Talk { action } if action == expected
+            ));
+        }
         assert_eq!(
             serde_json::to_value(field_text).unwrap(),
             json!({ "field_id": "composer", "text": "Run the tests", "caret": 4 })

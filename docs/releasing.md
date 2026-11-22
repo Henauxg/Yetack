@@ -39,12 +39,18 @@ Skip this step when no Windows machine is at hand. The zip holds the app and the
 
 `YETACK_PACKAGE` tells the app that it comes from the zip, so it updates itself from later releases. That update downloads the app alone, `yetack-desktop-<version>-windows-x64.exe`, with the Linux daemon and `SHA256SUMS`, so the app goes beside the zip.
 
-On the Windows machine, in PowerShell, in a checkout of the repository:
+The speech model's C++ builds with clang, whose code takes 13 to 20% less CPU than Microsoft's compiler's ([voice/investigation.md](voice/investigation.md)). It needs LLVM (`winget install LLVM.LLVM`), cmake, and a PowerShell with Visual Studio's x64 build tools: run `Launch-VsDevShell.ps1 -Arch amd64 -HostArch amd64`, in Visual Studio's `Common7\Tools` folder. Without the four `$env:` lines on clang below, Microsoft's compiler builds it, and the app works the same, a little slower.
+
+On the Windows machine, in that PowerShell, in a checkout of the repository:
 
 ```powershell
 git fetch --tags
 git checkout v0.1.0
 $env:YETACK_PACKAGE = "zip"
+$env:Path = "C:\Program Files\LLVM\bin;$env:Path"
+$env:CMAKE_GENERATOR = "NMake Makefiles"
+$env:CC = "clang-cl"
+$env:CXX = "clang-cl"
 cargo build --release -p cockpit_desktop
 just linux-daemon
 $version = "0.1.0"

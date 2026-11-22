@@ -30,6 +30,8 @@ use crate::ui::icons::{Icon, IconKind};
 use crate::ui::notification_levels as levels_ui;
 use crate::ui::presence::{Presence, Shown, use_presence};
 use crate::ui::projects_tab::ProjectsTab;
+use crate::ui::voice_tab::VoiceTab;
+use crate::voice_desk::VoiceDesk;
 
 pub static APP_ICON: LazyLock<String> = LazyLock::new(|| {
     use base64::Engine;
@@ -106,6 +108,8 @@ fn placement_label(placement: CommentPlacement) -> &'static str {
 #[component]
 pub fn SettingsDialog(view: SettingsView) -> Element {
     let cockpit: Cockpit = use_context();
+    let voice: VoiceDesk = use_context();
+    let voice_available = voice.state.read().available;
     let close = move |_| cockpit.update(|state| state.ui.close_dialog());
     let tab = |tab: SettingsTab, icon: IconKind, label: &'static str| {
         let selected = view.tab == tab;
@@ -136,6 +140,9 @@ pub fn SettingsDialog(view: SettingsView) -> Element {
                 {tab(SettingsTab::General, IconKind::Gear, "General")}
                 {tab(SettingsTab::Keyboard, IconKind::Keyboard, "Keyboard")}
                 {tab(SettingsTab::Projects, IconKind::Folder, "Projects")}
+                if voice_available {
+                    {tab(SettingsTab::Voice, IconKind::Mic, "Voice")}
+                }
             }
             match view.tab {
                 SettingsTab::General => rsx! {
@@ -146,6 +153,9 @@ pub fn SettingsDialog(view: SettingsView) -> Element {
                 },
                 SettingsTab::Projects => rsx! {
                     ProjectsTab { view: view.clone() }
+                },
+                SettingsTab::Voice => rsx! {
+                    VoiceTab { recording: view.recording, refused: view.refused.clone() }
                 },
             }
         }
@@ -434,6 +444,8 @@ fn fixed_keys_text(shortcut: &FixedShortcut) -> String {
 #[component]
 fn KeyboardTab(recording: Option<Command>, refused: Option<RefusedChord>) -> Element {
     let cockpit: Cockpit = use_context();
+    let voice: VoiceDesk = use_context();
+    let dictation = use_memo(move || voice.state.read().available)();
     let mut filter = use_signal(String::new);
     let keys: Keymap = cockpit.state.read().prefs.keys.clone();
     let changed = keys.changed_count();
@@ -450,6 +462,7 @@ fn KeyboardTab(recording: Option<Command>, refused: Option<RefusedChord>) -> Ele
                 .iter()
                 .copied()
                 .filter(|command| command.group() == group)
+                .filter(|&command| dictation || command != Command::Talk)
                 .filter(|&command| {
                     matches_filter(&filter_text, command.label(), &keys.shown(command))
                 })
@@ -525,7 +538,7 @@ fn KeyCaps(caps: Vec<String>) -> Element {
 
 /// A command's shortcut: a click records a new one, the next key pressed with its modifiers.
 #[component]
-fn CommandRow(
+pub fn CommandRow(
     command: Command,
     chord: Chord,
     changed: bool,

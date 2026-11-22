@@ -104,6 +104,8 @@ fn run(
         }
         Command::MarkToHandle if no_dialog => return to_handle::cycle_selected(state),
         Command::Rename if no_dialog => actions::rename_key(state, drafts),
+        // The page script takes the talk key itself, for its press and its release.
+        Command::Talk => {}
         Command::ReloadFile => {
             if let Some(agent) = state.ui.selected {
                 file_reread::reread(state, agent);

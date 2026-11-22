@@ -5,6 +5,10 @@ use dioxus::prelude::*;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum IconKind {
     Search,
+    /// Dictation.
+    Mic,
+    /// The speech model to download.
+    Download,
     Plus,
     ChevronDown,
     /// The find's previous match.
@@ -120,6 +124,12 @@ impl IconKind {
             }
             Self::Terminal => r#"<path d="M5 7l5 5-5 5"></path><path d="M12 18h7"></path>"#,
             Self::Send => r#"<path d="M12 19V5"></path><path d="M6 11l6-6 6 6"></path>"#,
+            Self::Mic => {
+                r#"<path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"></path><path d="M19 10v2a7 7 0 0 1-14 0v-2"></path><path d="M12 19v3"></path>"#
+            }
+            Self::Download => {
+                r#"<path d="M12 15V3"></path><path d="m7 10 5 5 5-5"></path><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>"#
+            }
             Self::ArrowDown => r#"<path d="M12 5v14"></path><path d="M6 13l6 6 6-6"></path>"#,
             Self::ArrowRight => r#"<path d="M5 12h14"></path><path d="M13 6l6 6-6 6"></path>"#,
             Self::Clock => {

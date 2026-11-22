@@ -18,6 +18,7 @@ Features:
 - Messages timeline
 - Usage, context and machine load at a glance
 - Subagent views
+- Dictation, transcribed on your computer
 
 ## Quick look
 

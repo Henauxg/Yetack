@@ -36,6 +36,11 @@ mod terminal_feed;
 mod ui;
 mod update_script;
 mod version_order;
+mod voice_desk;
+#[cfg(feature = "voice")]
+mod voice_engine;
+#[cfg(feature = "voice")]
+mod voice_models;
 #[cfg(target_os = "linux")]
 mod webview_settings;
 

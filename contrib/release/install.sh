@@ -115,15 +115,15 @@ if [ -r /etc/os-release ]; then
 fi
 case " $system " in
     *" gentoo "*)
-        hint="sudo emerge --ask --noreplace net-libs/webkit-gtk:4.1 x11-libs/gtk+:3 net-libs/libsoup:3.0 x11-libs/libXtst x11-libs/libXinerama x11-libs/libxkbcommon" ;;
+        hint="sudo emerge --ask --noreplace net-libs/webkit-gtk:4.1 x11-libs/gtk+:3 net-libs/libsoup:3.0 x11-libs/libXtst x11-libs/libXinerama x11-libs/libxkbcommon media-libs/alsa-lib" ;;
     *" fedora "* | *" rhel "*)
-        hint="sudo dnf install webkit2gtk4.1 gtk3 libsoup3 libXtst libXinerama libxkbcommon (the release's .rpm installs them for you)" ;;
+        hint="sudo dnf install webkit2gtk4.1 gtk3 libsoup3 libXtst libXinerama libxkbcommon alsa-lib (the release's .rpm installs them for you)" ;;
     *" arch "*)
-        hint="sudo pacman -S --needed webkit2gtk-4.1 gtk3 libsoup3 libxtst libxinerama libxkbcommon" ;;
+        hint="sudo pacman -S --needed webkit2gtk-4.1 gtk3 libsoup3 libxtst libxinerama libxkbcommon alsa-lib" ;;
     *" suse "* | *" opensuse "*)
-        hint="sudo zypper install libwebkit2gtk-4_1-0 libgtk-3-0 libsoup-3_0-0 libXtst6 libXinerama1 libxkbcommon0" ;;
+        hint="sudo zypper install libwebkit2gtk-4_1-0 libgtk-3-0 libsoup-3_0-0 libXtst6 libXinerama1 libxkbcommon0 libasound2" ;;
     *" debian "* | *" ubuntu "*)
-        hint="sudo apt install libwebkit2gtk-4.1-0 libgtk-3-0 libsoup-3.0-0 libxtst6 libxinerama1 libxkbcommon0 (the release's .deb installs them for you)" ;;
+        hint="sudo apt install libwebkit2gtk-4.1-0 libgtk-3-0 libsoup-3.0-0 libxtst6 libxinerama1 libxkbcommon0 libasound2 (the release's .deb installs them for you)" ;;
     *)
         hint="" ;;
 esac
@@ -131,7 +131,7 @@ if [ -n "$hint" ]; then
     echo "Install them with:"
     echo "  $hint"
 else
-    echo "Install WebKitGTK 4.1, GTK 3, libsoup 3, and the X11 libraries Xtst, Xinerama and xkbcommon with your system's packages."
+    echo "Install WebKitGTK 4.1, GTK 3, libsoup 3, ALSA's library, and the X11 libraries Xtst, Xinerama and xkbcommon with your system's packages."
 fi
 echo "A 'GLIBC_2.xx not found' line means this system is older than the app: it needs glibc 2.35 or newer."
 exit 3

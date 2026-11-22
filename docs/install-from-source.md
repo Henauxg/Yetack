@@ -15,11 +15,11 @@ To build a release rather than the latest code, check out its tag first: `git ch
 
 ### Linux
 
-Install the WebKitGTK and GTK development packages. On Ubuntu and Debian:
+Install the WebKitGTK, GTK and ALSA development packages, and cmake, which builds the speech model's C++ for dictation. On Ubuntu and Debian:
 
 ```sh
-sudo apt install build-essential pkg-config libwebkit2gtk-4.1-dev libgtk-3-dev \
-    libsoup-3.0-dev libjavascriptcoregtk-4.1-dev libxdo-dev
+sudo apt install build-essential cmake pkg-config libwebkit2gtk-4.1-dev libgtk-3-dev \
+    libsoup-3.0-dev libjavascriptcoregtk-4.1-dev libxdo-dev libasound2-dev
 ```
 
 Then build and install the app in `~/.local/bin`:
@@ -39,13 +39,15 @@ With Nix, `nix profile install 'github:Henauxg/yetack'` does all of these steps.
 
 ### Windows
 
-Install the Visual Studio Build Tools with the "Desktop development with C++" workload, which Rust's installer offers. Then, in PowerShell:
+Install the Visual Studio Build Tools with the "Desktop development with C++" workload, which Rust's installer offers, and [cmake](https://cmake.org/download/) (`winget install Kitware.CMake`). Then, in PowerShell:
 
 ```powershell
 cargo build --release --locked -p cockpit_desktop
 ```
 
 The app is `target\release\yetack-desktop.exe`. It needs the WebView2 runtime, which Windows 10 and 11 include.
+
+To build the app without dictation, and without cmake and the speech model's C++, add `--no-default-features` to the `cargo` command, on Windows as on Linux.
 
 ### macOS
 

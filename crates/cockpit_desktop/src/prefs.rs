@@ -96,6 +96,7 @@ pub struct Prefs {
     pub accounts: AccountPrefs,
     pub notifications: NotificationPrefs,
     pub chat: ChatPrefs,
+    pub voice: VoicePrefs,
     /// The shortcuts changed in the Settings dialog.
     pub keys: Keymap,
     /// The sidebar's order when it groups by project or not at all, top first. Grouped by
@@ -336,6 +337,81 @@ pub struct ChatPrefs {
     pub esc_stop: EscStop,
     /// How much of each tool call the chat shows before a click.
     pub tool_calls: ToolCallDetail,
+}
+
+/// Dictation's settings.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct VoicePrefs {
+    /// Off hides the mic button and frees the talk key.
+    pub enabled: bool,
+    pub after: AfterDictation,
+    pub live: LiveTextRefresh,
+}
+
+impl Default for VoicePrefs {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            after: AfterDictation::default(),
+            live: LiveTextRefresh::default(),
+        }
+    }
+}
+
+/// What happens to the text once dictation stops.
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, Default, EnumString, IntoStaticStr, VariantArray,
+)]
+#[strum(serialize_all = "snake_case")]
+pub enum AfterDictation {
+    /// It goes in the message at the cursor, and waits there to be sent.
+    #[default]
+    Insert,
+    /// It goes at the end of the message, and the message is sent.
+    InsertAndSend,
+}
+
+impl Serialize for AfterDictation {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(self.into())
+    }
+}
+
+/// A word this version does not know, from another version of the app, reads as the default.
+impl<'de> Deserialize<'de> for AfterDictation {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let word = String::deserialize(deserializer)?;
+        Ok(word.parse().unwrap_or_default())
+    }
+}
+
+/// How often the text under the user's voice comes up to date while they talk.
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, Default, EnumString, IntoStaticStr, VariantArray,
+)]
+#[strum(serialize_all = "snake_case")]
+pub enum LiveTextRefresh {
+    /// As often as the computer allows.
+    #[default]
+    Auto,
+    EverySecond,
+    /// Only at each pause.
+    Off,
+}
+
+impl Serialize for LiveTextRefresh {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(self.into())
+    }
+}
+
+/// A word this version does not know, from another version of the app, reads as the default.
+impl<'de> Deserialize<'de> for LiveTextRefresh {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let word = String::deserialize(deserializer)?;
+        Ok(word.parse().unwrap_or_default())
+    }
 }
 
 /// How much of a tool call the chat shows: its line alone, which a click unfolds, or its input
@@ -1197,6 +1273,11 @@ mod tests {
     "esc_stop": "at_once",
     "tool_calls": "full"
   },
+  "voice": {
+    "enabled": false,
+    "after": "insert_and_send",
+    "live": "every_second"
+  },
   "keys": {
     "switcher": "Ctrl+j"
   },
@@ -1303,6 +1384,11 @@ mod tests {
                     steer_hold: SteerHold::ThreeSeconds,
                     esc_stop: EscStop::AtOnce,
                     tool_calls: ToolCallDetail::Full,
+                },
+                voice: VoicePrefs {
+                    enabled: false,
+                    after: AfterDictation::InsertAndSend,
+                    live: LiveTextRefresh::EverySecond,
                 },
                 keys: switched,
                 updates: UpdatePrefs {
@@ -1599,6 +1685,25 @@ mod tests {
     }
 
     #[test]
+    fn the_dictation_words_are_pinned_and_an_unknown_one_reads_as_the_default() {
+        let afters: Vec<&str> = AfterDictation::VARIANTS
+            .iter()
+            .map(|&after| after.into())
+            .collect();
+        let lives: Vec<&str> = LiveTextRefresh::VARIANTS
+            .iter()
+            .map(|&live| live.into())
+            .collect();
+        let unknown: Prefs =
+            serde_json::from_str(r#"{"voice": {"after": "copy", "live": "always"}}"#).unwrap();
+
+        assert_eq!(afters, ["insert", "insert_and_send"]);
+        assert_eq!(lives, ["auto", "every_second", "off"]);
+        assert_eq!(unknown.voice.after, AfterDictation::Insert);
+        assert_eq!(unknown.voice.live, LiveTextRefresh::Auto);
+    }
+
+    #[test]
     fn the_group_by_words_are_pinned_and_an_unknown_one_reads_as_machine() {
         let words: Vec<&str> = GroupBy::VARIANTS
             .iter()
@@ -1753,6 +1858,7 @@ mod tests {
             accounts: AccountPrefs::default(),
             notifications: NotificationPrefs::default(),
             chat: ChatPrefs::default(),
+            voice: VoicePrefs::default(),
             keys: Keymap::default(),
             agent_order: Vec::new(),
             projects: ProjectsPrefs::default(),

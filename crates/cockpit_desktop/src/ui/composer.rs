@@ -26,6 +26,7 @@ use crate::ui::icons::{Icon, IconKind};
 use crate::ui::palette::Palette;
 use crate::ui::presence::Presence;
 use crate::ui::quotes::{QuoteRows, chat_is_wide};
+use crate::ui::voice::{MicButton, VoiceStrip};
 use crate::ui::waiting_prompts::WaitingPrompts;
 
 pub fn mode_icon(mode: PermissionMode) -> IconKind {
@@ -225,6 +226,7 @@ pub fn Composer() -> Element {
                             }
                         }
                     }
+                    VoiceStrip { agent }
                     textarea {
                         id: COMPOSER_ID,
                         class: "composer-input",
@@ -297,6 +299,7 @@ pub fn Composer() -> Element {
                             span { class: "menu-button-label", "{mode_label}" }
                             Icon { kind: IconKind::ChevronDown, size: 12 }
                         }
+                        MicButton { agent, exited }
                         // One button, so that it changes in place rather than another appearing.
                         button {
                             class: match (end, resting) {

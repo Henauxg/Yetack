@@ -20,6 +20,9 @@ The coding standard's settings apply on their own: the workspace lints and `.car
 
 Without Nix, install the packages that [install-from-source.md](./install-from-source.md) lists, then `cargo run --release -p cockpit_desktop`.
 
+Dictation's crate, `cockpit_voice`, builds transcribe.cpp from C++ with cmake, which adds a minute or two to a first build. `cargo build -p cockpit_desktop --no-default-features` builds the app without it.
+`cargo run --release -p cockpit_voice --example dictate -- <models folder>` dictates in a terminal. An ignored test runs the real models on a recording: `VOICE_TEST_MODELS=<models folder> VOICE_TEST_WAV=<16 kHz mono 16-bit WAV> cargo test --release -p cockpit_voice -- --ignored --nocapture`. The app keeps the models in `voice-models` in its state folder.
+
 Releases are built as [releasing.md](./releasing.md) says.
 
 ## CI

@@ -17,13 +17,14 @@
         inherit system;
         overlays = [ rust-overlay.overlays.default ];
       }));
-      # Dioxus desktop renders in WebKitGTK on Linux.
+      # Dioxus desktop renders in WebKitGTK on Linux. Dictation records through ALSA.
       desktopLibraries = pkgs: with pkgs; [
         gtk3
         webkitgtk_4_1
         libsoup_3
         glib
         xdotool
+        alsa-lib
       ];
     in
     {
@@ -66,7 +67,10 @@
           desktop = rustPlatform.buildRustPackage (common // {
             pname = "yetack-desktop";
             cargoBuildFlags = [ "-p" "cockpit_desktop" ];
-            nativeBuildInputs = [ pkgs.pkg-config pkgs.wrapGAppsHook3 ];
+            # cmake builds the speech model's C++ (transcribe.cpp) from a crate's build script.
+            # The package itself is no cmake project.
+            nativeBuildInputs = [ pkgs.pkg-config pkgs.wrapGAppsHook3 pkgs.cmake ];
+            dontUseCmakeConfigure = true;
             buildInputs = desktopLibraries pkgs;
             # The daemon the app's update sends to a server, which then builds nothing. An app of
             # another system carries none: its update builds on the server.
@@ -105,7 +109,7 @@
         in
         {
           default = pkgs.mkShell {
-            nativeBuildInputs = [ nightlyRustfmt stable pkgs.pkg-config pkgs.just pkgs.shellcheck ];
+            nativeBuildInputs = [ nightlyRustfmt stable pkgs.pkg-config pkgs.just pkgs.shellcheck pkgs.cmake ];
             buildInputs = desktopLibraries pkgs;
             # Settings another project's environment may export would send builds to its
             # target folder or replace this repository's clippy config.

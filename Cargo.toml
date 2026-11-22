@@ -13,6 +13,7 @@ claude_protocol = { path = "crates/claude_protocol" }
 cockpit_protocol = { path = "crates/cockpit_protocol" }
 cockpit_client = { path = "crates/cockpit_client" }
 cockpit_daemon = { path = "crates/cockpit_daemon" }
+cockpit_voice = { path = "crates/cockpit_voice" }
 anyhow = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

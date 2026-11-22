@@ -17,6 +17,9 @@ base64 = "0.22.1"
 cockpit_client.workspace = true
 cockpit_daemon.workspace = true
 cockpit_protocol.workspace = true
+# Dictation: the microphone, and speech to text on this computer. Its C++ needs cmake and a C++
+# compiler, so the `voice` feature can leave it out.
+cockpit_voice = { workspace = true, optional = true }
 # Dioxus 0.7.10 with one change: dioxus-desktop builds its websockets without native-tls, which
 # linked OpenSSL into the app though they are plain TCP. Back to crates.io once Dioxus has it.
 dioxus = { git = "https://github.com/Henauxg/dioxus-fork", rev = "32d8a256298e21a7212b46a7d5268f4d224857b4", version = "0.7.10", default-features = false, features = ["desktop", "launch", "lib"] }
@@ -67,6 +70,10 @@ webkit2gtk = "2.0.1"
 # Waits for the app that started an updated one to end.
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Threading"] }
+
+[features]
+default = ["voice"]
+voice = ["dep:cockpit_voice"]
 
 [lints]
 workspace = true
@@ -135,6 +142,8 @@ assets = [
 "libgobject-2.0.so.0()(64bit)" = "*"
 "libglib-2.0.so.0()(64bit)" = "*"
 "libgcc_s.so.1()(64bit)" = "*"
+"libstdc++.so.6()(64bit)" = "*"
+"libasound.so.2()(64bit)" = "*"
 "libX11.so.6()(64bit)" = "*"
 "libXtst.so.6()(64bit)" = "*"
 "libXinerama.so.1()(64bit)" = "*"

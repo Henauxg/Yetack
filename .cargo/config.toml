@@ -2,3 +2,7 @@
 # The standard's clippy.toml, which exempts tests from the panic lints.
 # Forced, so a CLIPPY_CONF_DIR set for another project does not replace it.
 CLIPPY_CONF_DIR = { value = "docs/standards/rust", relative = true, force = true }
+# The speech model's C++ (transcribe.cpp, ggml) builds for any x86_64 CPU with AVX2 and FMA,
+# not for the building machine's own: a release must run on other CPUs. cockpit_voice::supported
+# checks the same at run time. ARM builds ignore these.
+TRANSCRIBE_CMAKE_ARGS = "-DGGML_NATIVE=OFF -DGGML_AVX2=ON -DGGML_FMA=ON -DGGML_F16C=ON -DGGML_BMI2=ON"

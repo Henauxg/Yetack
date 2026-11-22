@@ -1,0 +1,20 @@
+[package]
+name = "cockpit_voice"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+description = "Dictation: records the microphone and turns speech into text on this computer"
+
+[dependencies]
+# Records the microphone: WASAPI on Windows, ALSA on Linux.
+cpal = "0.18.2"
+thiserror.workspace = true
+tracing.workspace = true
+# Speech to text on ggml. Its C++ source ships in the crate and builds with cmake, with no
+# download. .cargo/config.toml sets the CPU it builds for.
+transcribe-cpp = { version = "0.4.2", default-features = false }
+
+[lints]
+workspace = true

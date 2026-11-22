@@ -40,6 +40,7 @@ All crates live in `crates/` and are application code ([standards/rust/README.md
 | `cockpit_daemon` | lib | The daemon, and `InAppDaemon` to run it in the app |
 | `yetack` | bin `yetack` | The command line: `serve`, `bridge`, client commands |
 | `cockpit_desktop` | bin `yetack-desktop` | The Dioxus desktop app |
+| `cockpit_voice` | lib | Dictation: the microphone, and speech to text on this computer |
 
 Dependencies point one way:
 
@@ -48,10 +49,14 @@ claude_protocol ◄── cockpit_daemon ──► cockpit_protocol ◄── co
                       ▲      ▲                                  ▲      ▲
                       │      └────────────── yetack ────────────┘      │
                       └──────────────── cockpit_desktop ───────────────┘
+                                              │
+                                              ▼
+                                        cockpit_voice
 ```
 
 The app hands its in-app daemon the receiving end of the client's in-memory link, so `cockpit_daemon` and `cockpit_client` do not depend on each other outside tests.
 `cockpit_protocol` does not depend on `claude_protocol`, so a change in Claude Code's wire format changes only `claude_protocol` and the daemon's conversion, never the app.
+`cockpit_voice` holds the only C++ of the workspace, [transcribe.cpp](https://github.com/handy-computer/transcribe.cpp) on ggml, which builds with cmake and a C++ compiler. The app takes it through its `voice` feature, on by default: `cargo build -p cockpit_desktop --no-default-features` builds an app without dictation and without the C++. The daemon never depends on it.
 
 ## Data model (`cockpit_protocol`)
 
@@ -456,6 +461,13 @@ The daemon in the app has no socket to check (see [The daemon in the app](#the-d
   Levels (`state/notification_levels.rs`, saved in `prefs.json`): one for the app and one per agent, each "All", "Only when it needs you" or "Off". An alert shows only when both let it through. A change of level, or the window getting the focus back, reaches every machine's notifier (`ToDaemon::Notifications`), which closes the notifications no longer let through. Removing an agent drops its level, since a later agent may take its id. The config's `[notifications] enabled = false` sets the app's level until the user picks one in the window.
   On Linux they go through the freedesktop service, so Do Not Disturb holds them back.
   On Windows they are toasts from notify-rust. The app has no Start menu entry, so toasts show PowerShell's name and icon. A click reaches the app only while the toast is on screen, and a toast cannot be withdrawn.
+- **Dictation** (`voice_desk.rs`, `voice_engine.rs`, `voice_models.rs`, `state/voice.rs`, `ui/voice.rs`, `ui/voice_tab.rs`, and the crate `cockpit_voice`): the user talks, and the text goes in the message. [docs/voice/investigation.md](voice/investigation.md) measured the choices below.
+  - The talk key (`Command::Talk`, Ctrl+Space by default), held, records while held; tapped (under 300 ms), until pressed again. The mic before Send starts and stops a recording too. Esc drops a recording and its text. The page script takes the talk key itself (`KeyMode.talk`), since the other shortcuts send no key release, and it sends a release when the window loses the focus, since a key that comes up in another window sends none.
+  - `cockpit_voice::Voice` owns a worker thread, which loads the models at the first recording and drops them after 5 minutes unused. It records the default microphone through `cpal`, evens out its level (the model misses quiet speech), resamples it to 16 kHz, and cuts the speech at pauses of 400 ms. Parakeet Ultra (8-bit GGUF) transcribes each finished segment once, while the user goes on, and Silero VAD skips the segments without speech, on which a model can invent words. The live text comes from transcribing the current segment again, at a step that follows the computer's speed: every half second on a fast CPU, every second or two on a slower one.
+  - The worker's events reach `voice_engine`'s task, which updates `VoiceState` and the level, two signals of their own: the level changes 30 times a second, and only the meter reads it. The strip above the message shows the level, the time and the text, the words since the last pause lighter.
+  - The final text goes in at the caret of the message, as one step of its undo history, when the message of the agent it was dictated to shows. Otherwise it goes at the end of that agent's draft. "Insert and send" (`AfterDictation`) puts it at the end and sends the message.
+  - The model is not in the release: the first use offers its download in a card above the mic, as does Settings' Voice tab. The files are pinned to a commit of their Hugging Face repositories, in `cockpit_voice::MODEL_FILES`, and go to `voice-models` in the app's state folder. Each downloads through a `.part` file beside it, which takes the file's place only once its SHA-256 matches, and a `.sha256` marker beside it then tells a whole file at the next start without hashing 707 MB again.
+  - The C++ builds for any x86_64 CPU with AVX2 and FMA, not for the building machine's (`TRANSCRIBE_CMAKE_ARGS` in `.cargo/config.toml`), and `cockpit_voice::supported` hides dictation on an older CPU.
 - **Paths** (module `path_style`): the app follows the path rules of the daemon's machine, since the app on Windows may reach a Linux daemon over SSH. `PathStyle` works on text, so the Linux tests check both styles. A path's root tells its style. The new agent dialog's folder field has no agent yet, so it takes Unix over SSH (only Unix runs `yetack bridge`) and the app's own platform otherwise.
 - **Preferences**: `prefs.json` in the app's state folder (see Platforms) keeps one viewer's choices. A missing or broken file means the defaults. The demo reads and saves none, since its agents take the ids of real ones.
 - **Splitters** (`ui/splitter.rs`) resize the sidebar, the file view and the files pane. A page script follows the drag, and Rust hears of the new size once, on release.
@@ -587,6 +599,7 @@ The daemon in the app has no socket to check (see [The daemon in the app](#the-d
 - A prompt goes to `claude` only through stdin (see [Claude Code processes](#claude-code-processes)).
 - The daemon never reads, stores or passes a credential on its own. The file view is the exception, as in an IDE: it shows any file the user opens, and sends it only to the user's app.
 - A terminal runs the user's shell as the daemon's user, in the agent's folder: it can do what the agents' commands can. Its output goes only to clients that passed the peer checks.
+- Dictation records only while the talk key is held, after a tap of it, or after a click on the mic, and keeps the audio in memory. Neither the audio nor its text leaves the computer, but as the message the user sends. The speech model downloads only on the user's click, over HTTPS (rustls) from the pinned addresses, and the app uses a file only once its SHA-256 matches.
 - Choosing a folder in the app trusts it: `claude` runs without a terminal, so it shows no trust prompt, and a repository's project MCP servers and settings start with the agent. The app asks no confirmation.
 - An install from the app writes only under `~/.cache/yetack/`, `~/.local/share/yetack/`, `~/.config/systemd/user/` and `~/.config/yetack/` on the server, plus one crontab line when the user clicks for it. An update replaces only a daemon in `~/.local/share/yetack/bin` or `~/.local/bin`. The server's script checks the binary's checksum and version before it replaces anything. The app never runs `sudo`.
 

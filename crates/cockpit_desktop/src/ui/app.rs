@@ -41,6 +41,7 @@ use crate::ui::tab_menu::TabMenu;
 use crate::ui::terminal_menu::TerminalMenu;
 use crate::ui::terminal_pane::{TerminalPane, use_terminal_script};
 use crate::ui::transcript::{TranscriptView, use_call_detail, use_undrawn_rows};
+use crate::voice_desk::use_voice;
 
 #[component]
 pub fn App() -> Element {
@@ -52,7 +53,8 @@ pub fn App() -> Element {
     use_prefs_saver(cockpit, prefs_file);
     use_release_checks(cockpit);
     use_clock();
-    use_bridge(cockpit);
+    let voice = use_voice(cockpit);
+    use_bridge(cockpit, voice);
     use_terminal_script(cockpit);
     use_quotes(cockpit);
     use_find(cockpit);

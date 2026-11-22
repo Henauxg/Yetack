@@ -57,6 +57,9 @@ pub mod unread;
 pub mod update_offer;
 pub mod update_plan;
 mod utf16_offset;
+// A build without the `voice` feature never records, and shows no mic.
+#[cfg_attr(not(feature = "voice"), allow(dead_code))]
+pub mod voice;
 pub mod working_folder;
 
 pub use app_state::{

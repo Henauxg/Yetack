@@ -197,6 +197,7 @@ pub enum SettingsTab {
     General,
     Keyboard,
     Projects,
+    Voice,
 }
 
 /// A chord a command could not take: pressed while recording, or the default a reset asked for.

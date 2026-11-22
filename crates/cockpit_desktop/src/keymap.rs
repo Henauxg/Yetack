@@ -97,6 +97,8 @@ pub enum Command {
     MoveUp,
     MoveDown,
     ReloadFile,
+    /// Dictates into the message: held, while held; tapped, until tapped again.
+    Talk,
 }
 
 /// Where the page script takes a command's shortcut.
@@ -149,6 +151,7 @@ impl Command {
             Self::MoveUp => "Move up in the sidebar",
             Self::MoveDown => "Move down in the sidebar",
             Self::ReloadFile => "Read the file again",
+            Self::Talk => "Dictate: hold to talk, or tap to start and stop",
         }
     }
 
@@ -167,6 +170,7 @@ impl Command {
             | Self::MoveUp
             | Self::MoveDown => Group::SelectedAgent,
             Self::ReloadFile => Group::FileView,
+            Self::Talk => Group::Message,
         }
     }
 
@@ -184,6 +188,7 @@ impl Command {
             | Self::MarkToHandle
             | Self::CloseAgent
             | Self::ReloadFile => Reach::Everywhere,
+            Self::Talk => Reach::OutsideFields,
         }
     }
 
@@ -202,6 +207,7 @@ impl Command {
             Self::MoveUp => Chord::alt("ArrowUp"),
             Self::MoveDown => Chord::alt("ArrowDown"),
             Self::ReloadFile => Chord::plain("F5"),
+            Self::Talk => Chord::ctrl(SPACE),
         }
     }
 
@@ -221,7 +227,8 @@ impl Command {
             | Self::CloseAgent
             | Self::MoveUp
             | Self::MoveDown
-            | Self::ReloadFile => Vec::new(),
+            | Self::ReloadFile
+            | Self::Talk => Vec::new(),
         }
     }
 }
@@ -832,6 +839,7 @@ mod tests {
                 "move_up",
                 "move_down",
                 "reload_file",
+                "talk",
             ]
         );
     }

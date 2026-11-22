@@ -12,7 +12,10 @@ use super::projects::{self, NEW_PROJECT_NAME, ProjectKey, RuleKind};
 use super::ui_state::{Dialog, RefusedChord, SettingsTab, SettingsView};
 use crate::config::{DAEMON_SECTION, DaemonConfig};
 use crate::keymap::{Chord, Command, Refusal};
-use crate::prefs::{CommentPlacement, EscStop, PaneState, ProjectId, SteerHold, ToolCallDetail};
+use crate::prefs::{
+    AfterDictation, CommentPlacement, EscStop, LiveTextRefresh, PaneState, ProjectId, SteerHold,
+    ToolCallDetail,
+};
 
 /// What the Local section says where the background service does not run.
 const IN_APP_ONLY: &str = "On Windows, the agents always run in this app. Windows has no background service. To run agents elsewhere, add a server in Machines.";
@@ -158,6 +161,20 @@ pub fn set_tool_calls(state: &mut AppState, detail: ToolCallDetail) {
 /// their hold.
 pub fn set_steer_hold(state: &mut AppState, hold: SteerHold) {
     state.prefs.chat.steer_hold = hold;
+}
+
+/// Off hides the mic button and frees the talk key.
+pub fn set_voice_enabled(state: &mut AppState, enabled: bool) {
+    state.prefs.voice.enabled = enabled;
+}
+
+pub fn set_voice_after(state: &mut AppState, after: AfterDictation) {
+    state.prefs.voice.after = after;
+}
+
+/// Takes effect at the next dictation.
+pub fn set_voice_live(state: &mut AppState, live: LiveTextRefresh) {
+    state.prefs.voice.live = live;
 }
 
 pub fn set_esc_stop(state: &mut AppState, esc_stop: EscStop) {

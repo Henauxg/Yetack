@@ -53,6 +53,8 @@ mod terminal_menu;
 mod terminal_pane;
 mod tool_rows;
 mod transcript;
+mod voice;
+mod voice_tab;
 mod waiting_prompts;
 mod work_runs;
 mod zoom;
