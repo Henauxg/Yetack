@@ -25,7 +25,7 @@ use crate::ui::icons::{Icon, IconKind};
 use crate::ui::palette::Palette;
 use crate::ui::presence::Presence;
 use crate::ui::quotes::{QuoteRows, chat_is_wide};
-use crate::ui::voice::{MicButton, VoiceStrip};
+use crate::ui::voice::{AwayStrip, MicButton, VoiceStrip};
 use crate::ui::waiting_prompts::WaitingPrompts;
 
 pub fn mode_icon(mode: PermissionMode) -> IconKind {
@@ -226,6 +226,7 @@ pub fn Composer() -> Element {
                         }
                     }
                     VoiceStrip { agent }
+                    AwayStrip { agent }
                     textarea {
                         id: COMPOSER_ID,
                         class: "composer-input",

@@ -3,6 +3,7 @@ use std::time::{Duration, Instant};
 use cockpit_protocol::{AgentId, AgentStatus};
 use serde::{Deserialize, Serialize};
 
+use super::quotes::Opening;
 use super::{AgentEntry, AppState, Drafts};
 use crate::prefs::AfterDictation;
 
@@ -19,6 +20,25 @@ pub struct VoiceState {
     pub model: ModelStatus,
     /// The card above the mic button.
     pub card: Option<VoiceCard>,
+    /// The microphones Settings lists, once listed.
+    pub microphones: Option<MicrophoneList>,
+}
+
+/// The microphones of this computer, by name.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct MicrophoneList {
+    /// The system default's name, when there is one.
+    pub default: Option<String>,
+    pub names: Vec<String>,
+}
+
+/// When the microphone chosen in Settings went missing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MicMissing {
+    /// It was not connected when the dictation started.
+    AtStart,
+    /// It was disconnected during the dictation.
+    MidWay,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -52,7 +72,7 @@ pub enum Destination {
     Message,
     /// The comment field, while the opening the dictation started in stays open.
     Comment {
-        opening: u32,
+        opening: Opening,
     },
 }
 
@@ -122,6 +142,13 @@ pub enum VoiceCard {
     Model,
     /// Why the last dictation or download failed.
     Failed(String),
+    /// The dictation records from the system default, `using`, since the microphone chosen is
+    /// missing.
+    Fallback {
+        chosen: String,
+        using: Option<String>,
+        missing: MicMissing,
+    },
 }
 
 /// What the voice worker has to do after a change.
@@ -179,7 +206,7 @@ pub fn landing(
 }
 
 /// Whether the comment field's `opening` is still open for `agent`.
-fn field_open(drafts: &Drafts, agent: AgentId, opening: u32) -> bool {
+fn field_open(drafts: &Drafts, agent: AgentId, opening: Opening) -> bool {
     drafts
         .quote_editor
         .as_ref()
@@ -272,6 +299,15 @@ impl VoiceState {
         }
     }
 
+    /// The agents changed: a dictation into an agent that is gone, closed or removed by its
+    /// daemon, stops and drops its text, which has nowhere to go.
+    pub fn agents_changed(&mut self, state: &AppState) -> WorkerOrder {
+        match self.dictating() {
+            Some(agent) if !state.agents.contains_key(&agent) => self.cancel(),
+            Some(_) | None => WorkerOrder::Nothing,
+        }
+    }
+
     /// Esc: the recording and its text go.
     pub fn cancel(&mut self) -> WorkerOrder {
         if self.phase == VoicePhase::Idle {
@@ -288,6 +324,16 @@ impl VoiceState {
         self.phase = VoicePhase::Idle;
         self.live = LiveWords::default();
         dictation
+    }
+
+    /// The microphone chosen is missing, and the dictation goes on with the system default: the
+    /// card says so, and stays after the dictation until closed.
+    pub fn fell_back(&mut self, chosen: String, using: Option<String>, missing: MicMissing) {
+        self.card = Some(VoiceCard::Fallback {
+            chosen,
+            using,
+            missing,
+        });
     }
 
     pub fn failed(&mut self, why: String) {
@@ -339,7 +385,7 @@ impl VoiceState {
     }
 
     /// Whether the dictation that runs or finishes writes into the comment field's `opening`.
-    pub fn writes_comment(&self, opening: u32) -> bool {
+    pub fn writes_comment(&self, opening: Opening) -> bool {
         self.writing()
             .is_some_and(|dictation| dictation.to == Destination::Comment { opening })
     }
@@ -414,7 +460,7 @@ mod tests {
     }
 
     /// Opens the comment field for `agent` on a passage, and returns its opening.
-    fn open_comment(drafts: &mut Drafts, agent: AgentId) -> u32 {
+    fn open_comment(drafts: &mut Drafts, agent: AgentId) -> Opening {
         use crate::state::Utf16Offset;
         use crate::state::quotes::{self, Passage, QuoteAnchor};
         use cockpit_protocol::ItemId;
@@ -430,14 +476,11 @@ mod tests {
             code: false,
         };
         quotes::start(drafts, agent, passage);
-        drafts
-            .quote_editor
-            .as_ref()
-            .map_or(0, |editor| editor.opening)
+        drafts.quote_editor.as_ref().unwrap().opening
     }
 
     /// Drafts with a comment field open for `agent`, at `opening`.
-    fn comment_open(agent: AgentId) -> (Drafts, u32) {
+    fn comment_open(agent: AgentId) -> (Drafts, Opening) {
         let mut drafts = Drafts::default();
         let opening = open_comment(&mut drafts, agent);
         (drafts, opening)
@@ -557,23 +600,13 @@ mod tests {
         if let Some(quote) = quote {
             quotes::edit(&mut drafts, agent(), quote);
         }
-        let mut voice = recording_into(
-            drafts
-                .quote_editor
-                .as_ref()
-                .map_or(0, |editor| editor.opening),
-        );
+        let mut voice = recording_into(drafts.quote_editor.as_ref().unwrap().opening);
         if let Some(quote) = quote {
             quotes::edit(&mut drafts, agent(), quote);
         }
         stops.push(voice.comment_changed(&drafts) == WorkerOrder::Stop);
         // Removing the quote whose comment is open.
-        let mut voice = recording_into(
-            drafts
-                .quote_editor
-                .as_ref()
-                .map_or(0, |editor| editor.opening),
-        );
+        let mut voice = recording_into(drafts.quote_editor.as_ref().unwrap().opening);
         if let Some(quote) = quote {
             quotes::remove(&mut drafts, agent(), quote);
         }
@@ -858,5 +891,48 @@ mod tests {
                 "this computer has no microphone".to_owned()
             ))
         );
+    }
+
+    #[test]
+    fn closing_the_agent_dictated_to_cancels_the_dictation() {
+        use crate::state::{state_with, summary};
+
+        let mut state = state_with(vec![
+            summary(3, AgentStatus::Idle),
+            summary(4, AgentStatus::Idle),
+        ]);
+        let mut voice = ready();
+        voice.press(target(), Instant::now());
+        state.agents.remove(&AgentId::new(4));
+        let other_closed = voice.agents_changed(&state);
+        state.agents.remove(&agent());
+        let closed = voice.agents_changed(&state);
+
+        assert_eq!(other_closed, WorkerOrder::Nothing);
+        assert_eq!(closed, WorkerOrder::Cancel);
+        assert_eq!(voice.phase, VoicePhase::Idle);
+        assert_eq!(voice.agents_changed(&state), WorkerOrder::Nothing);
+    }
+
+    #[test]
+    fn a_fallback_shows_on_the_card_while_the_dictation_goes_on_and_after() {
+        let mut voice = ready();
+        voice.press(target(), Instant::now());
+        voice.fell_back(
+            "Headset".to_owned(),
+            Some("Built-in microphone".to_owned()),
+            MicMissing::MidWay,
+        );
+        let recording = voice.dictating();
+        voice.release(Instant::now() + TAP);
+        voice.done();
+
+        let card = Some(VoiceCard::Fallback {
+            chosen: "Headset".to_owned(),
+            using: Some("Built-in microphone".to_owned()),
+            missing: MicMissing::MidWay,
+        });
+        assert_eq!(recording, Some(agent()));
+        assert_eq!(voice.card, card);
     }
 }

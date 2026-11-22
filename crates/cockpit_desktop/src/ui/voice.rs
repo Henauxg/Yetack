@@ -1,6 +1,7 @@
 //! Dictation in the composer: the mic button, the strip that shows the recording and its text,
-//! and the card for the model's download or a failure. A quote's comment field has a mic and a
-//! row of words of its own.
+//! and the card for the model's download, a failure, or a microphone that gave way to the system
+//! default. A dictation into another agent shows a strip that leads back to it. A quote's comment
+//! field has a mic and a row of words of its own.
 
 use std::time::Instant;
 
@@ -11,8 +12,10 @@ use crate::connection::{Clock, Cockpit};
 use crate::format;
 use crate::keymap::Command;
 use crate::prefs::AfterDictation;
+use crate::state::actions;
+use crate::state::quotes::Opening;
 use crate::state::voice::{
-    Destination, DownloadFrom, Field, LiveWords, ModelStatus, VoiceCard, VoicePhase,
+    Destination, DownloadFrom, Field, LiveWords, MicMissing, ModelStatus, VoiceCard, VoicePhase,
 };
 use crate::ui::dialog_height;
 use crate::ui::icons::{Icon, IconKind};
@@ -172,7 +175,27 @@ fn VoiceCardPopover() -> Element {
                         button { class: "button small", onclick: close, "OK" }
                     }
                 },
+                VoiceCard::Fallback { chosen, using, missing } => rsx! {
+                    h3 { "Recording from the system default" }
+                    p { "{fallback_sentence(&chosen, using.as_deref(), missing)}" }
+                    div { class: "voice-card-actions",
+                        button { class: "button small", onclick: close, "OK" }
+                    }
+                },
             }
+        }
+    }
+}
+
+/// Why the dictation records from the system default, as the card says it.
+fn fallback_sentence(chosen: &str, using: Option<&str>, missing: MicMissing) -> String {
+    let using = using.unwrap_or("the system default");
+    match missing {
+        MicMissing::AtStart => {
+            format!("{chosen} is not connected, so this dictation uses {using}.")
+        }
+        MicMissing::MidWay => {
+            format!("{chosen} was disconnected. The dictation goes on with {using}.")
         }
     }
 }
@@ -270,6 +293,99 @@ pub fn VoiceStrip(agent: AgentId) -> Element {
     }
 }
 
+/// Above the message of the agent on screen while a dictation runs into another one: which
+/// agent, a button back to it, and the keys that stop and cancel. Enter here sends this agent's
+/// message, not the dictation.
+#[component]
+pub fn AwayStrip(agent: AgentId) -> Element {
+    let cockpit: Cockpit = use_context();
+    let voice: VoiceDesk = use_context();
+    let away = {
+        let state = voice.state.read();
+        state
+            .dictating()
+            .filter(|&dictating| dictating != agent)
+            .map(|dictating| (dictating, state.phase))
+    };
+    let shown = use_agent_presence(Some(agent), away.map(|_| agent));
+    // The agent it leads back to and the phase, kept for the exit: after Esc the phase is idle.
+    let kept = use_presence(away);
+    let (Some(shown), Some(kept)) = (shown, kept) else {
+        return rsx! {};
+    };
+    let (to, phase) = kept.value;
+    let (title, hint) = {
+        let state = cockpit.state.read();
+        // An agent closed during the dictation has no title, and nothing to go back to.
+        let title = state
+            .agents
+            .get(&to)
+            .map(|entry| entry.summary.title.clone());
+        let hint = away_hint(
+            phase,
+            state.prefs.voice.after,
+            &state.prefs.keys.shown(Command::Talk),
+        );
+        (title, hint)
+    };
+    rsx! {
+        div {
+            class: shown.class("voice-strip"),
+            role: "status",
+            aria_label: "Dictation into another agent",
+            div { class: "voice-strip-clip",
+                div { class: "voice-strip-body",
+                    div { class: "voice-strip-head",
+                        match phase {
+                            VoicePhase::Recording { since, .. } => rsx! {
+                                span { class: "voice-dot", aria_hidden: true }
+                                LevelMeter {}
+                                RecordingTime { since }
+                                span { class: "voice-away",
+                                    if let Some(title) = &title {
+                                        "Dictating into "
+                                        b { "{title}" }
+                                    } else {
+                                        "Dictating into a closed agent"
+                                    }
+                                }
+                            },
+                            VoicePhase::Finishing { .. } | VoicePhase::Idle => rsx! {
+                                span { class: "voice-finishing",
+                                    span { class: "spinner", aria_hidden: true }
+                                    span { class: "voice-away",
+                                        if let Some(title) = &title {
+                                            "Writing the last words for "
+                                            b { "{title}" }
+                                        } else {
+                                            "Writing the last words"
+                                        }
+                                    }
+                                }
+                            },
+                        }
+                        if let Some(title) = &title {
+                            button {
+                                class: "button small voice-go-back",
+                                title: "Show {title}",
+                                onclick: move |_| cockpit.update(|state| actions::select_agent(state, to)),
+                                Icon { kind: IconKind::ArrowLeft, size: 12 }
+                                "Go back"
+                            }
+                        }
+                        span { class: "spacer" }
+                        span { class: "voice-hint",
+                            "{hint}"
+                            kbd { "Esc" }
+                            " cancels"
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
 /// The words so far, the words since the last pause lighter, or "Listening…" before the first.
 /// Once the recording stops, every word is final.
 #[component]
@@ -290,7 +406,7 @@ fn LiveText(live: LiveWords, finishing: bool) -> Element {
 /// The mic in a comment field's head: a click starts a dictation into the comment, which runs
 /// until the next click. It is off for an exited agent, as the message's mic is.
 #[component]
-pub fn CommentMic(agent: AgentId, opening: u32) -> Element {
+pub fn CommentMic(agent: AgentId, opening: Opening) -> Element {
     let cockpit: Cockpit = use_context();
     let voice: VoiceDesk = use_context();
     let (enabled, exited, keys) = {
@@ -345,7 +461,7 @@ pub fn CommentMic(agent: AgentId, opening: u32) -> Element {
 /// Under a comment field while a dictation runs into it, in the place of the key hints: the
 /// level, the words, and the keys that stop and cancel. It plays its exit with the last words.
 #[component]
-pub fn CommentWords(opening: u32) -> Element {
+pub fn CommentWords(opening: Opening) -> Element {
     let voice: VoiceDesk = use_context();
     let shown = {
         let state = voice.state.read();
@@ -394,6 +510,20 @@ fn stop_hint(phase: VoicePhase, after: AfterDictation, keys: &str) -> String {
     match phase {
         VoicePhase::Recording { latched: false, .. } => format!("Release {keys} to {verb} · "),
         VoicePhase::Recording { latched: true, .. } => format!("{keys} again or Enter {verbs} · "),
+        VoicePhase::Finishing { .. } | VoicePhase::Idle => String::new(),
+    }
+}
+
+/// How a dictation into another agent stops, as its strip says it: Enter here would send this
+/// agent's message, so only the talk key stops it.
+fn away_hint(phase: VoicePhase, after: AfterDictation, keys: &str) -> String {
+    let (verb, verbs) = match after {
+        AfterDictation::Insert => ("insert", "inserts"),
+        AfterDictation::InsertAndSend => ("send", "sends"),
+    };
+    match phase {
+        VoicePhase::Recording { latched: false, .. } => format!("Release {keys} to {verb} · "),
+        VoicePhase::Recording { latched: true, .. } => format!("{keys} again {verbs} · "),
         VoicePhase::Finishing { .. } | VoicePhase::Idle => String::new(),
     }
 }
@@ -468,6 +598,43 @@ mod tests {
                 "Ctrl+Space"
             ),
             ""
+        );
+    }
+
+    #[test]
+    fn the_strip_of_another_agent_stops_with_the_talk_key_alone() {
+        let tapped = VoicePhase::Recording {
+            agent: AgentId::new(1),
+            to: Destination::Message,
+            since: Instant::now(),
+            latched: true,
+        };
+        let held = VoicePhase::Recording {
+            agent: AgentId::new(1),
+            to: Destination::Message,
+            since: Instant::now(),
+            latched: false,
+        };
+
+        assert_eq!(
+            away_hint(tapped, AfterDictation::Insert, "Ctrl+Space"),
+            "Ctrl+Space again inserts · "
+        );
+        assert_eq!(
+            away_hint(held, AfterDictation::InsertAndSend, "Ctrl+Space"),
+            "Release Ctrl+Space to send · "
+        );
+    }
+
+    #[test]
+    fn the_card_says_which_microphone_the_dictation_uses_and_why() {
+        assert_eq!(
+            fallback_sentence("Headset", Some("Built-in microphone"), MicMissing::AtStart),
+            "Headset is not connected, so this dictation uses Built-in microphone."
+        );
+        assert_eq!(
+            fallback_sentence("Headset", None, MicMissing::MidWay),
+            "Headset was disconnected. The dictation goes on with the system default."
         );
     }
 }

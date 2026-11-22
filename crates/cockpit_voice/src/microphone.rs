@@ -1,7 +1,8 @@
+use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::time::{Duration, Instant};
 
-use cpal::traits::DeviceTrait;
+use cpal::traits::{DeviceTrait, HostTrait};
 use cpal::{
     Device, ErrorKind, FromSample, I24, InputCallbackInfo, SampleFormat, SizedSample, Stream,
     SupportedStreamConfig, U24,
@@ -11,6 +12,43 @@ use crate::voice_error::VoiceError;
 
 /// How often the level goes out.
 const LEVEL_EVERY: Duration = Duration::from_millis(33);
+/// A recording opens its microphone again at most this many times, so that a stream that fails
+/// as soon as it opens cannot loop.
+const MAX_REOPENS: u32 = 8;
+
+/// Where the microphone's level goes, from its audio thread.
+pub(crate) type Level = Arc<dyn Fn(f32) + Send + Sync>;
+
+/// The microphones of this computer by name, as a choice in Settings lists them.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Microphones {
+    /// The system default's name, when there is one.
+    pub default: Option<String>,
+    /// Each microphone's name once, in the system's order.
+    pub names: Vec<String>,
+}
+
+/// Lists the microphones. It records nothing, but it can take a moment on Linux.
+pub fn microphones() -> Result<Microphones, VoiceError> {
+    let host = cpal::default_host();
+    let default = host.default_input_device().and_then(|device| name(&device));
+    let mut names: Vec<String> = Vec::new();
+    for device in host.input_devices()? {
+        if let Some(name) = name(&device)
+            && !names.contains(&name)
+        {
+            names.push(name);
+        }
+    }
+    Ok(Microphones { default, names })
+}
+
+fn name(device: &Device) -> Option<String> {
+    device
+        .description()
+        .ok()
+        .map(|description| description.name().to_owned())
+}
 
 /// Audio from the microphone, mono at its own rate.
 pub(crate) struct Block {
@@ -19,24 +57,41 @@ pub(crate) struct Block {
     pub(crate) pcm: Vec<f32>,
 }
 
-/// The default microphone, recording while this lives. Its audio goes out as [`Block`]s. Its
-/// level goes out from the audio thread itself, so it keeps moving while the worker transcribes.
+/// A microphone, recording while this lives. Its audio goes out as [`Block`]s. Its level goes
+/// out from the audio thread itself, so it keeps moving while the worker transcribes.
 pub(crate) struct Microphone {
     _stream: Stream,
     rate: u32,
     lost: Receiver<cpal::Error>,
+    /// The name of the device it records, when it has one.
+    name: Option<String>,
+    /// The microphone chosen was missing, and this is the system default instead.
+    instead_of_chosen: bool,
 }
 
 impl Microphone {
+    /// Opens the microphone named `chosen` when it is connected, the system default otherwise.
     pub(crate) fn open(
+        chosen: Option<&str>,
         audio: Sender<Block>,
-        level: impl Fn(f32) + Send + 'static,
+        level: Level,
     ) -> Result<Self, VoiceError> {
-        use cpal::traits::{HostTrait, StreamTrait};
+        use cpal::traits::StreamTrait;
 
-        let device = cpal::default_host()
-            .default_input_device()
-            .ok_or(VoiceError::NoMicrophone)?;
+        let host = cpal::default_host();
+        let found = match chosen {
+            Some(chosen) => host
+                .input_devices()?
+                .find(|device| name(device).as_deref() == Some(chosen)),
+            None => None,
+        };
+        let instead_of_chosen = chosen.is_some() && found.is_none();
+        let device = match found {
+            Some(device) => device,
+            None => host
+                .default_input_device()
+                .ok_or(VoiceError::NoMicrophone)?,
+        };
         let config = device.default_input_config()?;
         let (lose, lost) = mpsc::channel();
         let stream = match config.sample_format() {
@@ -61,11 +116,22 @@ impl Microphone {
             _stream: stream,
             rate: config.sample_rate(),
             lost,
+            name: name(&device),
+            instead_of_chosen,
         })
     }
 
     pub(crate) fn rate(&self) -> u32 {
         self.rate
+    }
+
+    pub(crate) fn name(&self) -> Option<&str> {
+        self.name.as_deref()
+    }
+
+    /// Whether this is the system default, opened because the microphone chosen was missing.
+    pub(crate) fn instead_of_chosen(&self) -> bool {
+        self.instead_of_chosen
     }
 
     /// Why the microphone stopped sending audio, once it has.
@@ -78,7 +144,7 @@ fn build<T>(
     device: &Device,
     config: &SupportedStreamConfig,
     audio: Sender<Block>,
-    level: impl Fn(f32) + Send + 'static,
+    level: Level,
     lose: Sender<cpal::Error>,
 ) -> Result<Stream, VoiceError>
 where
@@ -149,6 +215,32 @@ fn stops_the_stream(error: &cpal::Error) -> bool {
     }
 }
 
+/// Whether a recording whose microphone stopped with `error`, after `reopens` reopenings, opens
+/// a microphone again rather than end.
+pub(crate) fn reopens_after(error: &cpal::Error, reopens: u32) -> bool {
+    if reopens >= MAX_REOPENS {
+        return false;
+    }
+    match error.kind() {
+        // On Windows a new default microphone invalidates the stream. A device that went away
+        // may leave another one as the default.
+        ErrorKind::StreamInvalidated | ErrorKind::DeviceNotAvailable => true,
+        ErrorKind::DeviceBusy
+        | ErrorKind::DeviceChanged
+        | ErrorKind::HostUnavailable
+        | ErrorKind::InvalidInput
+        | ErrorKind::PermissionDenied
+        | ErrorKind::RealtimeDenied
+        | ErrorKind::ResourceExhausted
+        | ErrorKind::UnsupportedConfig
+        | ErrorKind::UnsupportedOperation
+        | ErrorKind::Xrun
+        | ErrorKind::BackendError
+        | ErrorKind::Other
+        | _ => false,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -159,5 +251,25 @@ mod tests {
         assert!(!stops_the_stream(&ErrorKind::DeviceChanged.into()));
         assert!(stops_the_stream(&ErrorKind::DeviceNotAvailable.into()));
         assert!(stops_the_stream(&ErrorKind::BackendError.into()));
+    }
+
+    #[test]
+    fn a_new_or_lost_device_opens_a_microphone_again_and_a_refusal_ends_the_recording() {
+        let reopens = |kind: ErrorKind| reopens_after(&kind.into(), 0);
+
+        assert!(reopens(ErrorKind::StreamInvalidated));
+        assert!(reopens(ErrorKind::DeviceNotAvailable));
+        assert!(!reopens(ErrorKind::PermissionDenied));
+        assert!(!reopens(ErrorKind::DeviceBusy));
+        assert!(!reopens(ErrorKind::HostUnavailable));
+        assert!(!reopens(ErrorKind::BackendError));
+    }
+
+    #[test]
+    fn a_microphone_that_keeps_failing_ends_the_recording() {
+        let invalidated: cpal::Error = ErrorKind::StreamInvalidated.into();
+
+        assert!(reopens_after(&invalidated, MAX_REOPENS - 1));
+        assert!(!reopens_after(&invalidated, MAX_REOPENS));
     }
 }

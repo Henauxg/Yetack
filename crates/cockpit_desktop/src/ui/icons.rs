@@ -33,6 +33,8 @@ pub enum IconKind {
     Terminal,
     Send,
     ArrowDown,
+    /// Back to where the user came from.
+    ArrowLeft,
     /// From one version to the next.
     ArrowRight,
     Clock,
@@ -131,6 +133,7 @@ impl IconKind {
                 r#"<path d="M12 15V3"></path><path d="m7 10 5 5 5-5"></path><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>"#
             }
             Self::ArrowDown => r#"<path d="M12 5v14"></path><path d="M6 13l6 6 6-6"></path>"#,
+            Self::ArrowLeft => r#"<path d="M19 12H5"></path><path d="M11 6l-6 6 6 6"></path>"#,
             Self::ArrowRight => r#"<path d="M5 12h14"></path><path d="M13 6l6 6-6 6"></path>"#,
             Self::Clock => {
                 r#"<circle cx="12" cy="12" r="8"></circle><path d="M12 8v4l3 2"></path>"#

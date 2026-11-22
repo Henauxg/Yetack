@@ -23,7 +23,8 @@ mod voice_error;
 
 pub use catalog::{MODEL_FILES, ModelFile};
 pub use live_text::LiveText;
-pub use voice::{Event, LiveRefresh, Voice, supported};
+pub use microphone::{Microphones, microphones};
+pub use voice::{Event, LiveRefresh, Missing, Voice, supported};
 pub use voice_error::VoiceError;
 
 /// The rate of the audio the models take.

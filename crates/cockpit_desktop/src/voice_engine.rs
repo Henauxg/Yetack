@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use cockpit_protocol::{AgentId, PromptDelivery};
-use cockpit_voice::{Event, LiveRefresh, Voice, VoiceError};
+use cockpit_voice::{Event, LiveRefresh, Microphones, Missing, Voice, VoiceError};
 use dioxus::prelude::*;
 use tokio::sync::mpsc::{self, UnboundedReceiver as Receiver};
 
@@ -15,8 +15,8 @@ use crate::bridge::{self, COMPOSER_ID};
 use crate::connection::Cockpit;
 use crate::prefs::LiveTextRefresh;
 use crate::state::voice::{
-    self, Dictation, DownloadFrom, Field, Landing, LiveWords, ModelStatus, VoiceCard, VoiceState,
-    WorkerOrder, dictation_target,
+    self, Dictation, DownloadFrom, Field, Landing, LiveWords, MicMissing, MicrophoneList,
+    ModelStatus, VoiceCard, VoiceState, WorkerOrder, dictation_target,
 };
 use crate::state::{Drafts, actions};
 use crate::ui::COMMENT_FIELD_ID;
@@ -53,6 +53,8 @@ struct Desk {
     events: mpsc::UnboundedSender<(u32, Event)>,
     /// The running download's news. Dropping it cancels the download.
     news: Option<Receiver<DownloadNews>>,
+    /// Where the microphones go once listed.
+    listed: mpsc::UnboundedSender<Result<Microphones, VoiceError>>,
 }
 
 pub async fn run(
@@ -64,6 +66,7 @@ pub async fn run(
     use futures_util::StreamExt;
 
     let (events, mut heard) = mpsc::unbounded_channel();
+    let (listed, mut lists) = mpsc::unbounded_channel();
     let mut desk = Desk {
         cockpit,
         state,
@@ -73,6 +76,7 @@ pub async fn run(
         recording: 0,
         events,
         news: None,
+        listed,
     };
     loop {
         tokio::select! {
@@ -88,6 +92,7 @@ pub async fn run(
                 }
             }
             Some(news) = next_news(&mut desk.news) => desk.download_news(news),
+            Some(list) = lists.recv() => desk.listed(list),
         }
     }
 }
@@ -115,6 +120,10 @@ impl Desk {
             VoiceCommand::Blur => self.state.write().blur(),
             VoiceCommand::Cancel => self.state.write().cancel(),
             VoiceCommand::Stop => self.state.write().stop(),
+            VoiceCommand::AgentGone => self
+                .state
+                .write()
+                .agents_changed(&self.cockpit.state.peek()),
             VoiceCommand::CommentChanged => self
                 .state
                 .write()
@@ -136,6 +145,14 @@ impl Desk {
             }
             VoiceCommand::CloseCard => {
                 self.state.write().card = None;
+                WorkerOrder::Nothing
+            }
+            VoiceCommand::ListMicrophones => {
+                let listed = self.listed.clone();
+                tokio::task::spawn_blocking(move || {
+                    // The window may have closed meanwhile.
+                    let _ = listed.send(cockpit_voice::microphones());
+                });
                 WorkerOrder::Nothing
             }
         };
@@ -167,12 +184,16 @@ impl Desk {
                 };
                 let events = self.events.clone();
                 let recording = self.recording;
-                let refresh = match self.cockpit.state.peek().prefs.voice.live {
-                    LiveTextRefresh::Auto => LiveRefresh::Auto,
-                    LiveTextRefresh::EverySecond => LiveRefresh::EverySecond,
-                    LiveTextRefresh::Off => LiveRefresh::Off,
+                let (refresh, microphone) = {
+                    let state = self.cockpit.state.peek();
+                    let refresh = match state.prefs.voice.live {
+                        LiveTextRefresh::Auto => LiveRefresh::Auto,
+                        LiveTextRefresh::EverySecond => LiveRefresh::EverySecond,
+                        LiveTextRefresh::Off => LiveRefresh::Off,
+                    };
+                    (refresh, state.prefs.voice.microphone.clone())
                 };
-                let started = voice.start(refresh, move |event| {
+                let started = voice.start(refresh, microphone, move |event| {
                     // The task ends with the window: the last events have no one to go to.
                     let _ = events.send((recording, event));
                 });
@@ -197,6 +218,17 @@ impl Desk {
                     hearing: text.hearing,
                 };
             }
+            Event::Fallback {
+                chosen,
+                using,
+                missing,
+            } => {
+                let missing = match missing {
+                    Missing::AtStart => MicMissing::AtStart,
+                    Missing::MidWay => MicMissing::MidWay,
+                };
+                self.state.write().fell_back(chosen, using, missing);
+            }
             Event::Finishing | Event::Cancelled => {}
             Event::Done(text) => {
                 let dictation = self.state.write().done();
@@ -211,6 +243,15 @@ impl Desk {
                 }
                 state.failed(sentence(&error));
             }
+        }
+    }
+
+    fn listed(&mut self, list: Result<Microphones, VoiceError>) {
+        match list {
+            Ok(Microphones { default, names }) => {
+                self.state.write().microphones = Some(MicrophoneList { default, names });
+            }
+            Err(error) => tracing::warn!("cannot list the microphones: {error}"),
         }
     }
 

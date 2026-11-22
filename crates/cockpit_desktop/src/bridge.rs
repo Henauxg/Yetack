@@ -1103,6 +1103,7 @@ mod tests {
     use crate::machine::MachineId;
     use crate::state::find::FindPane;
     use crate::state::projects::ProjectKey;
+    use crate::state::quotes::Opening;
     use crate::state::voice::{Destination, VoicePhase};
     use crate::state::{state_with, summary};
 
@@ -1225,7 +1226,9 @@ mod tests {
             },
             ..ready.clone()
         };
-        let comment = Destination::Comment { opening: 5 };
+        let comment = Destination::Comment {
+            opening: Opening::default(),
+        };
         let enter_stops =
             |state: &AppState, voice: &VoiceState| KeyMode::new(state, voice).enter_stops;
 

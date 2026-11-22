@@ -1,5 +1,5 @@
-//! Settings' Voice tab: dictation on or off, its key, what happens once it stops, the speech
-//! model, and how often the live text comes up to date.
+//! Settings' Voice tab: dictation on or off, its key, what happens once it stops, the
+//! microphone, the speech model, and how often the live text comes up to date.
 
 use dioxus::prelude::*;
 
@@ -7,14 +7,17 @@ use crate::connection::Cockpit;
 use crate::format;
 use crate::keymap::Command;
 use crate::prefs::{AfterDictation, LiveTextRefresh, VoicePrefs};
-use crate::state::voice::{DownloadFrom, ModelStatus};
+use crate::state::voice::{DownloadFrom, MicrophoneList, ModelStatus};
 use crate::state::{RefusedChord, settings};
+use crate::ui::icons::{Icon, IconKind};
+use crate::ui::presence::Presence;
 use crate::ui::settings::CommandRow;
 use crate::ui::voice::{DownloadBar, model_size};
 use crate::voice_desk::{VoiceCommand, VoiceDesk};
 
 const DICTATION_LABEL_ID: &str = "voice-dictation-label";
 const AFTER_LABEL_ID: &str = "voice-after-label";
+const MICROPHONE_LABEL_ID: &str = "voice-microphone-label";
 const MODEL_LABEL_ID: &str = "voice-model-label";
 const LIVE_LABEL_ID: &str = "voice-live-label";
 
@@ -33,6 +36,106 @@ fn live_label(live: LiveTextRefresh) -> &'static str {
     }
 }
 
+/// The microphone's menu button, and its menu: the system default, then each microphone. A
+/// chosen one that is not connected stays in the list, marked.
+#[component]
+fn MicrophoneChoice(
+    chosen: Option<String>,
+    microphones: Option<MicrophoneList>,
+    mut menu: Signal<bool>,
+) -> Element {
+    let cockpit: Cockpit = use_context();
+    let listed = microphones.is_some();
+    let MicrophoneList { default, mut names } = microphones.unwrap_or_default();
+    // Before the list arrives, the chosen one counts as connected.
+    let missing = chosen
+        .as_ref()
+        .filter(|chosen| listed && !names.contains(chosen))
+        .cloned();
+    if let Some(missing) = &missing {
+        names.push(missing.clone());
+    }
+    let open = menu();
+    let mut pick = move |microphone: Option<String>| {
+        menu.set(false);
+        cockpit.update(|state| settings::set_microphone(state, microphone));
+    };
+    rsx! {
+        span { class: "mic-choice-anchor",
+            button {
+                class: if open { "menu-button mic-choice raised" } else { "menu-button mic-choice" },
+                aria_labelledby: MICROPHONE_LABEL_ID,
+                aria_expanded: open,
+                onclick: move |event| {
+                    event.stop_propagation();
+                    menu.set(!open);
+                },
+                span { class: "menu-button-label",
+                    match (&chosen, &default) {
+                        (Some(chosen), _) => rsx! {
+                            "{chosen}"
+                            if missing.is_some() {
+                                span { class: "muted", " · not connected" }
+                            }
+                        },
+                        (None, Some(default)) => rsx! {
+                            "System default"
+                            span { class: "muted", " · {default}" }
+                        },
+                        (None, None) => rsx! { "System default" },
+                    }
+                }
+                Icon { kind: IconKind::ChevronDown, size: 12 }
+            }
+            Presence { open,
+                div {
+                    class: "popover menu compact-menu mic-menu",
+                    onclick: move |event| event.stop_propagation(),
+                    button {
+                        class: if chosen.is_none() { "menu-item two-lines chosen" } else { "menu-item two-lines" },
+                        aria_pressed: chosen.is_none(),
+                        onclick: move |_| pick(None),
+                        span { class: "mic-menu-line",
+                            span { class: "menu-label", "System default" }
+                            if chosen.is_none() {
+                                Icon { kind: IconKind::Check, size: 14 }
+                            }
+                        }
+                        if let Some(default) = &default {
+                            span { class: "menu-sub", "{default}" }
+                        }
+                    }
+                    if !names.is_empty() {
+                        div { class: "menu-divider" }
+                    }
+                    for name in names {
+                        {
+                            let picked = chosen.as_ref() == Some(&name);
+                            let absent = missing.as_ref() == Some(&name);
+                            let value = name.clone();
+                            rsx! {
+                                button {
+                                    key: "{name}",
+                                    class: if picked { "menu-item chosen" } else { "menu-item" },
+                                    aria_pressed: picked,
+                                    onclick: move |_| pick(Some(value.clone())),
+                                    span { class: "menu-label", "{name}" }
+                                    if absent {
+                                        span { class: "menu-tag", "not connected" }
+                                    }
+                                    if picked {
+                                        Icon { kind: IconKind::Check, size: 14 }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
 #[component]
 pub fn VoiceTab(recording: Option<Command>, refused: Option<RefusedChord>) -> Element {
     use strum::VariantArray;
@@ -41,11 +144,23 @@ pub fn VoiceTab(recording: Option<Command>, refused: Option<RefusedChord>) -> El
     let voice: VoiceDesk = use_context();
     let (prefs, keys): (VoicePrefs, _) = {
         let state = cockpit.state.read();
-        (state.prefs.voice, state.prefs.keys.clone())
+        (state.prefs.voice.clone(), state.prefs.keys.clone())
     };
-    let model = voice.state.read().model;
+    let (model, microphones) = {
+        let state = voice.state.read();
+        (state.model, state.microphones.clone())
+    };
+    // Listed at each opening of the tab, so a microphone plugged in since then shows.
+    use_hook(move || voice.send(VoiceCommand::ListMicrophones));
+    let mut menu = use_signal(|| false);
     rsx! {
-        div { class: "dialog-body voice-tab",
+        div {
+            class: "dialog-body voice-tab",
+            onclick: move |_| {
+                if menu() {
+                    menu.set(false);
+                }
+            },
             h3 { class: "settings-title", "Dictation" }
             div { class: "setting-row",
                 div { class: "setting-text",
@@ -97,6 +212,15 @@ pub fn VoiceTab(recording: Option<Command>, refused: Option<RefusedChord>) -> El
                         }
                     }
                 }
+            }
+            div { class: "setting-row",
+                div { class: "setting-text",
+                    span { id: MICROPHONE_LABEL_ID, class: "setting-label", "Microphone" }
+                    span { class: "setting-help",
+                        "System default follows the microphone this computer uses, and a dictation goes on when it changes, as when you plug in a headset. A chosen microphone that is not connected gives way to the system default."
+                    }
+                }
+                MicrophoneChoice { chosen: prefs.microphone, microphones, menu }
             }
             h3 { class: "settings-title", "Speech model" }
             div { class: "setting-row voice-model-row",

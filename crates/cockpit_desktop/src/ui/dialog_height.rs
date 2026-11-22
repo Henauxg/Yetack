@@ -7,6 +7,7 @@ use dioxus::prelude::*;
 use serde::Serialize;
 
 use crate::ui::dialogs::OVERLAY_CLASS;
+use crate::ui::presence::LEAVING;
 
 /// Waits for its settings, then watches every dialog. Field names are serde's names for
 /// `Settings`.
@@ -198,6 +199,7 @@ pub const HEIGHT_EVENT: &str = "cockpit-height";
 const FOLLOW_SCRIPT: &str = r#"
 const id = await dioxus.recv();
 const heightEvent = await dioxus.recv();
+const leavingClass = await dioxus.recv();
 const settings = await dioxus.recv();
 const clip = document.getElementById(id);
 const body = clip?.firstElementChild;
@@ -229,7 +231,7 @@ if (body) {
     height = to;
     const grows = to > from;
     const duration = millis(grows ? settings.grow_duration : settings.shrink_duration);
-    if (duration > 0 && clip.closest(".leaving") === null) {
+    if (duration > 0 && clip.closest(`.${leavingClass}`) === null) {
       const animation = clip.animate(
         [{ height: `${from}px` }, { height: `${to}px` }],
         { duration, easing: token(grows ? settings.grow_easing : settings.shrink_easing) },
@@ -256,6 +258,7 @@ pub fn follow_content(id: &'static str) {
     let sent = script
         .send(id)
         .and_then(|()| script.send(HEIGHT_EVENT))
+        .and_then(|()| script.send(LEAVING))
         .and_then(|()| script.send(SETTINGS));
     if let Err(error) = sent {
         tracing::warn!("cannot animate the height of {id}: {error}");

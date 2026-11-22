@@ -177,6 +177,11 @@ pub fn set_voice_live(state: &mut AppState, live: LiveTextRefresh) {
     state.prefs.voice.live = live;
 }
 
+/// `None` records from the system default.
+pub fn set_microphone(state: &mut AppState, microphone: Option<String>) {
+    state.prefs.voice.microphone = microphone;
+}
+
 pub fn set_esc_stop(state: &mut AppState, esc_stop: EscStop) {
     state.prefs.chat.esc_stop = esc_stop;
 }

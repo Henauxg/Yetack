@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 use crate::SAMPLE_RATE;
 use crate::level_control::LevelControl;
 use crate::live_text::LiveText;
-use crate::microphone::{Block, Microphone};
+use crate::microphone::{self, Block, Level, Microphone};
 use crate::models::Models;
 use crate::resampler::Resampler;
 use crate::utterance::Utterance;
@@ -25,14 +25,31 @@ pub enum LiveRefresh {
     Off,
 }
 
+/// When the microphone chosen for a recording went missing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Missing {
+    /// It was not connected when the recording started.
+    AtStart,
+    /// It was disconnected during the recording.
+    MidWay,
+}
+
 /// What a recording reports, in this order: levels and live text while it records, then
 /// `Finishing` once stopped, then `Done`. A microphone that stops ends the recording the same way,
-/// and `Failed` follows its `Done`. Otherwise `Cancelled` or `Failed` can come at any point.
+/// and `Failed` follows its `Done`, unless another microphone takes over. Otherwise `Cancelled` or
+/// `Failed` can come at any point.
 #[derive(Debug)]
 pub enum Event {
     /// The microphone's level: the RMS of the last few dozen milliseconds, from 0 to 1.
     Level(f32),
     Live(LiveText),
+    /// The microphone chosen is missing, so the recording uses the system default, `using`. It
+    /// comes once in a recording.
+    Fallback {
+        chosen: String,
+        using: Option<String>,
+        missing: Missing,
+    },
     /// The recording is stopping, and the last words are on their way.
     Finishing,
     /// The final text, maybe empty.
@@ -82,6 +99,7 @@ type Events = Arc<dyn Fn(Event) + Send + Sync>;
 enum Command {
     Start {
         refresh: LiveRefresh,
+        microphone: Option<String>,
         events: Events,
     },
     /// The user stopped at this instant: the worker may hear of it later.
@@ -106,15 +124,18 @@ impl Voice {
         Ok(Self { commands })
     }
 
-    /// Starts recording, unless a recording runs. Its events go to `events`, from the worker and
-    /// from the audio thread.
+    /// Starts recording, unless a recording runs, from the microphone named `microphone`, or
+    /// from the system default when it is `None` or missing. Its events go to `events`, from the
+    /// worker and from the audio thread.
     pub fn start(
         &self,
         refresh: LiveRefresh,
+        microphone: Option<String>,
         events: impl Fn(Event) + Send + Sync + 'static,
     ) -> Result<(), VoiceError> {
         self.send(Command::Start {
             refresh,
+            microphone,
             events: Arc::new(events),
         })
     }
@@ -147,27 +168,106 @@ fn work(folder: &Path, commands: &Receiver<Command>) {
             }
             Err(RecvTimeoutError::Disconnected) => return,
         };
-        let Command::Start { refresh, events } = command else {
+        let Command::Start {
+            refresh,
+            microphone,
+            events,
+        } = command
+        else {
             continue;
         };
-        if let Err(error) = record(folder, &mut models, refresh, &events, commands) {
+        let recording = Recording {
+            refresh,
+            microphone: microphone.as_deref(),
+            events: &events,
+        };
+        if let Err(error) = record(folder, &mut models, &recording, commands) {
             events(Event::Failed(error));
         }
     }
 }
 
+/// What a recording asked for.
+struct Recording<'a> {
+    refresh: LiveRefresh,
+    /// The microphone chosen, by name.
+    microphone: Option<&'a str>,
+    events: &'a Events,
+}
+
+/// A microphone and the resampling of its audio. Each microphone has its own, since its rate may
+/// differ from the last one's.
+struct Input {
+    microphone: Microphone,
+    blocks: Receiver<Block>,
+    resampler: Resampler,
+}
+
+impl Input {
+    fn open(chosen: Option<&str>, level: &Level) -> Result<Self, VoiceError> {
+        let (audio, blocks) = mpsc::channel();
+        let microphone = Microphone::open(chosen, audio, Arc::clone(level))?;
+        let resampler = Resampler::new(microphone.rate(), SAMPLE_RATE);
+        Ok(Self {
+            microphone,
+            blocks,
+            resampler,
+        })
+    }
+
+    /// The audio heard so far, at the models' rate.
+    fn take(&mut self) -> Vec<f32> {
+        take(&self.blocks, None, &mut self.resampler)
+    }
+
+    /// Stops the microphone, and gives its last audio, without what it heard after `end`.
+    fn close(self, end: Option<Instant>) -> Vec<f32> {
+        let Self {
+            microphone,
+            blocks,
+            mut resampler,
+        } = self;
+        drop(microphone);
+        let mut pcm = take(&blocks, end, &mut resampler);
+        resampler.flush(&mut pcm);
+        pcm
+    }
+
+    /// Tells that the recording uses the system default, when the microphone chosen is missing.
+    /// Returns whether it told.
+    fn tell_fallback(&self, recording: &Recording<'_>, missing: Missing) -> bool {
+        let Some(chosen) = recording
+            .microphone
+            .filter(|_| self.microphone.instead_of_chosen())
+        else {
+            return false;
+        };
+        (recording.events)(Event::Fallback {
+            chosen: chosen.to_owned(),
+            using: self.microphone.name().map(str::to_owned),
+            missing,
+        });
+        true
+    }
+}
+
 /// One recording, from the microphone's opening to the final text. The models load after the
-/// microphone opens, while its audio waits in the channel, so the first word is kept.
+/// microphone opens, while its audio waits in the channel, so the first word is kept. A
+/// microphone that stops gives way to the one [`Microphone::open`] finds then, as when the user
+/// plugs in a headset, and the recording goes on with the same text and level control.
 fn record(
     folder: &Path,
     models: &mut Option<Models>,
-    refresh: LiveRefresh,
-    events: &Events,
+    recording: &Recording<'_>,
     commands: &Receiver<Command>,
 ) -> Result<(), VoiceError> {
-    let (audio, blocks) = mpsc::channel();
-    let levels = Arc::clone(events);
-    let microphone = Microphone::open(audio, move |level| levels(Event::Level(level)))?;
+    let events = recording.events;
+    let level: Level = {
+        let events = Arc::clone(events);
+        Arc::new(move |level| events(Event::Level(level)))
+    };
+    let mut input = Input::open(recording.microphone, &level)?;
+    let mut told = input.tell_fallback(recording, Missing::AtStart);
     let models = match models {
         Some(models) => models,
         unloaded @ None => {
@@ -175,22 +275,40 @@ fn record(
             unloaded.insert(Models::load(folder, threads.min(MAX_THREADS))?)
         }
     };
-    let mut resampler = Resampler::new(microphone.rate(), SAMPLE_RATE);
     let mut control = LevelControl::new();
-    let mut utterance = Utterance::new(&mut models.speech, &mut models.detector, refresh);
+    let mut utterance = Utterance::new(&mut models.speech, &mut models.detector, recording.refresh);
+    let mut reopens = 0;
     let (end, stopped) = loop {
         match commands.recv_timeout(TICK) {
-            Ok(Command::Stop(at)) => break (at + TAIL, microphone.lost()),
+            Ok(Command::Stop(at)) => break (at + TAIL, input.microphone.lost()),
             Ok(Command::Cancel) | Err(RecvTimeoutError::Disconnected) => {
                 events(Event::Cancelled);
                 return Ok(());
             }
             Ok(Command::Start { .. }) | Err(RecvTimeoutError::Timeout) => {}
         }
-        if let Some(error) = microphone.lost() {
-            break (Instant::now(), Some(error));
-        }
-        let mut pcm = take(&blocks, None, &mut resampler);
+        let mut pcm = match input.microphone.lost() {
+            None => input.take(),
+            Some(error) if !microphone::reopens_after(&error, reopens) => {
+                break (Instant::now(), Some(error));
+            }
+            Some(error) => match Input::open(recording.microphone, &level) {
+                Ok(next) => {
+                    tracing::info!(
+                        "microphone: {error}, recording from {} now",
+                        next.microphone.name().unwrap_or("the system default")
+                    );
+                    reopens += 1;
+                    let last = std::mem::replace(&mut input, next).close(None);
+                    told = told || input.tell_fallback(recording, Missing::MidWay);
+                    last
+                }
+                Err(reopening) => {
+                    tracing::warn!("microphone: {error}, and no other one opens: {reopening}");
+                    break (Instant::now(), Some(error));
+                }
+            },
+        };
         control.apply(&mut pcm);
         if let Some(text) = utterance.feed(&pcm)? {
             events(Event::Live(text));
@@ -211,9 +329,7 @@ fn record(
             Ok(Command::Start { .. } | Command::Stop(_)) | Err(RecvTimeoutError::Timeout) => {}
         }
     }
-    drop(microphone);
-    let mut pcm = take(&blocks, Some(end), &mut resampler);
-    resampler.flush(&mut pcm);
+    let mut pcm = input.close(Some(end));
     control.apply(&mut pcm);
     events(Event::Done(utterance.finish(&pcm)?));
     if let Some(error) = stopped {

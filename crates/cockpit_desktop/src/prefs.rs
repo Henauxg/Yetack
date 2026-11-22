@@ -340,13 +340,19 @@ pub struct ChatPrefs {
 }
 
 /// Dictation's settings.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct VoicePrefs {
     /// Off hides the mic button and frees the talk key.
     pub enabled: bool,
     pub after: AfterDictation,
     pub live: LiveTextRefresh,
+    /// The microphone, by the name the system gives it. `None` records from the system default.
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "lenient_name"
+    )]
+    pub microphone: Option<String>,
 }
 
 impl Default for VoicePrefs {
@@ -355,8 +361,24 @@ impl Default for VoicePrefs {
             enabled: true,
             after: AfterDictation::default(),
             live: LiveTextRefresh::default(),
+            microphone: None,
         }
     }
+}
+
+/// A name, or `None` for a value of another kind, from another version of the app, so that the
+/// rest of the file still reads.
+fn lenient_name<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Option<String>, D::Error> {
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum Read {
+        Name(String),
+        Other(IgnoredAny),
+    }
+    Ok(match Read::deserialize(deserializer)? {
+        Read::Name(name) => Some(name),
+        Read::Other(_) => None,
+    })
 }
 
 /// What happens to the text once dictation stops.
@@ -1276,7 +1298,8 @@ mod tests {
   "voice": {
     "enabled": false,
     "after": "insert_and_send",
-    "live": "every_second"
+    "live": "every_second",
+    "microphone": "Headset (USB Audio)"
   },
   "keys": {
     "switcher": "Ctrl+j"
@@ -1389,6 +1412,7 @@ mod tests {
                     enabled: false,
                     after: AfterDictation::InsertAndSend,
                     live: LiveTextRefresh::EverySecond,
+                    microphone: Some("Headset (USB Audio)".to_owned()),
                 },
                 keys: switched,
                 updates: UpdatePrefs {
@@ -1701,6 +1725,21 @@ mod tests {
         assert_eq!(lives, ["auto", "every_second", "off"]);
         assert_eq!(unknown.voice.after, AfterDictation::Insert);
         assert_eq!(unknown.voice.live, LiveTextRefresh::Auto);
+    }
+
+    #[test]
+    fn a_microphone_of_another_kind_reads_as_the_system_default() {
+        let odd: Prefs = serde_json::from_str(
+            r#"{"voice": {"microphone": {"id": 3}, "after": "insert_and_send"}}"#,
+        )
+        .unwrap();
+        let none: Prefs = serde_json::from_str(r#"{"voice": {"microphone": null}}"#).unwrap();
+        let unset = serde_json::to_value(VoicePrefs::default()).unwrap();
+
+        assert_eq!(odd.voice.microphone, None);
+        assert_eq!(odd.voice.after, AfterDictation::InsertAndSend);
+        assert_eq!(none.voice.microphone, None);
+        assert_eq!(unset.get("microphone"), None);
     }
 
     #[test]

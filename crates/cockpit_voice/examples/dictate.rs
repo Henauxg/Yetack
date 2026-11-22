@@ -27,9 +27,12 @@ fn main() -> Result<(), Box<dyn Error>> {
         if recording {
             voice.stop()?;
         } else {
-            voice.start(LiveRefresh::Auto, |event| match event {
+            voice.start(LiveRefresh::Auto, None, |event| match event {
                 Event::Level(_) => {}
                 Event::Live(text) => println!("  {} [{}]", text.said, text.hearing),
+                Event::Fallback { chosen, using, .. } => {
+                    println!("{chosen} is missing: {}", using.unwrap_or_default());
+                }
                 Event::Finishing => println!("  ..."),
                 Event::Done(text) => println!("final: {text}"),
                 Event::Cancelled => println!("cancelled"),

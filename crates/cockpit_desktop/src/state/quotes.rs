@@ -2,6 +2,8 @@
 //! comment is written. They go out with the agent's next message, as Markdown quotes, each
 //! followed by its comment.
 
+use std::fmt;
+
 use cockpit_protocol::{AgentId, ItemId};
 use serde::{Deserialize, Serialize};
 
@@ -17,6 +19,16 @@ pub struct QuoteId(u32);
 impl QuoteId {
     pub fn get(self) -> u32 {
         self.0
+    }
+}
+
+/// Tells one opening of the comment field from the ones before, on the same passage too.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Opening(u32);
+
+impl fmt::Display for Opening {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt(formatter)
     }
 }
 
@@ -69,13 +81,12 @@ pub struct QuoteEditor {
     pub target: EditorTarget,
     /// What the field holds.
     pub text: String,
-    /// Tells this opening of the field from the ones before, on the same passage too.
-    pub opening: u32,
+    pub opening: Opening,
 }
 
 /// Opens the comment field on `passage`, in place of the one open.
 pub fn start(drafts: &mut Drafts, agent: AgentId, passage: Passage) {
-    let opening = drafts.next_serial();
+    let opening = Opening(drafts.next_serial());
     drafts.quote_editor = Some(QuoteEditor {
         agent,
         target: EditorTarget::New(passage),
@@ -90,7 +101,7 @@ pub fn edit(drafts: &mut Drafts, agent: AgentId, id: QuoteId) {
         return;
     };
     let text = quote.comment.clone();
-    let opening = drafts.next_serial();
+    let opening = Opening(drafts.next_serial());
     drafts.quote_editor = Some(QuoteEditor {
         agent,
         target: EditorTarget::Existing(id),

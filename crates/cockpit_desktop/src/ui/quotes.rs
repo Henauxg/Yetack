@@ -22,7 +22,7 @@ use crate::ui::chat_scroll::{CHAT_SCROLL_ID, ENTRY_CLASS, REVEALED_CLASS};
 use crate::ui::dialog_height;
 use crate::ui::icons::{Icon, IconKind};
 use crate::ui::markdown::MARKDOWN_CLASS;
-use crate::ui::presence::{Shown, use_presence};
+use crate::ui::presence::{LEAVING, Shown, use_presence};
 use crate::ui::transcript::USER_BUBBLE_CLASS;
 use crate::ui::voice::{CommentMic, CommentWords};
 use crate::voice_desk::VoiceDesk;
@@ -53,8 +53,6 @@ const OPEN_NOTE: &str = "[data-open], :focus-within";
 const FIELD_CLASS: &str = "quote-editor";
 /// A comment's text that opens the field on a click, with the caret where the click fell.
 const COMMENT_TEXT_CLASS: &str = "quote-comment";
-/// A field that closes and plays its exit, which the script leaves where it is.
-const LEAVING_CLASS: &str = "leaving";
 /// Marks the comment field while a dictation runs into it: Enter there stops the dictation (the
 /// page's key script sends it) and adds no quote.
 const DICTATING_ATTRIBUTE: &str = "data-dictating";
@@ -1067,7 +1065,7 @@ impl Settings {
             takes_escape_attribute: bridge::TAKES_ESCAPE_ATTRIBUTE,
             field_class: FIELD_CLASS,
             comment_text_class: COMMENT_TEXT_CLASS,
-            leaving_class: LEAVING_CLASS,
+            leaving_class: LEAVING,
             blocks_class: BLOCKS_CLASS,
             block_card_class: BLOCK_CARD_CLASS,
             user_bubble_class: USER_BUBBLE_CLASS,
@@ -1509,7 +1507,7 @@ fn CommentField(
         "New"
     };
     let class = if leaving {
-        format!("popover {FIELD_CLASS} {LEAVING_CLASS}")
+        format!("popover {FIELD_CLASS} {LEAVING}")
     } else {
         format!("popover {FIELD_CLASS}")
     };

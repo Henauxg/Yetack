@@ -10,6 +10,9 @@ use dioxus::prelude::*;
 /// At least the stylesheet's `--motion-out`, which every exit animation lasts.
 const EXIT: Duration = Duration::from_millis(120);
 
+/// The class of an element that plays its exit animation.
+pub const LEAVING: &str = "leaving";
+
 /// What to draw while a value is open or leaving.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Shown<T> {
@@ -120,7 +123,7 @@ impl AgentShown {
     /// The element's class: `base`, with `leaving` or `instant` when they apply.
     pub fn class(self, base: &str) -> String {
         match (self.leaving, self.instant) {
-            (true, _) => format!("{base} leaving"),
+            (true, _) => format!("{base} {LEAVING}"),
             (false, true) => format!("{base} instant"),
             (false, false) => base.to_owned(),
         }
@@ -181,7 +184,7 @@ pub fn Presence(open: bool, children: Element) -> Element {
     };
     rsx! {
         div {
-            class: if shown.leaving { "presence leaving" } else { "presence" },
+            class: if shown.leaving { format!("presence {LEAVING}") } else { "presence".to_owned() },
             inert: shown.leaving.then_some(true),
             {children}
         }

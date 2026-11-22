@@ -26,10 +26,14 @@ pub enum VoiceCommand {
     Stop,
     /// The comment field closed, or another one opened.
     CommentChanged,
+    /// The agent dictated to is gone.
+    AgentGone,
     Download(DownloadFrom),
     CancelDownload,
     RemoveModel,
     CloseCard,
+    /// Settings' Voice tab opened: it lists the microphones.
+    ListMicrophones,
 }
 
 #[derive(Clone, Copy)]
@@ -65,6 +69,16 @@ pub fn use_voice(cockpit: Cockpit) -> VoiceDesk {
     use_effect(move || {
         comment();
         commands.send(VoiceCommand::CommentChanged);
+    });
+    // A dictation into an agent that closes, or that its daemon removes, stops with its text.
+    let gone = use_memo(move || {
+        let dictating = state.read().dictating()?;
+        (!cockpit.state.read().agents.contains_key(&dictating)).then_some(dictating)
+    });
+    use_effect(move || {
+        if gone().is_some() {
+            commands.send(VoiceCommand::AgentGone);
+        }
     });
     use_context_provider(|| VoiceDesk {
         state,

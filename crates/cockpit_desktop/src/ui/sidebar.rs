@@ -37,6 +37,7 @@ use crate::ui::reorder::{
     ROW_CLASS,
 };
 use crate::ui::splitter::SIDEBAR_ID;
+use crate::voice_desk::VoiceDesk;
 use crate::{APP_NAME, format};
 
 #[derive(Debug, Clone, PartialEq)]
@@ -953,7 +954,10 @@ fn AgentRowView(row: AgentRow) -> Element {
 fn AgentRowButton(row: AgentRow, class: String) -> Element {
     let cockpit: Cockpit = use_context();
     let hover: CardHover = use_context();
+    let voice: VoiceDesk = use_context();
     let agent = row.id;
+    // A memo: the live words change the voice state several times a second.
+    let dictating = use_memo(move || voice.state.read().dictating() == Some(agent))();
     rsx! {
         button {
             id: reorder::row_id(agent),
@@ -980,7 +984,16 @@ fn AgentRowButton(row: AgentRow, class: String) -> Element {
                 cockpit.update(|state| to_handle::open_menu(state, agent, x, y));
             },
             span { class: "row-line",
-                span { class: "status-dot", aria_hidden: true }
+                if dictating {
+                    span {
+                        class: "row-mic",
+                        title: "Dictating into this agent",
+                        Icon { kind: IconKind::Mic, size: 10 }
+                        span { class: "visually-hidden", "Dictating" }
+                    }
+                } else {
+                    span { class: "status-dot", aria_hidden: true }
+                }
                 if let Some(machine) = &row.machine {
                     // The account and the machine share one chip.
                     span { class: "row-chip",
