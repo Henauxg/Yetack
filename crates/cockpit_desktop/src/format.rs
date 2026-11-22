@@ -22,7 +22,11 @@ pub const OPUS: ModelChoice = ModelChoice {
     label: "Opus",
 };
 
-pub const MODEL_CHOICES: [ModelChoice; 3] = [
+pub const MODEL_CHOICES: [ModelChoice; 4] = [
+    ModelChoice {
+        alias: "fable",
+        label: "Fable",
+    },
     OPUS,
     ModelChoice {
         alias: "sonnet",
@@ -666,6 +670,15 @@ mod tests {
         assert_eq!(model_alias("sonnet"), Some("sonnet"));
         assert_eq!(model_alias("claude-mythical-1"), None);
         assert_eq!(model_alias("gpt-4o"), None);
+    }
+
+    #[test]
+    fn fable_heads_the_model_menu_and_its_ids_map_to_it() {
+        let labels: Vec<&str> = MODEL_CHOICES.iter().map(|choice| choice.label).collect();
+
+        assert_eq!(labels, ["Fable", "Opus", "Sonnet", "Haiku"]);
+        assert_eq!(model_alias("claude-fable-5-2"), Some("fable"));
+        assert_eq!(model_label("claude-fable-5-2"), "Fable 5.2");
     }
 
     #[test]

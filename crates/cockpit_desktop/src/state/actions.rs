@@ -4549,7 +4549,13 @@ mod tests {
                 effort: Effort::Xhigh,
             })]
         );
-        assert!(before_opus.is_empty());
+        assert_eq!(
+            sent(&before_opus),
+            [&Request::AgentSetModel(SetModelParams {
+                agent: agent(),
+                model: "fable".to_owned(),
+            })]
+        );
         assert_eq!(
             sent(&after_opus),
             [&Request::AgentSetModel(SetModelParams {
