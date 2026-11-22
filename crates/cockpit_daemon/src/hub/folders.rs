@@ -54,6 +54,15 @@ pub(crate) struct PendingMove {
     reply: Option<Reply>,
 }
 
+impl PendingMove {
+    /// Answers the move that waits for the agent's process to exit, as the agent leaves.
+    pub(super) fn agent_gone(self, id: AgentId) {
+        if let Some(reply) = self.reply {
+            respond(reply, Err(errors::agent_not_found(id)));
+        }
+    }
+}
+
 impl Hub {
     /// Resolves the fork's folder off the hub, then forks in [`Hub::fork_to`].
     pub(super) fn fork(&self, params: FolderParams, reply: Reply) {
@@ -251,8 +260,8 @@ impl Hub {
         });
     }
 
-    /// The session is in the new folder: the agent takes the folder, and runs again if it ran.
-    /// After a failed copy it keeps its folder, and runs again there. The answer waits for
+    /// The session is in the new folder: the agent takes the folder, and runs again if it ran and
+    /// no stop came meanwhile. After a failed copy it keeps its folder. The answer waits for
     /// `claude` to run.
     pub(super) fn move_copied(
         &mut self,
@@ -271,7 +280,7 @@ impl Hub {
             agent.record.folder.clone_from(&folder);
             agent.view.set_folder(folder);
         }
-        let restart = restart && agent.process.is_none();
+        let restart = restart && agent.process.is_none() && agent.record.running;
         if moved {
             self.read_repository(id);
         }
@@ -516,6 +525,89 @@ mod tests {
         assert_eq!(refused.code, ErrorCode::AgentRunning);
         assert_eq!(hub.agents[&agent].record.folder, target);
         assert!(hub.agents[&agent].moving.is_none());
+    }
+
+    /// The move waits for the process to exit, and a stop comes first: the agent moves, and
+    /// stays stopped.
+    #[tokio::test]
+    async fn a_stop_while_a_move_waits_leaves_the_agent_stopped() {
+        use crate::store::AgentsFile;
+
+        let temp = tempfile::tempdir().unwrap();
+        let (mut hub, mut inputs, agent) = hub_with_agent(temp.path()).await;
+        let target = temp.path().join("app_moved");
+        std::fs::create_dir_all(&target).unwrap();
+        let (reply, answered) = oneshot::channel();
+
+        hub.move_to(agent, target.clone(), reply);
+        let stopped = hub.stop(agent);
+        let result = hub.await_answer(&mut inputs, answered).await;
+
+        assert_eq!(stopped, Ok(ResponseBody::Done));
+        assert_eq!(result, Ok(ResponseBody::Done));
+        let moved = &hub.agents[&agent];
+        assert_eq!(moved.record.folder, target);
+        assert!(
+            moved.process.is_none() && !moved.starting,
+            "claude does not run again"
+        );
+        assert!(!moved.record.running);
+        let saved = AgentsFile::load(&hub.state.agents_file()).unwrap();
+        assert!(saved.agents.iter().all(|record| !record.running));
+    }
+
+    /// The move runs the agent again, and a stop comes while `claude` starts: the start is given
+    /// up, and the agent stays stopped in its new folder.
+    #[tokio::test]
+    async fn a_stop_while_a_moved_agent_starts_gives_the_start_up() {
+        let temp = tempfile::tempdir().unwrap();
+        let (mut hub, mut inputs, agent) = hub_with_agent(temp.path()).await;
+        let target = temp.path().join("app_moved");
+        std::fs::create_dir_all(&target).unwrap();
+        let (reply, mut answered) = oneshot::channel();
+
+        hub.move_to(agent, target.clone(), reply);
+        let start = loop {
+            let input = tokio::time::timeout(Duration::from_secs(10), inputs.recv())
+                .await
+                .expect("an input came in time")
+                .expect("the hub's inputs are open");
+            if matches!(input, HubInput::ProcessStarted { .. }) {
+                break input;
+            }
+            hub.handle(input);
+        };
+        let stopped = hub.stop(agent);
+        hub.handle(start);
+
+        assert_eq!(stopped, Ok(ResponseBody::Done));
+        assert_eq!(
+            answered.try_recv().unwrap(),
+            ResponseResult::Ok(ResponseBody::Done)
+        );
+        let moved = &hub.agents[&agent];
+        assert_eq!(moved.record.folder, target);
+        assert!(moved.process.is_none() && !moved.starting);
+        assert!(!moved.record.running);
+    }
+
+    /// A close while the move waits for the process to exit answers the move.
+    #[tokio::test]
+    async fn a_close_while_a_move_waits_answers_the_move() {
+        let temp = tempfile::tempdir().unwrap();
+        let (mut hub, _inputs, agent) = hub_with_agent(temp.path()).await;
+        let target = temp.path().join("app_moved");
+        std::fs::create_dir_all(&target).unwrap();
+        let (reply, mut answered) = oneshot::channel();
+
+        hub.move_to(agent, target, reply);
+        let closed = hub.close(agent);
+
+        assert_eq!(closed, Ok(ResponseBody::Done));
+        let Ok(ResponseResult::Error(gone)) = answered.try_recv() else {
+            panic!("expected the move to find no agent");
+        };
+        assert_eq!(gone.code, ErrorCode::NotFound);
     }
 
     #[tokio::test]

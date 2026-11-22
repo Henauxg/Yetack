@@ -178,6 +178,25 @@ pub(crate) async fn run<T: Send + 'static>(
     }
 }
 
+/// Holds reads of `folder` until the next one is refused at once, as on a mount that never
+/// answers. Dropping what it returns lets the held reads end.
+#[cfg(test)]
+pub(crate) async fn hold_folder(folder: &Path) -> Vec<std::sync::mpsc::Sender<()>> {
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    let mut releases = Vec::new();
+    loop {
+        let (release, held) = mpsc::channel::<()>();
+        let deadline = Instant::now() + Duration::from_millis(20);
+        let late = run(deadline, Scope::Folder(folder), move || held.recv()).await;
+        if matches!(late, Err(BlockingError::Held)) {
+            return releases;
+        }
+        releases.push(release);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::mpsc;

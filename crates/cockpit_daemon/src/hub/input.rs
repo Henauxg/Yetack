@@ -11,6 +11,7 @@ use tokio::sync::{mpsc, oneshot};
 use crate::blocking::BlockingError;
 use crate::hub::folders::ForkOf;
 use crate::hub::start::{FolderRequest, Start};
+use crate::hub::terminals::SpawnedShell;
 use crate::process::{ProcessEvent, Spawned};
 use crate::sessions::FoundSession;
 use crate::store::DetailsFrame;
@@ -85,6 +86,13 @@ pub(crate) enum HubInput {
         agent: AgentId,
         generation: u32,
         cost: CostUsd,
+    },
+    /// A task started a terminal's shell in its agent's folder, or could not.
+    TerminalSpawned {
+        agent: AgentId,
+        terminal: TerminalId,
+        spawned: Result<SpawnedShell, ErrorBody>,
+        reply: Reply,
     },
     /// A terminal's shell wrote `data`.
     TerminalOutput {

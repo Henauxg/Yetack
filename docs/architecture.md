@@ -225,7 +225,7 @@ The shutdown blocks, so the app calls it from a thread outside any runtime.
 
 The daemon is a set of tokio tasks that talk over channels. No state is shared behind a mutex.
 The **Hub** owns every agent's state, numbers and logs the events, and sends them to every client. Its module `transcript` is the only place that turns Claude Code messages into transcript items.
-The hub handles one input at a time, so a wait on an agent's folder on a mount that never answers would hold every agent and every client. Resolving a folder the app sends, checking an agent's folder and starting `claude` in it run in tasks (module `hub::start`), as the file and git requests do, and the hub carries on when the answer comes back as a `HubInput`. Opening a terminal still checks the agent's folder on the hub.
+The hub handles one input at a time, so a wait on an agent's folder on a mount that never answers would hold every agent and every client. Resolving a folder the app sends, checking an agent's folder, starting `claude` in it (module `hub::start`) and starting a terminal's shell there (module `hub::terminals`) run in tasks, as the file and git requests do, and the hub carries on when the answer comes back as a `HubInput`.
 A **Claude process** task owns each running `claude`. The **Server** checks each peer, and a **Connection** task serves each client.
 A client that reads too slowly is disconnected rather than buffered without bound. It reconnects with its last `Seq`.
 
@@ -302,6 +302,7 @@ Before the stop, the app asks which agents may hold a scheduled job, which ends 
 ### Past sessions
 
 `sessions.list` lists the newest 100 sessions of all accounts. `sessions.resume` makes an agent that runs with the session's account. When an agent with the session was closed in the last 30 seconds, for the app's undo, the new agent gets the model, effort and permission mode chosen for it (kept in memory).
+A fork names the session it forks until its `claude` reports its own, so `sessions.resume` of that session never opens the fork: it resumes the agent that has the session, or makes a new one.
 It reads the session file before the agent exists, through the same conversion as `claude`'s stdout (`PastTranscript`).
 The newest 2,000 items show, with ids up to 2,001. The agent numbers its own items from 2,002, so the ids never clash.
 The past items go in no event: `agent.history` serves them. A restarted daemon reads the same bytes again, since Claude Code only appends to the file.
@@ -353,7 +354,8 @@ It checks that the process is the agent's, then acts through the same pidfd on U
 ### Terminals
 
 `agent.terminal_open` starts the user's shell on a PTY in the agent's folder, with `TERM=xterm-256color` (module `hub::terminals`, crate `portable-pty`). The shell is `YETACK_SHELL`, else the user's login shell from the system's user database, else `$SHELL`, else `/bin/sh` (`%COMSPEC%` on Windows). On Unix, `SHELL` is set to it in its environment. `$SHELL` comes after the login shell because a `nix develop` shell sets it to a bash built without readline. The release daemon is a static musl build: its user database is `/etc/passwd`, or `nscd` where it runs.
-Three threads serve each shell, since a PTY's reads, writes and wait block: one reads the output, one writes what the user types (`terminal.input`), and one waits for the shell to end.
+The shell enters the agent's folder as it starts, so it starts on a blocking thread with the limit of an agent's start: 10 seconds, counted with the folder's other reads (module `blocking`). Past the limit, the request fails with `the folder <path> did not answer`. The hub takes the terminal once the shell runs, and only then answers and tells the clients. A shell that starts past the limit, or after its agent closed, ends at once.
+Three threads serve each shell, since a PTY's reads, writes and wait block: one reads the output, one writes what the user types (`terminal.input`), and one waits for the shell to end. The first two start once the hub takes the terminal, and the third reports nothing before then, so no output or exit reaches the hub before it has the terminal.
 The hub keeps each terminal's last 512 KB of output, and sends what comes to every client as `ServerMessage::Terminal`.
 That message has no `Seq` and no log: a shell can write megabytes a second, and an old screen is worth nothing in a replay.
 A client whose queue is full misses it rather than being dropped. Output also skips a client whose queue is half full, since an event that finds the queue full drops the client.
@@ -570,7 +572,7 @@ The daemon in the app has no socket to check (see [The daemon in the app](#the-d
   A session picked in "Resume a session" that an exited agent holds resumes that agent.
 - **Working folder** (`state/working_folder.rs`, daemon `hub/folders.rs`): an agent can fork into another folder (`agent.fork`) or move there (`agent.change_folder`).
   Claude Code finds a session only in the project of the folder it starts in (`~/.claude/projects/<the folder's path, each character but an ASCII letter or digit written ->/`). The daemon copies the session file and its side files there in a blocking task, since a session file can reach hundreds of megabytes. Past 2 minutes, the fork or the move fails with a timeout, so a FIFO or a stuck mount in place of the file cannot leave it unanswered. It keeps the originals, since transcripts name some side files by their path. It refuses a project name over 200 characters, since Claude Code shortens those its own way.
-  A fork's first start passes `--fork-session` (`resume_as: fork` in `agents.json`). A move is refused while the agent works, and restarts a running agent once `claude` exits and the copy is done.
+  A fork's first start passes `--fork-session` (`resume_as: fork` in `agents.json`). A move is refused while the agent works, and restarts a running agent once `claude` exits and the copy is done. A stop meanwhile leaves the agent stopped in its new folder, and a close answers the move with `NotFound`.
 - **Closing an agent**: Ctrl+Shift+W sends `agent.close`, and Ctrl+W stays the file view's. The agent leaves the sidebar at once. The app ignores its events until the daemon's `AgentRemoved`, so a late update does not bring it back. For 8 seconds, Undo resumes the session as a new agent, at its place in the sidebar and in the project it was moved to by hand. The daemon gives the new agent the model, effort and permission mode chosen for the closed one.
 - **Marking an agent to handle** (`state/to_handle.rs`, `agent.mark`): a mark lasts until you send the agent a message, or until you clear it. The daemon saves it in `agents.json`. It clears a mark that lasts until a message when the agent gets a prompt, so that mark stays until you give the agent the input it waited for.
 - **The row menu** (`ui/row_menu.rs`, frame `KeyedMenu` in `ui/menu.rs`): it marks itself `data-own-keys`, so the bridge script leaves its keys to it. The pointer may cross other rows for 200 ms on its way into an open submenu.

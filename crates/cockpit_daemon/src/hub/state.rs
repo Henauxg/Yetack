@@ -328,6 +328,12 @@ impl Hub {
             } => self.restored_cost(agent, generation, cost),
             HubInput::DetailsDue { agent } => self.send_held_details(agent),
             HubInput::RepositoryRead { folder, read } => self.repository_read(&folder, read),
+            HubInput::TerminalSpawned {
+                agent,
+                terminal,
+                spawned,
+                reply,
+            } => self.terminal_spawned(agent, terminal, spawned, reply),
             HubInput::TerminalOutput { terminal, data } => self.terminal_output(terminal, &data),
             HubInput::TerminalExited { terminal, code } => self.terminal_exited(terminal, code),
         }

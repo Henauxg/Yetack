@@ -28,8 +28,9 @@ use crate::store::{AgentRecord, RawLog};
 use crate::transcript::{ProcessSession, words};
 use crate::{machine_load, read_file};
 
-/// How long resolving a folder, or checking it and starting `claude` in it, may take.
-const FOLDER_TIME: Duration = Duration::from_secs(10);
+/// How long resolving a folder, or checking it and starting `claude` or a terminal's shell in it,
+/// may take.
+pub(super) const FOLDER_TIME: Duration = Duration::from_secs(10);
 /// The generation of a new agent's first process.
 pub(super) const FIRST_GENERATION: u32 = 1;
 
@@ -537,7 +538,7 @@ fn check_folder(folder: &Path) -> Result<(), ErrorBody> {
 }
 
 /// Why the file system work on `folder` gave no answer.
-fn not_answered(folder: &Path, error: &BlockingError) -> ErrorBody {
+pub(super) fn not_answered(folder: &Path, error: &BlockingError) -> ErrorBody {
     match error {
         BlockingError::TimedOut | BlockingError::Held => ErrorBody::new(
             ErrorCode::Timeout,

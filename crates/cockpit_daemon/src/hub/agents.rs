@@ -645,9 +645,13 @@ impl Hub {
         Ok(ResponseBody::Done)
     }
 
-    /// Takes the agent out of the hub, with its logs, and tells the clients.
+    /// Takes the agent out of the hub, with its logs, and tells the clients. A move that waits
+    /// for its process gets `NotFound`.
     fn discard(&mut self, id: AgentId) {
-        self.agents.remove(&id);
+        let moving = self.agents.remove(&id).and_then(|agent| agent.moving);
+        if let Some(moving) = moving {
+            moving.agent_gone(id);
+        }
         self.close_agent_terminals(id);
         if let Err(error) = self.logs.remove(LogName::Agent(id)) {
             tracing::warn!(error = %errors::chain(&error), "cannot delete an agent's log");
@@ -745,13 +749,10 @@ impl Hub {
         if let Some(agent) = self.agent_with_session(&session.id, account.id) {
             return self.resume_for_session(agent, reply);
         }
-        // A fork names the session it forks until its `claude` reports its own.
-        let starting = self.new_agents.values_mut().find(|starting| {
-            let record = &starting.record;
-            record.session.as_ref() == Some(&session.id)
-                && record.account == account.id
-                && record.resume_as == ResumeAs::Same
-        });
+        let starting = self
+            .new_agents
+            .values_mut()
+            .find(|starting| has_session(&starting.record, &session.id, account.id));
         if let Some(starting) = starting {
             starting.also_waiting.push(reply);
             return;
@@ -781,7 +782,7 @@ impl Hub {
         self.start_new_agent(record, Some(past.items), Opening::Session, reply);
     }
 
-    /// The agent that has the session of the account's folder.
+    /// The listed agent that has the session of the account's folder.
     pub(super) fn agent_with_session(
         &self,
         session: &ClaudeSessionId,
@@ -789,11 +790,17 @@ impl Hub {
     ) -> Option<AgentId> {
         self.agents
             .values()
-            .find(|agent| {
-                agent.record.session.as_ref() == Some(session) && agent.record.account == account
-            })
+            .find(|agent| has_session(&agent.record, session, account))
             .map(|agent| agent.record.id)
     }
+}
+
+/// Whether the agent of `record` has the session of the account's folder. A fork names the
+/// session it forks until its `claude` reports its own, and does not have it.
+fn has_session(record: &AgentRecord, session: &ClaudeSessionId, account: AccountId) -> bool {
+    record.session.as_ref() == Some(session)
+        && record.account == account
+        && record.resume_as == ResumeAs::Same
 }
 
 /// Records the setting a prompt typed in the composer changes, as the agent's menus do, once the
@@ -1176,21 +1183,6 @@ mod tests {
         assert!(hub.agents.is_empty() && hub.new_agents.is_empty());
     }
 
-    /// Holds reads of `folder` until the daemon refuses the next one at once, as on a mount that
-    /// never answers. Dropping what it returns lets the held reads end.
-    async fn hold_folder(folder: &Path) -> Vec<std::sync::mpsc::Sender<()>> {
-        let mut releases = Vec::new();
-        loop {
-            let (release, held) = std::sync::mpsc::channel::<()>();
-            let deadline = time::Instant::now() + Duration::from_millis(20);
-            let late = blocking::run(deadline, Scope::Folder(folder), move || held.recv()).await;
-            if matches!(late, Err(BlockingError::Held)) {
-                return releases;
-            }
-            releases.push(release);
-        }
-    }
-
     /// A folder on a mount that never answers holds its reads: earlier ones never ended. The
     /// restored agent, its resume and a new agent there fail in time, and the hub goes on.
     #[tokio::test]
@@ -1199,7 +1191,7 @@ mod tests {
         let state_dir = temp.path().join("state");
         let folder = temp.path().join("app");
         std::fs::create_dir_all(&folder).unwrap();
-        let releases = hold_folder(&folder).await;
+        let releases = blocking::hold_folder(&folder).await;
         let agent = state_with_agent(&state_dir, &folder, true);
         let (mut hub, mut inputs) = Hub::for_tests_with_inputs(&state_dir);
 
@@ -1242,7 +1234,7 @@ mod tests {
         let link = temp.path().join("link");
         std::os::unix::fs::symlink(&folder, &link).unwrap();
         let resolved = std::fs::canonicalize(&folder).unwrap();
-        let releases = hold_folder(&resolved).await;
+        let releases = blocking::hold_folder(&resolved).await;
         let (mut hub, mut inputs) = quiet_hub(temp.path());
 
         let refused = hub
@@ -1640,6 +1632,47 @@ mod tests {
             panic!("expected the resume to fail");
         };
         assert_eq!(failed.code, ErrorCode::ClaudeFailed);
+    }
+
+    /// A listed fork names the session it forks until its `claude` reports its own: a resume of
+    /// that session starts a new agent on it, and leaves the fork alone.
+    #[tokio::test]
+    async fn a_session_resume_does_not_open_a_fork_of_the_session() {
+        let temp = tempfile::tempdir().unwrap();
+        let state_dir = temp.path().join("state");
+        let folder = temp.path().join("app");
+        std::fs::create_dir_all(&folder).unwrap();
+        let fork = state_with_agent(&state_dir, &folder, false);
+        let (mut hub, mut inputs) = Hub::for_tests_with_inputs(&state_dir);
+        if let Some(listed) = hub.agents.get_mut(&fork) {
+            listed.record.resume_as = ResumeAs::Fork;
+        }
+        let (reply, mut answered) = oneshot::channel();
+
+        hub.resume_session(
+            past_session(&folder),
+            Ok(folder.clone()),
+            Instant::now(),
+            reply,
+        );
+        let fork_starts = hub.agents[&fork].starting;
+        let starting: Vec<(Option<ClaudeSessionId>, ResumeAs)> = hub
+            .new_agents
+            .values()
+            .map(|starting| (starting.record.session.clone(), starting.record.resume_as))
+            .collect();
+        let start = next_start(&mut hub, &mut inputs).await;
+        hub.handle(start);
+
+        assert!(!fork_starts, "the fork stays exited");
+        let session = ClaudeSessionId::new(SESSION.to_owned());
+        assert_eq!(starting, [(Some(session), ResumeAs::Same)]);
+        // The test's `claude` cannot start: the resume got past the fork.
+        let ResponseResult::Error(failed) = answered.try_recv().unwrap() else {
+            panic!("expected the resume to fail");
+        };
+        assert_eq!(failed.code, ErrorCode::ClaudeFailed);
+        assert!(hub.agents[&fork].process.is_none());
     }
 
     /// The process that a stopped start brings late is killed, and the next start's runs.

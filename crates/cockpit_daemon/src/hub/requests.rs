@@ -129,9 +129,7 @@ impl Hub {
                     ControlPurpose::ReloadPlugins { reply, before },
                 );
             }
-            Request::AgentTerminalOpen(params) => {
-                agents::respond(reply, self.open_terminal(params));
-            }
+            Request::AgentTerminalOpen(params) => self.open_terminal(params, reply),
             Request::AgentTerminals(params) => {
                 agents::respond(reply, self.list_terminals(params.agent));
             }

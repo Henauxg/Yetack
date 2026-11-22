@@ -9,6 +9,7 @@
 //! A listing is read again when the agent finishes a step that can change files, when the agent
 //! comes back on screen, and on Refresh. The old entries stay on screen until the new ones arrive.
 
+use std::collections::hash_map::Entry;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
@@ -188,7 +189,7 @@ pub fn footprint(entry: &AgentEntry, cleared: Option<&ClearedFolders>) -> Footpr
             .get(root_key)
             .is_none_or(|touched| Some(*touched) <= mark)
     };
-    let hidden: HashSet<String> = outside_roots(folder, &footprint)
+    let hidden: HashSet<String> = outside_roots(&entry.tree, folder, &footprint)
         .into_iter()
         .map(|root| (key(&root), root))
         .filter(|(root_key, root)| {
@@ -252,7 +253,7 @@ pub fn clear_outside(state: &mut AppState, agent: AgentId) {
     let mut folders = cleared(state, agent)
         .map(|before| before.folders.clone())
         .unwrap_or_default();
-    folders.extend(outside_roots(&entry.summary.folder, &all));
+    folders.extend(outside_roots(&entry.tree, &entry.summary.folder, &all));
     let cleared = ClearedFolders {
         folders,
         after: entry.transcript.last_id(),
@@ -270,7 +271,7 @@ pub fn clear_outside(state: &mut AppState, agent: AgentId) {
 /// whether a folder still exists: those never listed, those the daemon said were gone that the
 /// agent worked in since, and the gone ones a refresh asks about.
 pub fn roots_to_check(tree: &FileTree, folder: &Path, footprint: &Footprint) -> Vec<PathBuf> {
-    let mut roots: Vec<PathBuf> = outside_roots(folder, footprint)
+    let mut roots: Vec<PathBuf> = outside_roots(tree, folder, footprint)
         .into_iter()
         .filter(|root| match tree.listings.get(root) {
             None => true,
@@ -434,7 +435,7 @@ fn read_files<'items>(items: impl Iterator<Item = &'items TranscriptItem>) -> BT
 /// The tree's rows, top to bottom. `folder` is the agent's.
 pub fn rows(tree: &FileTree, folder: &Path, footprint: &Footprint) -> Vec<TreeRow> {
     let roots: Vec<PathBuf> = std::iter::once(folder.to_owned())
-        .chain(outside_roots(folder, footprint))
+        .chain(outside_roots(tree, folder, footprint))
         .collect();
     let style = PathStyle::of(folder);
     let builder = Builder {
@@ -452,7 +453,7 @@ pub fn rows(tree: &FileTree, folder: &Path, footprint: &Footprint) -> Vec<TreeRo
     match tree.filter {
         TreeFilter::All => {
             builder.listed_rows(folder, 0, false, &mut rows);
-            let outside = outside_roots(folder, footprint);
+            let outside = outside_roots(tree, folder, footprint);
             if !outside.is_empty() {
                 rows.push(section(folder));
             }
@@ -482,20 +483,48 @@ fn section(folder: &Path) -> TreeRow {
     }
 }
 
-/// The folders outside the agent's that hold a file it changed or read, by path.
-fn outside_roots(folder: &Path, footprint: &Footprint) -> Vec<PathBuf> {
+/// The folders outside the agent's that hold a file it changed or read, by path. On Windows, one
+/// folder written in two cases or with both separators shows once. It takes the spelling that
+/// `tree` listed, else the footprint's first, so that its row stays open or closed when the agent
+/// writes the folder another way.
+fn outside_roots(tree: &FileTree, folder: &Path, footprint: &Footprint) -> Vec<PathBuf> {
     let style = PathStyle::of(folder);
     let folder_text = folder.to_string_lossy();
-    let touched = footprint.changed.keys().chain(&footprint.read);
-    let roots: BTreeSet<PathBuf> = touched
-        .filter(|path| {
-            style
-                .strip_prefix(&path.to_string_lossy(), &folder_text)
-                .is_none()
-        })
-        .map(|path| outside_root(folder, path))
-        .collect();
-    roots.into_iter().collect()
+    let mut roots: HashMap<String, PathBuf> = HashMap::new();
+    for path in footprint.changed.keys().chain(&footprint.read) {
+        if style
+            .strip_prefix(&path.to_string_lossy(), &folder_text)
+            .is_some()
+        {
+            continue;
+        }
+        let root = outside_root(folder, path);
+        match roots.entry(style.key(&root.to_string_lossy())) {
+            Entry::Vacant(vacant) => {
+                vacant.insert(root);
+            }
+            Entry::Occupied(mut kept) => {
+                if !tree.listings.contains_key(kept.get()) && tree.listings.contains_key(&root) {
+                    kept.insert(root);
+                }
+            }
+        }
+    }
+    let mut roots: Vec<PathBuf> = roots.into_values().collect();
+    roots.sort();
+    roots
+}
+
+/// `found`, a folder outside the agent's, as `roots` writes it: its row takes that spelling, and on
+/// Windows a file in it may write it another way.
+fn kept_root(style: PathStyle, roots: &[PathBuf], found: PathBuf) -> PathBuf {
+    let kept = roots
+        .iter()
+        .find(|root| style.same_path(&root.to_string_lossy(), &found.to_string_lossy()));
+    match kept {
+        Some(root) => root.clone(),
+        None => found,
+    }
 }
 
 /// Whether the tree shows only the files the agent touched in `root`, a folder outside the
@@ -532,7 +561,7 @@ fn root_showing(
     if holds(folder) {
         return Some(folder.to_owned());
     }
-    let root = outside_roots(folder, footprint)
+    let root = outside_roots(tree, folder, footprint)
         .into_iter()
         .find(|root| holds(root))?;
     let touched = footprint
@@ -645,12 +674,19 @@ impl Builder<'_> {
             }
         };
         for entry in &listing.entries {
-            let path = self.path_in(folder, &entry.name);
+            let listed = self.path_in(folder, &entry.name);
             let entry_ignored = ignored || entry.ignore == GitIgnore::Ignored;
             let is_folder = entry.kind == EntryKind::Folder;
-            // A root shows open only at the top level, so that no entry shows twice.
-            let root = self.roots.contains(&path);
-            let open = is_folder && !root && self.tree.expanded.contains(&path);
+            // A root shows open only at the top level, so that no entry shows twice. Its row here
+            // takes the root's path: on Windows, the listing may write the folder in another case.
+            let root = self.roots.iter().find(|root| {
+                is_folder
+                    && self
+                        .style
+                        .same_path(&root.to_string_lossy(), &listed.to_string_lossy())
+            });
+            let path = root.cloned().unwrap_or(listed);
+            let open = is_folder && root.is_none() && self.tree.expanded.contains(&path);
             rows.push(TreeRow {
                 marks: self.marks(&path, is_folder, entry_ignored),
                 path: path.clone(),
@@ -722,7 +758,7 @@ impl Builder<'_> {
             let (root, relative) = match self.style.strip_prefix(&text, &folder_text) {
                 Some(relative) if !relative.is_empty() => (None, relative.to_owned()),
                 Some(_) | None => {
-                    let root = outside_root(folder, path);
+                    let root = kept_root(self.style, self.roots, outside_root(folder, path));
                     let relative = self
                         .style
                         .strip_prefix(&text, &root.to_string_lossy())
@@ -917,7 +953,7 @@ pub fn shown_folders(tree: &FileTree, folder: &Path, footprint: &Footprint) -> V
         return Vec::new();
     }
     let style = PathStyle::of(folder);
-    let outside = outside_roots(folder, footprint);
+    let outside = outside_roots(tree, folder, footprint);
     let shown = |path: &Path| {
         let mut current = path.to_string_lossy().into_owned();
         loop {
@@ -1031,8 +1067,11 @@ pub fn toggle_folder(state: &mut AppState, agent: AgentId, row: &TreeRow) {
 pub fn collapse_all(state: &mut AppState, agent: AgentId) {
     let cleared = cleared(state, agent).cloned();
     if let Some(entry) = state.agents.get_mut(&agent) {
-        let starting_open =
-            starting_open(&entry.summary.folder, &footprint(entry, cleared.as_ref()));
+        let starting_open = starting_open(
+            &entry.tree,
+            &entry.summary.folder,
+            &footprint(entry, cleared.as_ref()),
+        );
         entry.tree.expanded.clear();
         entry.tree.closed.extend(starting_open);
     }
@@ -1041,7 +1080,7 @@ pub fn collapse_all(state: &mut AppState, agent: AgentId) {
 /// Whether "Close every folder" has a folder to close, in any view.
 pub fn can_collapse(tree: &FileTree, folder: &Path, footprint: &Footprint) -> bool {
     !tree.expanded.is_empty()
-        || starting_open(folder, footprint)
+        || starting_open(tree, folder, footprint)
             .iter()
             .any(|folder| !tree.closed.contains(folder))
 }
@@ -1049,16 +1088,17 @@ pub fn can_collapse(tree: &FileTree, folder: &Path, footprint: &Footprint) -> bo
 /// The folders that start open, by the paths their rows take: each folder outside the agent's
 /// that holds a file it changed or read, and the folders between such a file and the agent's
 /// folder or that folder outside it.
-fn starting_open(folder: &Path, footprint: &Footprint) -> BTreeSet<PathBuf> {
+fn starting_open(tree: &FileTree, folder: &Path, footprint: &Footprint) -> BTreeSet<PathBuf> {
     let style = PathStyle::of(folder);
     let folder_text = folder.to_string_lossy();
+    let roots = outside_roots(tree, folder, footprint);
     let mut folders = BTreeSet::new();
     for path in footprint.changed.keys().chain(&footprint.read) {
         let text = path.to_string_lossy();
         let (root, relative) = match style.strip_prefix(&text, &folder_text) {
             Some(relative) if !relative.is_empty() => (folder.to_string_lossy(), relative),
             Some(_) | None => {
-                let root = outside_root(folder, path);
+                let root = kept_root(style, &roots, outside_root(folder, path));
                 let root_text = root.to_string_lossy().into_owned();
                 let relative = style.strip_prefix(&text, &root_text).unwrap_or(&text);
                 folders.insert(root);
@@ -1366,16 +1406,20 @@ pub fn reveal(state: &mut AppState, agent: AgentId) {
     let Some(root) = root_showing(&entry.tree, &folder, &marks, &full) else {
         return;
     };
+    let Some(full) = in_root_spelling(style, &root, &full) else {
+        return;
+    };
+    let full_text = full.to_string_lossy().into_owned();
+    let is_revealed = |path: &PathBuf| style.same_path(&path.to_string_lossy(), &full_text);
     let kept = match entry.tree.filter {
         TreeFilter::All => true,
-        TreeFilter::Changed => marks.changed.contains_key(&full),
-        TreeFilter::Read => marks.read.contains(&full),
+        TreeFilter::Changed => marks.changed.keys().any(is_revealed),
+        TreeFilter::Read => marks.read.iter().any(is_revealed),
     };
     if !kept {
         entry.tree.filter = TreeFilter::All;
     }
     entry.tree.search = None;
-    let full_text = full.to_string_lossy().into_owned();
     let mut above = style.parent(&full_text).map(str::to_owned);
     while let Some(parent) = above {
         if style
@@ -1396,6 +1440,21 @@ pub fn reveal(state: &mut AppState, agent: AgentId) {
     }
     entry.tree.highlighted = Some(full.clone());
     entry.tree.reveal = Some(full);
+}
+
+/// `path` with its start written as `root` writes it. `root` is a top folder of the tree that holds
+/// `path`, and the rows under it start with its spelling, which the file view's path may not share
+/// on Windows.
+fn in_root_spelling(style: PathStyle, root: &Path, path: &Path) -> Option<PathBuf> {
+    let path = path.to_string_lossy();
+    let root = root.to_string_lossy();
+    let relative = style.strip_prefix(&path, &root)?;
+    let written = style
+        .names(relative)
+        .fold(root.into_owned(), |written, name| {
+            style.join(&written, name)
+        });
+    Some(PathBuf::from(written))
 }
 
 /// Whether the pane scrolls to the row `reveal` highlighted: it is still highlighted, and shows
@@ -1691,6 +1750,54 @@ mod tests {
     }
 
     #[test]
+    fn on_windows_a_root_listed_inside_another_in_another_case_opens_at_the_top_level() {
+        let folder = Path::new(r"C:\work\app");
+        let mut tree = FileTree::default();
+        tree.listings.extend([
+            listing(
+                r"C:\work",
+                vec![
+                    entry(".git", EntryKind::Folder, GitIgnore::Ignored),
+                    entry("app", EntryKind::Folder, GitIgnore::Kept),
+                    entry("other", EntryKind::Folder, GitIgnore::Kept),
+                    entry("notes.md", EntryKind::File, GitIgnore::Kept),
+                ],
+            ),
+            listing(
+                r"C:\Work\Other",
+                vec![entry("a.md", EntryKind::File, GitIgnore::Kept)],
+            ),
+        ]);
+        tree.expanded.insert(PathBuf::from(r"C:\work"));
+        let footprint = Footprint {
+            changed: [changed(r"C:\Work\Other\a.md", 1, 0)].into_iter().collect(),
+            read: [PathBuf::from(r"C:\work\notes.md")].into_iter().collect(),
+            git: BTreeMap::new(),
+        };
+        let inner = rows(&tree, folder, &footprint)
+            .into_iter()
+            .find(|row| row.depth == 1 && row.name == "other")
+            .unwrap();
+
+        tree.expanded.insert(inner.path);
+
+        assert_eq!(
+            shown(&rows(&tree, folder, &footprint)),
+            [
+                "… ",
+                "# Also worked in",
+                r"▾ Other\",
+                "  · a.md",
+                r"▾ work\",
+                "  ▸ .git",
+                "  ▸ app",
+                "  ▸ other",
+                "  · notes.md",
+            ]
+        );
+    }
+
+    #[test]
     fn on_windows_marks_match_whatever_the_separators_and_the_case() {
         let mut tree = FileTree::default();
         tree.listings.extend([listing(
@@ -1836,6 +1943,32 @@ mod tests {
                 "  ▾ src",
                 "    · token.rs",
             ]
+        );
+    }
+
+    #[test]
+    fn on_windows_an_outside_folder_shows_once_whatever_its_case_and_separators() {
+        let folder = r"C:\work\app";
+        let tree = FileTree {
+            filter: TreeFilter::Changed,
+            ..FileTree::default()
+        };
+        let footprint = Footprint {
+            changed: [
+                changed(r"C:\Work\Other\a.md", 1, 0),
+                changed(r"c:/work/OTHER/b.md", 2, 0),
+            ]
+            .into_iter()
+            .collect(),
+            read: BTreeSet::new(),
+            git: BTreeMap::new(),
+        };
+
+        let rows = rows(&tree, Path::new(folder), &footprint);
+
+        assert_eq!(
+            shown(&rows),
+            ["# Also worked in", r"▾ Other\", "  · a.md", "  · b.md"]
         );
     }
 
@@ -3216,7 +3349,7 @@ mod tests {
             git: BTreeMap::new(),
         };
         let mut tree = FileTree::default();
-        for root in outside_roots(folder, &footprint) {
+        for root in outside_roots(&tree, folder, &footprint) {
             tree.listings.insert(
                 root,
                 Listing {
@@ -3231,5 +3364,128 @@ mod tests {
         let root = root_showing(&tree, folder, &footprint, Path::new(r"C:\work\other\a.md"));
 
         assert!(root.is_some());
+    }
+
+    /// `listed_agent` in `C:\work\app`, on "Changed", having changed `C:\Work\Other\a.md` and
+    /// `c:/work/OTHER/notes/b.md`: one folder outside its own, written in two ways.
+    fn agent_beside_other_written_twice() -> (AppState, AgentId) {
+        let (mut state, agent) = listed_agent();
+        let entry = state.agents.get_mut(&agent).unwrap();
+        entry.summary.folder = PathBuf::from(r"C:\work\app");
+        entry.tree.listings.clear();
+        entry.details = Loadable::Loaded(AgentDetails {
+            changed_files: [r"C:\Work\Other\a.md", "c:/work/OTHER/notes/b.md"]
+                .into_iter()
+                .map(|path| ChangedFile {
+                    path: PathBuf::from(path),
+                    lines_added: 1,
+                    lines_removed: 0,
+                })
+                .collect(),
+            ..AgentDetails::default()
+        });
+        set_filter(&mut state, agent, TreeFilter::Changed);
+        (state, agent)
+    }
+
+    #[test]
+    fn on_windows_close_every_folder_closes_a_folder_written_in_two_ways() {
+        let other = Path::new(r"C:\Work\Other");
+        let notes = Path::new(r"C:\Work\Other\notes");
+        let (mut by_hand, agent) = agent_beside_other_written_twice();
+        let (mut collapsed, _) = agent_beside_other_written_twice();
+
+        click(&mut by_hand, agent, notes);
+        click(&mut by_hand, agent, other);
+        collapse_all(&mut collapsed, agent);
+        click(&mut collapsed, agent, other);
+
+        assert!(!collapsible(&by_hand, agent), "every folder is closed");
+        assert_eq!(
+            shown(&shown_rows(&collapsed, agent)),
+            ["# Also worked in", r"▾ Other\", "  ▸ notes", "  · a.md"]
+        );
+    }
+
+    #[test]
+    fn on_windows_showing_a_file_opens_the_folder_its_row_is_in_however_it_is_written() {
+        let (mut state, agent) = agent_beside_other_written_twice();
+        click(&mut state, agent, Path::new(r"C:\Work\Other"));
+        // As the agent wrote it.
+        actions::open_file(
+            &mut state,
+            agent,
+            PathBuf::from("c:/work/OTHER/notes/b.md"),
+            None,
+        );
+
+        reveal(&mut state, agent);
+
+        let rows = shown_rows(&state, agent);
+        assert_eq!(
+            shown(&rows),
+            [
+                "# Also worked in",
+                r"▾ Other\",
+                "  ▾ notes",
+                "    · b.md",
+                "  · a.md",
+            ]
+        );
+        assert_eq!(
+            highlighted(&state, agent),
+            Some(Path::new(r"C:\Work\Other\notes\b.md"))
+        );
+        assert!(reveal_due(&state.agents[&agent].tree, &rows));
+    }
+
+    #[test]
+    fn on_windows_showing_a_changed_file_keeps_changed_however_its_row_writes_it() {
+        let (mut state, agent) = agent_beside_other_written_twice();
+        let row = PathBuf::from(r"C:\Work\Other\notes\b.md");
+        actions::open_file(&mut state, agent, row.clone(), None);
+
+        reveal(&mut state, agent);
+
+        assert_eq!(state.agents[&agent].tree.filter, TreeFilter::Changed);
+        assert_eq!(highlighted(&state, agent), Some(row.as_path()));
+    }
+
+    #[test]
+    fn on_windows_a_listed_outside_folder_keeps_its_row_when_written_another_way() {
+        let folder = Path::new(r"C:\work\app");
+        let other = "c:/work/other";
+        let mut tree = FileTree::default();
+        tree.expanded.insert(PathBuf::from(other));
+        tree.listings.extend([listing(
+            other,
+            vec![
+                entry(".git", EntryKind::File, GitIgnore::Ignored),
+                entry("a.md", EntryKind::File, GitIgnore::Kept),
+                entry("b.md", EntryKind::File, GitIgnore::Kept),
+            ],
+        )]);
+        // The change comes after the read, and its spelling sorts first.
+        let footprint = Footprint {
+            changed: [changed(r"C:\Work\Other\a.md", 1, 0)].into_iter().collect(),
+            read: [PathBuf::from("c:/work/other/b.md")].into_iter().collect(),
+            git: BTreeMap::new(),
+        };
+
+        let rows = rows(&tree, folder, &footprint);
+        let to_check = roots_to_check(&tree, folder, &footprint);
+
+        assert_eq!(
+            shown(&rows),
+            [
+                "… ",
+                "# Also worked in",
+                r"▾ other\",
+                "  · .git",
+                "  · a.md",
+                "  · b.md",
+            ]
+        );
+        assert!(to_check.is_empty(), "it is listed already: {to_check:?}");
     }
 }
