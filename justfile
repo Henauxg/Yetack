@@ -5,31 +5,32 @@ set windows-shell := ["powershell.exe", "-NoLogo", "-Command"]
 default:
     @just --list
 
+# The Linux daemons build first, so that the ones the app carries come from its own commit.
+
 # Runs the app, which also starts the local background service when the config asks for it.
-run:
+run: linux-daemon
     cargo run --release -p cockpit_desktop
 
-# The Rust toolchain's own linker builds the static Linux daemon on any host, Windows included.
+# The Rust toolchain's own linker builds the static Linux daemons on any host, Windows included.
 export CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER := "rust-lld"
+export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER := "rust-lld"
 
-# The static Linux daemon that `linux-daemon` builds, and the name the app looks for beside itself.
-linux_daemon := "target/x86_64-unknown-linux-musl/release/yetack"
-beside_the_app := "yetack-x86_64-linux"
+# Needs the targets: rustup target add x86_64-unknown-linux-musl aarch64-unknown-linux-musl. The
+# app's "Update" and "Add a server" send a server the daemon for its CPU, and the server then
+# builds nothing. A loop's status is its last command's, so each failed copy stops the recipe at
+# once: `run` would otherwise start the app beside an older daemon.
 
-# Needs the target: rustup target add x86_64-unknown-linux-musl. The app's "Update" sends the
-# daemon to servers, which then build nothing.
-
-# Builds the static Linux daemon beside the app's debug and release builds.
+# Builds the static Linux daemons for x86_64 and aarch64 beside the app's debug and release builds.
 [unix]
 linux-daemon:
-    cargo build --release --locked --target x86_64-unknown-linux-musl -p yetack --bin yetack
-    for profile in debug release; do mkdir -p "target/$profile" && cp {{linux_daemon}} "target/$profile/{{beside_the_app}}"; done
+    cargo build --release --locked --target x86_64-unknown-linux-musl --target aarch64-unknown-linux-musl -p yetack --bin yetack
+    for cpu in x86_64 aarch64; do for profile in debug release; do mkdir -p "target/$profile" && cp "target/$cpu-unknown-linux-musl/release/yetack" "target/$profile/yetack-$cpu-linux" || exit 1; done; done
 
-# Builds the static Linux daemon beside the app's debug and release builds.
+# Builds the static Linux daemons for x86_64 and aarch64 beside the app's debug and release builds.
 [windows]
 linux-daemon:
-    cargo build --release --locked --target x86_64-unknown-linux-musl -p yetack --bin yetack
-    foreach ($profile in 'debug', 'release') { New-Item -ItemType Directory -Force "target/$profile" | Out-Null; Copy-Item {{linux_daemon}} "target/$profile/{{beside_the_app}}" }
+    cargo build --release --locked --target x86_64-unknown-linux-musl --target aarch64-unknown-linux-musl -p yetack --bin yetack
+    foreach ($cpu in 'x86_64', 'aarch64') { foreach ($profile in 'debug', 'release') { New-Item -ErrorAction Stop -ItemType Directory -Force "target/$profile" | Out-Null; Copy-Item -ErrorAction Stop "target/$cpu-unknown-linux-musl/release/yetack" "target/$profile/yetack-$cpu-linux" } }
 
 # Builds the daemon program and the app in release mode.
 build:

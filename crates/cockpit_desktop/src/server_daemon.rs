@@ -230,23 +230,26 @@ pub fn carried(cpu: LinuxCpu) -> Option<PathBuf> {
     let packaged = packaged.filter(|path| !path.is_empty()).map(PathBuf::from);
     let beside = std::env::current_exe()
         .ok()
-        .and_then(|app| Some(carried_beside(app.parent()?, cpu)));
+        .and_then(|app| carried_beside(&app, cpu));
     packaged
         .into_iter()
         .chain(beside)
         .find(|path| path.is_file())
 }
 
-/// The daemon for `cpu` in the app's folder. Between an update's move and the next start, the file
-/// of that name is the new release's daemon, and this app's own waits beside it as `<name>.old`.
-fn carried_beside(folder: &Path, cpu: LinuxCpu) -> PathBuf {
+/// The daemon for `cpu` beside `app`, the app's program. Between an update's move and the next
+/// start, the app's program and each daemon it had wait as `<name>.old`, and the files of their
+/// names are the new release's. A daemon the app did not have is then the new release's alone, so
+/// the app carries none for that CPU.
+fn carried_beside(app: &Path, cpu: LinuxCpu) -> Option<PathBuf> {
+    let folder = app.parent()?;
     let name = cpu.daemon_file_name();
     let own = folder.join(format!("{name}{}", self_update::OLD_SUFFIX));
     if own.is_file() {
-        own
-    } else {
-        folder.join(name)
+        return Some(own);
     }
+    let updated = self_update::with_suffix(app, self_update::OLD_SUFFIX).is_file();
+    (!updated).then(|| folder.join(name))
 }
 
 /// A daemon the app sent, as a file on the server.
@@ -555,19 +558,42 @@ mod tests {
     fn an_update_waiting_for_the_restart_carries_the_daemon_it_moved_aside() {
         let temp = tempfile::tempdir().unwrap();
         let folder = temp.path();
+        let app = folder.join("yetack-desktop.exe");
+        std::fs::write(&app, "app").unwrap();
+        std::fs::write(folder.join("yetack-x86_64-linux"), "daemon").unwrap();
+        assert_eq!(
+            carried_beside(&app, LinuxCpu::X86_64),
+            Some(folder.join("yetack-x86_64-linux"))
+        );
+        assert_eq!(
+            carried_beside(&app, LinuxCpu::Aarch64),
+            Some(folder.join("yetack-aarch64-linux"))
+        );
+
+        std::fs::write(folder.join("yetack-desktop.exe.old"), "this app").unwrap();
+        std::fs::write(folder.join("yetack-aarch64-linux"), "new daemon").unwrap();
+        for cpu in [LinuxCpu::X86_64, LinuxCpu::Aarch64] {
+            let old = folder.join(format!("{}.old", cpu.daemon_file_name()));
+            std::fs::write(&old, "this app's daemon").unwrap();
+            assert_eq!(carried_beside(&app, cpu), Some(old), "{cpu:?}");
+        }
+    }
+
+    /// A zip that carried no ARM daemon gets one with the update. Until the restart, that one is
+    /// the new release's, which a server refuses from this app.
+    #[test]
+    fn an_update_waiting_for_the_restart_carries_no_daemon_the_app_lacked() {
+        let temp = tempfile::tempdir().unwrap();
+        let folder = temp.path();
+        let app = folder.join("yetack-desktop.exe");
+        std::fs::write(&app, "new app").unwrap();
+        std::fs::write(folder.join("yetack-desktop.exe.old"), "this app").unwrap();
         std::fs::write(folder.join("yetack-x86_64-linux"), "new daemon").unwrap();
-        assert_eq!(
-            carried_beside(folder, LinuxCpu::X86_64),
-            folder.join("yetack-x86_64-linux")
-        );
-        assert_eq!(
-            carried_beside(folder, LinuxCpu::Aarch64),
-            folder.join("yetack-aarch64-linux")
-        );
+        let own = folder.join("yetack-x86_64-linux.old");
+        std::fs::write(&own, "this app's daemon").unwrap();
+        std::fs::write(folder.join("yetack-aarch64-linux"), "new daemon").unwrap();
 
-        let old = folder.join("yetack-x86_64-linux.old");
-        std::fs::write(&old, "this app's daemon").unwrap();
-
-        assert_eq!(carried_beside(folder, LinuxCpu::X86_64), old);
+        assert_eq!(carried_beside(&app, LinuxCpu::X86_64), Some(own));
+        assert_eq!(carried_beside(&app, LinuxCpu::Aarch64), None);
     }
 }

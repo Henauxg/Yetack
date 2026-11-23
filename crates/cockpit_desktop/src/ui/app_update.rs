@@ -541,7 +541,7 @@ fn OfferCard(release: Release, install: InstallKind) -> Element {
             InstallKind::Zip => rsx! {
                 Callout {
                     text: format!(
-                        "The {version} release has no Windows app to download. Its page may have one later."
+                        "The {version} release lacks files the Windows app's update needs. Its page may have them later."
                     ),
                 }
             },

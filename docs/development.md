@@ -9,7 +9,7 @@ Everything runs inside the dev shell, which has stable Rust, nightly rustfmt, cl
 ```sh
 nix develop
 just          # lists the recipes
-just run      # builds and runs the app
+just run      # builds the Linux daemons it carries, then builds and runs the app
 just check    # the tests and clippy as CI runs them, and shellcheck on the scripts in contrib/
 just fmt      # formats the code
 ```
@@ -81,7 +81,7 @@ The window shows on the screen meanwhile.
 
 [servers.md](./servers.md), "Updating the daemon", says what the app's "Update" button does for the user. The button runs [contrib/update-daemon.sh](../contrib/update-daemon.sh) on the server over SSH, for the commit the app was built from. When the app has the daemon for the server's CPU (x86_64 or aarch64), carried beside it or downloaded from its release, the update sends it, and the script installs it. Otherwise the script builds the daemon on the server, which then needs Rust, git and a checkout of this repository. A Nix build of a tree with uncommitted changes has no commit, so it offers no update. A `cargo` build takes `HEAD`, whatever the tree holds.
 
-A build from source carries a daemon once `just linux-daemon` has run. The recipe cross-builds the static daemon for `x86_64-unknown-linux-musl` and copies it as `yetack-x86_64-linux` into `target/debug` and `target/release`, beside the app. The dev shell has the target. Outside it, add the target once with `rustup target add x86_64-unknown-linux-musl`. Run the recipe again after each commit: the script checks that the daemon prints the app's release and commit, and refuses an older file.
+A build from source carries the daemons once `just linux-daemon` has run, and `just run` runs it before it starts the app. The recipe cross-builds the static daemon for `x86_64-unknown-linux-musl` and `aarch64-unknown-linux-musl`, and copies them as `yetack-x86_64-linux` and `yetack-aarch64-linux` into `target/debug` and `target/release`, beside the app. The dev shell has both targets. Outside it, add them once with `rustup target add x86_64-unknown-linux-musl aarch64-unknown-linux-musl`. The script checks that the daemon prints the app's release and commit, and refuses another: when you start the app another way, as with `cargo run`, run the recipe again after each commit.
 
 You can also run the script by hand, from a checkout of this repository on your computer:
 

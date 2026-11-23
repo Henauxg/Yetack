@@ -133,11 +133,6 @@ pub fn app_asset_name(version: &ReleaseVersion) -> String {
     format!("yetack-desktop-{version}-windows-x64.exe")
 }
 
-/// The release's static Linux daemon, which the Windows zip carries beside the app.
-pub fn daemon_asset_name(version: &ReleaseVersion) -> String {
-    LinuxCpu::X86_64.release_file_name(version)
-}
-
 /// A release, as GitHub's API names it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Release {
@@ -222,7 +217,7 @@ impl Release {
         }
     }
 
-    /// The files the Windows zip's update downloads: the app, the Linux daemon beside it, and the
+    /// The files the Windows zip's update downloads: the app, the Linux daemons beside it, and the
     /// checksums. `None` when one is missing, downloads from elsewhere, or they weigh too much.
     pub fn windows_assets(&self) -> Option<WindowsAssets> {
         let asset = |name: &str| {
@@ -231,9 +226,13 @@ impl Release {
                 .find(|asset| asset.name == name && asset.url.starts_with(DOWNLOAD_PREFIX))
                 .cloned()
         };
+        let daemons: Option<Vec<ReleaseAsset>> = LinuxCpu::VARIANTS
+            .iter()
+            .map(|cpu| asset(&cpu.release_file_name(&self.version)))
+            .collect();
         let assets = WindowsAssets {
             app: asset(&app_asset_name(&self.version))?,
-            daemon: asset(&daemon_asset_name(&self.version))?,
+            daemons: daemons?,
             checksums: asset(CHECKSUMS_NAME)?,
         };
         (assets.total_size() <= MAX_DOWNLOAD_BYTES).then_some(assets)
@@ -244,16 +243,19 @@ impl Release {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WindowsAssets {
     pub app: ReleaseAsset,
-    pub daemon: ReleaseAsset,
+    /// A Linux daemon for each CPU, in the order of `LinuxCpu::VARIANTS`.
+    pub daemons: Vec<ReleaseAsset>,
     pub checksums: ReleaseAsset,
 }
 
 impl WindowsAssets {
     /// What the release says the files weigh.
     pub fn total_size(&self) -> u64 {
-        self.app
-            .size
-            .saturating_add(self.daemon.size)
+        self.daemons
+            .iter()
+            .fold(self.app.size, |total, daemon| {
+                total.saturating_add(daemon.size)
+            })
             .saturating_add(self.checksums.size)
     }
 }
@@ -902,6 +904,11 @@ mod tests {
       "browser_download_url": "https://github.com/Henauxg/yetack/releases/download/v9.1.0/yetack-9.1.0-x86_64-linux"
     },
     {
+      "name": "yetack-9.1.0-aarch64-linux",
+      "size": 9500000,
+      "browser_download_url": "https://github.com/Henauxg/yetack/releases/download/v9.1.0/yetack-9.1.0-aarch64-linux"
+    },
+    {
       "name": "SHA256SUMS",
       "size": 400,
       "browser_download_url": "https://github.com/Henauxg/yetack/releases/download/v9.1.0/SHA256SUMS"
@@ -946,7 +953,7 @@ mod tests {
             release.page(),
             "https://github.com/Henauxg/yetack/releases/tag/v9.1.0"
         );
-        assert_eq!(release.assets.len(), 3);
+        assert_eq!(release.assets.len(), 4);
         assert_eq!(release.assets[1].name, "yetack-9.1.0-x86_64-linux");
         assert_eq!(release.assets[1].size, 9_000_000);
     }
@@ -1299,8 +1306,16 @@ mod tests {
         let good = release("9.1.0");
         let assets = good.windows_assets().unwrap();
         assert_eq!(assets.app.name, "yetack-desktop-9.1.0-windows-x64.exe");
-        assert_eq!(assets.daemon.name, "yetack-9.1.0-x86_64-linux");
-        assert_eq!(assets.total_size(), 23_000_400);
+        let daemons: Vec<&str> = assets
+            .daemons
+            .iter()
+            .map(|daemon| daemon.name.as_str())
+            .collect();
+        assert_eq!(
+            daemons,
+            ["yetack-9.1.0-x86_64-linux", "yetack-9.1.0-aarch64-linux"]
+        );
+        assert_eq!(assets.total_size(), 32_500_400);
 
         let mut elsewhere = good.clone();
         elsewhere.assets[0].url =
@@ -1312,6 +1327,7 @@ mod tests {
             "https://github.com/Henauxg/yetack-fork/releases/download/v9.1.0/app.exe".to_owned();
         assert_eq!(lookalike.windows_assets(), None);
 
+        // The ARM daemon, which the zip carries too.
         let mut missing = good.clone();
         missing.assets.remove(2);
         assert_eq!(missing.windows_assets(), None);
@@ -1339,7 +1355,7 @@ mod tests {
         assert!(start(&mut state).is_none(), "one run at a time");
         let id = started.id;
 
-        downloaded(&mut state, id, 11_500_200);
+        downloaded(&mut state, id, 16_250_200);
         let run = state.app_update.run.clone().unwrap();
         assert_eq!(run.percent(), 45);
         assert!(run.offers_cancel());
@@ -1674,7 +1690,6 @@ mod tests {
             app_asset_name(&version),
             "yetack-desktop-9.1.0-windows-x64.exe"
         );
-        assert_eq!(daemon_asset_name(&version), "yetack-9.1.0-x86_64-linux");
         assert_eq!(RELEASES_URL, "https://github.com/Henauxg/yetack/releases");
         assert_eq!(
             DOWNLOAD_PREFIX,

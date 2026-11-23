@@ -40,7 +40,7 @@ use crate::prefs::{CommentPlacement, GroupBy, ProjectRule, ProjectSplit, Termina
 use crate::self_update::CheckFileError;
 use crate::state::app_update::{self, AppStep, InstallKind, Release, ReleaseAsset};
 use crate::state::daemon_probe::{
-    DaemonOwner, DaemonProbe, InstalledDaemon, PackageFormat, ServerInstall,
+    DaemonOwner, DaemonProbe, InstalledDaemon, LinuxCpu, PackageFormat, ServerInstall,
 };
 use crate::state::daemon_start::StartRun;
 use crate::state::daemon_update::{
@@ -1653,7 +1653,8 @@ pub fn app_release() -> Release {
     };
     let assets = vec![
         asset(app_update::app_asset_name(&version), 9_961_472),
-        asset(app_update::daemon_asset_name(&version), 4_823_000),
+        asset(LinuxCpu::X86_64.release_file_name(&version), 4_823_000),
+        asset(LinuxCpu::Aarch64.release_file_name(&version), 4_911_000),
         asset(app_update::CHECKSUMS_NAME.to_owned(), 449),
     ];
     Release {

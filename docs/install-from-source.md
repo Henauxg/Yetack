@@ -63,4 +63,4 @@ cargo install --locked --path crates/yetack --root ~/.local
 
 This puts `yetack` in `~/.local/bin`, where [contrib/yetack.service](../contrib/yetack.service) looks for it. Copy that file to `~/.config/systemd/user/`, then follow [servers.md](./servers.md), "Install by hand", from step 2.
 
-The app's "Update" button can update this daemon later. On a Linux server with an x86_64 or ARM CPU, it sends the app's daemon for that CPU. An app built from source carries the x86_64 one once `just linux-daemon` has run. Otherwise the button builds the daemon on the server, which needs Rust and this checkout: [development.md](./development.md) says how.
+The app's "Update" button can update this daemon later. On a Linux server with an x86_64 or ARM CPU, it sends the app's daemon for that CPU. An app built from source carries both once `just linux-daemon` has run, which `just run` does before it starts the app. Otherwise the button builds the daemon on the server, which needs Rust and this checkout: [development.md](./development.md) says how.

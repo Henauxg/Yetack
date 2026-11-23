@@ -30,9 +30,9 @@ impl LinuxCpu {
         self.into()
     }
 
-    /// The daemon's file name beside the app: "yetack-aarch64-linux". The tarball holds both. The
-    /// Windows zip holds the x86_64 one, which its update replaces, and `just linux-daemon` writes
-    /// it beside a build from source.
+    /// The daemon's file name beside the app: "yetack-aarch64-linux". The tarball and the Windows
+    /// zip hold both, which the zip's update replaces, and `just linux-daemon` writes both beside a
+    /// build from source.
     pub fn daemon_file_name(self) -> String {
         format!("yetack-{}-linux", self.word())
     }

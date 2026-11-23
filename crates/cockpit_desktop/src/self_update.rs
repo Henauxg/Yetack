@@ -1,7 +1,7 @@
 //! The app's own update, beside the window. The app asks GitHub for its latest release about ten
 //! seconds after it starts, or a day after the last check when that is later, then once a day.
 //!
-//! The Windows zip updates itself: it downloads the release's app and Linux daemon beside its own
+//! The Windows zip updates itself: it downloads the release's app and Linux daemons beside its own
 //! files, as `<name>.new`, and checks them against the release's `SHA256SUMS`. Windows lets a
 //! program rename its running file but not write over it, so the app then moves each of its files
 //! aside to `<name>.old` and the new one into its place. The new app, started with
@@ -228,12 +228,13 @@ pub async fn check_releases(mut state: Signal<AppState>, mut asked: UnboundedRec
     }
 }
 
-/// Where the app's files are: its program, and the Linux daemon beside it that it sends to
+/// Where the app's files are: its program, and the Linux daemons beside it that it sends to
 /// servers.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Placement {
     pub app: PathBuf,
-    pub daemon: PathBuf,
+    /// A daemon for each CPU, in the order of `LinuxCpu::VARIANTS`, as the release's are.
+    pub daemons: Vec<PathBuf>,
 }
 
 impl Placement {
@@ -243,13 +244,15 @@ impl Placement {
             .parent()
             .ok_or_else(|| io::Error::other("the app's program has no folder"))?;
         Ok(Self {
-            daemon: folder.join(LinuxCpu::X86_64.daemon_file_name()),
+            daemons: daemons_in(folder),
             app,
         })
     }
 
-    fn targets(&self) -> [&Path; 2] {
-        [&self.app, &self.daemon]
+    fn targets(&self) -> Vec<&Path> {
+        std::iter::once(self.app.as_path())
+            .chain(self.daemons.iter().map(PathBuf::as_path))
+            .collect()
     }
 
     /// Deletes the downloads of an update that ended before it put them in place.
@@ -282,7 +285,17 @@ impl Placement {
     }
 }
 
-fn with_suffix(path: &Path, suffix: &str) -> PathBuf {
+/// The daemon for each CPU in `folder`, in the order of `LinuxCpu::VARIANTS`.
+fn daemons_in(folder: &Path) -> Vec<PathBuf> {
+    use strum::VariantArray;
+
+    LinuxCpu::VARIANTS
+        .iter()
+        .map(|cpu| folder.join(cpu.daemon_file_name()))
+        .collect()
+}
+
+pub fn with_suffix(path: &Path, suffix: &str) -> PathBuf {
     let mut name = path.as_os_str().to_owned();
     name.push(suffix);
     PathBuf::from(name)
@@ -312,7 +325,7 @@ fn remove_leftovers_of(install: InstallKind, find: impl FnOnce() -> io::Result<P
     }
 }
 
-/// Downloads the release's checksums, then its app and daemon beside the app's files, and reports
+/// Downloads the release's checksums, then its app and daemons beside the app's files, and reports
 /// the bytes read so far to `progress`. A closed `progress` cancels the download.
 fn download(
     placement: &Placement,
@@ -370,10 +383,8 @@ fn download_from<R: Read>(
     let mut done = u64::try_from(sums.len()).unwrap_or(u64::MAX);
     report(progress, done)?;
     let checksums = Checksums::from(String::from_utf8_lossy(&sums).as_ref());
-    let files = [
-        (&assets.app, &placement.app),
-        (&assets.daemon, &placement.daemon),
-    ];
+    let daemons = assets.daemons.iter().zip(&placement.daemons);
+    let files = std::iter::once((&assets.app, &placement.app)).chain(daemons);
     for (asset, target) in files {
         let path = with_suffix(target, NEW_SUFFIX);
         let written = open(asset)
@@ -448,11 +459,10 @@ fn check(
     assets: &WindowsAssets,
     checksums: &Checksums,
 ) -> Result<(), CheckFileError> {
-    let files = [
-        (&assets.app.name, &placement.app),
-        (&assets.daemon.name, &placement.daemon),
-    ];
-    for (name, target) in files {
+    let daemons = assets.daemons.iter().zip(&placement.daemons);
+    let files = std::iter::once((&assets.app, &placement.app)).chain(daemons);
+    for (asset, target) in files {
+        let name = &asset.name;
         let expected = checksums
             .of(name)
             .ok_or_else(|| CheckFileError::Unlisted(name.clone()))?;
@@ -834,7 +844,7 @@ mod tests {
     fn placement(folder: &Path) -> Placement {
         Placement {
             app: folder.join("yetack-desktop.exe"),
-            daemon: folder.join(LinuxCpu::X86_64.daemon_file_name()),
+            daemons: daemons_in(folder),
         }
     }
 
@@ -866,7 +876,10 @@ mod tests {
     fn assets() -> WindowsAssets {
         WindowsAssets {
             app: asset("yetack-desktop-9.1.0-windows-x64.exe"),
-            daemon: asset("yetack-9.1.0-x86_64-linux"),
+            daemons: vec![
+                asset("yetack-9.1.0-x86_64-linux"),
+                asset("yetack-9.1.0-aarch64-linux"),
+            ],
             checksums: asset(CHECKSUMS_NAME),
         }
     }
@@ -876,20 +889,31 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let files = placement(temp.path());
         fs::write(&files.app, "old app").unwrap();
-        fs::write(&files.daemon, "old daemon").unwrap();
         fs::write(with_suffix(&files.app, NEW_SUFFIX), "new app").unwrap();
-        fs::write(with_suffix(&files.daemon, NEW_SUFFIX), "new daemon").unwrap();
+        for daemon in &files.daemons {
+            fs::write(daemon, "old daemon").unwrap();
+            fs::write(with_suffix(daemon, NEW_SUFFIX), "new daemon").unwrap();
+        }
 
         put_in_place(&files.targets(), rename).unwrap();
 
         assert_eq!(read(&files.app), "new app");
-        assert_eq!(read(&files.daemon), "new daemon");
+        assert_eq!(read(&files.daemons[0]), "new daemon");
+        assert_eq!(read(&files.daemons[1]), "new daemon");
         assert_eq!(read(&with_suffix(&files.app, OLD_SUFFIX)), "old app");
+        assert_eq!(
+            read(&with_suffix(&files.daemons[1], OLD_SUFFIX)),
+            "old daemon"
+        );
 
         files.remove_leftovers();
         assert_eq!(
             names(temp.path()),
-            ["yetack-desktop.exe", "yetack-x86_64-linux"]
+            [
+                "yetack-aarch64-linux",
+                "yetack-desktop.exe",
+                "yetack-x86_64-linux"
+            ]
         );
     }
 
@@ -899,8 +923,8 @@ mod tests {
         let files = placement(temp.path());
         fs::write(&files.app, "app").unwrap();
         fs::write(with_suffix(&files.app, OLD_SUFFIX), "old app").unwrap();
-        fs::write(with_suffix(&files.daemon, OLD_SUFFIX), "only daemon").unwrap();
-        fs::write(with_suffix(&files.daemon, NEW_SUFFIX), "partial").unwrap();
+        fs::write(with_suffix(&files.daemons[0], OLD_SUFFIX), "only daemon").unwrap();
+        fs::write(with_suffix(&files.daemons[0], NEW_SUFFIX), "partial").unwrap();
 
         files.remove_leftovers();
 
@@ -908,7 +932,7 @@ mod tests {
             names(temp.path()),
             ["yetack-desktop.exe", "yetack-x86_64-linux"]
         );
-        assert_eq!(read(&files.daemon), "only daemon");
+        assert_eq!(read(&files.daemons[0]), "only daemon");
     }
 
     #[test]
@@ -917,7 +941,7 @@ mod tests {
         let files = placement(temp.path());
         fs::write(with_suffix(&files.app, OLD_SUFFIX), "old app").unwrap();
         fs::write(with_suffix(&files.app, NEW_SUFFIX), "new app").unwrap();
-        fs::write(&files.daemon, "daemon").unwrap();
+        fs::write(&files.daemons[0], "daemon").unwrap();
 
         files.remove_leftovers();
 
@@ -928,6 +952,7 @@ mod tests {
         );
     }
 
+    /// A zip of a version that carried no ARM daemon gets one with its next update.
     #[test]
     fn a_missing_daemon_takes_the_new_one_and_an_old_leftover_goes() {
         let temp = tempfile::tempdir().unwrap();
@@ -935,13 +960,16 @@ mod tests {
         fs::write(&files.app, "old app").unwrap();
         fs::write(with_suffix(&files.app, OLD_SUFFIX), "older app").unwrap();
         fs::write(with_suffix(&files.app, NEW_SUFFIX), "new app").unwrap();
-        fs::write(with_suffix(&files.daemon, NEW_SUFFIX), "new daemon").unwrap();
+        fs::write(&files.daemons[0], "old daemon").unwrap();
+        for daemon in &files.daemons {
+            fs::write(with_suffix(daemon, NEW_SUFFIX), "new daemon").unwrap();
+        }
 
         put_in_place(&files.targets(), rename).unwrap();
 
-        assert_eq!(read(&files.daemon), "new daemon");
+        assert_eq!(read(&files.daemons[1]), "new daemon");
         assert_eq!(read(&with_suffix(&files.app, OLD_SUFFIX)), "old app");
-        assert!(!with_suffix(&files.daemon, OLD_SUFFIX).exists());
+        assert!(!with_suffix(&files.daemons[1], OLD_SUFFIX).exists());
     }
 
     #[test]
@@ -949,15 +977,15 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let files = placement(temp.path());
         fs::write(&files.app, "old app").unwrap();
-        fs::write(&files.daemon, "old daemon").unwrap();
+        fs::write(&files.daemons[0], "old daemon").unwrap();
         fs::write(with_suffix(&files.app, NEW_SUFFIX), "new app").unwrap();
-        // The daemon's download is missing, so its move fails after the app's.
+        // The x86_64 daemon's download is missing, so its move fails after the app's.
 
         let error = put_in_place(&files.targets(), rename).unwrap_err();
 
         assert!(matches!(error, ReplaceError::Moved(_)), "{error}");
         assert_eq!(read(&files.app), "old app");
-        assert_eq!(read(&files.daemon), "old daemon");
+        assert_eq!(read(&files.daemons[0]), "old daemon");
         assert_eq!(read(&with_suffix(&files.app, NEW_SUFFIX)), "new app");
         files.remove_new_files();
         assert_eq!(
@@ -971,17 +999,28 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let files = placement(temp.path());
         fs::write(with_suffix(&files.app, NEW_SUFFIX), "abc").unwrap();
-        fs::write(with_suffix(&files.daemon, NEW_SUFFIX), "").unwrap();
+        for daemon in &files.daemons {
+            fs::write(with_suffix(daemon, NEW_SUFFIX), "").unwrap();
+        }
         // The SHA-256 of "abc" and of nothing.
         let abc = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
         let empty = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
         let sums = |app: &str| {
             Checksums::parse(&format!(
-                "{app}  yetack-desktop-9.1.0-windows-x64.exe\n{empty}  yetack-9.1.0-x86_64-linux\n"
+                "{app}  yetack-desktop-9.1.0-windows-x64.exe\n{empty}  yetack-9.1.0-x86_64-linux\n{empty}  yetack-9.1.0-aarch64-linux\n"
             ))
         };
+        let without_arm = Checksums::parse(&format!(
+            "{abc}  yetack-desktop-9.1.0-windows-x64.exe\n{empty}  yetack-9.1.0-x86_64-linux\n"
+        ));
 
         assert!(check(&files, &assets(), &sums(abc)).is_ok());
+        assert_eq!(
+            check(&files, &assets(), &without_arm)
+                .unwrap_err()
+                .to_string(),
+            "SHA256SUMS lists no checksum for yetack-9.1.0-aarch64-linux."
+        );
 
         let wrong = check(&files, &assets(), &sums(empty)).unwrap_err();
         assert_eq!(
@@ -993,6 +1032,31 @@ mod tests {
         assert_eq!(
             unlisted.to_string(),
             "SHA256SUMS lists no checksum for yetack-desktop-9.1.0-windows-x64.exe."
+        );
+    }
+
+    #[test]
+    fn each_daemon_is_checked_against_the_checksum_of_its_cpu() {
+        let temp = tempfile::tempdir().unwrap();
+        let files = placement(temp.path());
+        fs::write(with_suffix(&files.app, NEW_SUFFIX), "abc").unwrap();
+        fs::write(with_suffix(&files.daemons[0], NEW_SUFFIX), "abc").unwrap();
+        fs::write(with_suffix(&files.daemons[1], NEW_SUFFIX), "").unwrap();
+        // The SHA-256 of "abc" and of nothing.
+        let abc = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
+        let empty = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
+        let sums = |x86_64: &str, aarch64: &str| {
+            Checksums::parse(&format!(
+                "{abc}  yetack-desktop-9.1.0-windows-x64.exe\n{x86_64}  yetack-9.1.0-x86_64-linux\n{aarch64}  yetack-9.1.0-aarch64-linux\n"
+            ))
+        };
+
+        assert!(check(&files, &assets(), &sums(abc, empty)).is_ok());
+        assert_eq!(
+            check(&files, &assets(), &sums(empty, abc))
+                .unwrap_err()
+                .to_string(),
+            "The download of yetack-9.1.0-x86_64-linux does not match the checksum the release lists."
         );
     }
 
@@ -1025,9 +1089,9 @@ mod tests {
     fn with_all_files(folder: &Path) -> Placement {
         let files = placement(folder);
         fs::write(&files.app, "old app").unwrap();
-        fs::write(&files.daemon, "old daemon").unwrap();
+        fs::write(&files.daemons[0], "old daemon").unwrap();
         fs::write(with_suffix(&files.app, NEW_SUFFIX), "new app").unwrap();
-        fs::write(with_suffix(&files.daemon, NEW_SUFFIX), "new daemon").unwrap();
+        fs::write(with_suffix(&files.daemons[0], NEW_SUFFIX), "new daemon").unwrap();
         files
     }
 
@@ -1038,7 +1102,10 @@ mod tests {
         let app_new = with_suffix(&files.app, NEW_SUFFIX);
         let app_old = with_suffix(&files.app, OLD_SUFFIX);
         let refused = [
-            (with_suffix(&files.daemon, NEW_SUFFIX), files.daemon.clone()),
+            (
+                with_suffix(&files.daemons[0], NEW_SUFFIX),
+                files.daemons[0].clone(),
+            ),
             (app_old.clone(), files.app.clone()),
         ];
 
@@ -1059,7 +1126,7 @@ mod tests {
         files.remove_leftovers();
 
         assert_eq!(read(&files.app), "old app", "the next start puts it back");
-        assert_eq!(read(&files.daemon), "old daemon");
+        assert_eq!(read(&files.daemons[0]), "old daemon");
         assert_eq!(
             names(temp.path()),
             ["yetack-desktop.exe", "yetack-x86_64-linux"]
@@ -1070,16 +1137,44 @@ mod tests {
     fn a_move_that_fails_and_comes_back_deletes_the_downloads() {
         let temp = tempfile::tempdir().unwrap();
         let files = with_all_files(temp.path());
-        let refused = [(with_suffix(&files.daemon, NEW_SUFFIX), files.daemon.clone())];
+        let refused = [(
+            with_suffix(&files.daemons[0], NEW_SUFFIX),
+            files.daemons[0].clone(),
+        )];
 
         let error = replace_step(&files, refusing(&refused)).unwrap_err();
 
         assert!(matches!(error, ReplaceError::Moved(_)), "{error}");
         assert_eq!(read(&files.app), "old app");
-        assert_eq!(read(&files.daemon), "old daemon");
+        assert_eq!(read(&files.daemons[0]), "old daemon");
         assert_eq!(
             names(temp.path()),
             ["yetack-desktop.exe", "yetack-x86_64-linux"]
+        );
+    }
+
+    #[test]
+    fn a_failure_on_the_last_daemon_puts_back_the_app_and_the_other_daemon() {
+        let temp = tempfile::tempdir().unwrap();
+        let files = with_all_files(temp.path());
+        let arm = &files.daemons[1];
+        fs::write(arm, "old arm daemon").unwrap();
+        fs::write(with_suffix(arm, NEW_SUFFIX), "new arm daemon").unwrap();
+        let refused = [(with_suffix(arm, NEW_SUFFIX), arm.clone())];
+
+        let error = replace_step(&files, refusing(&refused)).unwrap_err();
+
+        assert!(matches!(error, ReplaceError::Moved(_)), "{error}");
+        assert_eq!(read(&files.app), "old app");
+        assert_eq!(read(&files.daemons[0]), "old daemon");
+        assert_eq!(read(arm), "old arm daemon");
+        assert_eq!(
+            names(temp.path()),
+            [
+                "yetack-aarch64-linux",
+                "yetack-desktop.exe",
+                "yetack-x86_64-linux"
+            ]
         );
     }
 
@@ -1096,9 +1191,12 @@ mod tests {
 
         assert!(matches!(error, ReplaceError::Moved(_)), "{error}");
         assert_eq!(read(&files.app), "old app");
-        assert_eq!(read(&files.daemon), "old daemon");
+        assert_eq!(read(&files.daemons[0]), "old daemon");
         assert_eq!(read(&with_suffix(&files.app, NEW_SUFFIX)), "new app");
-        assert_eq!(read(&with_suffix(&files.daemon, NEW_SUFFIX)), "new daemon");
+        assert_eq!(
+            read(&with_suffix(&files.daemons[0], NEW_SUFFIX)),
+            "new daemon"
+        );
     }
 
     #[test]
@@ -1237,6 +1335,31 @@ mod tests {
             ]
         );
         assert_eq!(names(temp.path()), ["yetack-desktop.exe"]);
+    }
+
+    #[test]
+    fn each_download_goes_beside_the_file_of_its_cpu() {
+        let temp = tempfile::tempdir().unwrap();
+        let files = placement(temp.path());
+        let (progress, _receiver) = mpsc::unbounded_channel();
+
+        download_from(&files, &assets(), &progress, |asset| {
+            Ok(io::Cursor::new(asset.name.clone().into_bytes()))
+        })
+        .unwrap();
+
+        assert_eq!(
+            read(&with_suffix(&files.app, NEW_SUFFIX)),
+            "yetack-desktop-9.1.0-windows-x64.exe"
+        );
+        assert_eq!(
+            read(&temp.path().join("yetack-x86_64-linux.new")),
+            "yetack-9.1.0-x86_64-linux"
+        );
+        assert_eq!(
+            read(&temp.path().join("yetack-aarch64-linux.new")),
+            "yetack-9.1.0-aarch64-linux"
+        );
     }
 
     #[test]

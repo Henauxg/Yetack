@@ -10,8 +10,8 @@ A release has up to nine files:
 | `yetack_0.1.0_amd64.deb` | The app for Ubuntu 22.04 and newer, and Debian 12, with the daemon beside it |
 | `yetack-0.1.0-1.x86_64.rpm` | The same files as the `.deb`, for Fedora and openSUSE |
 | `yetack-desktop-0.1.0-x86_64-linux.tar.gz` | The app for any other Linux x86_64 with glibc 2.35 or newer, with the daemon and an `install.sh` |
-| `yetack-desktop-0.1.0-windows-x64.zip` | The app for Windows, with the Linux daemon beside it, when a Windows machine is at hand |
-| `yetack-desktop-0.1.0-windows-x64.exe` | The app of the zip alone, which the Windows app's update downloads with the Linux daemon |
+| `yetack-desktop-0.1.0-windows-x64.zip` | The app for Windows, with the Linux daemons for x86_64 and aarch64 beside it, when a Windows machine is at hand |
+| `yetack-desktop-0.1.0-windows-x64.exe` | The app of the zip alone, which the Windows app's update downloads with the Linux daemons |
 | `yetack.service` | The systemd user service that runs the daemon on a server |
 | `SHA256SUMS` | The checksum of each file |
 
@@ -35,9 +35,9 @@ The release builds in Ubuntu 22.04, which has `libxdo.so.3`. Newer distributions
 
 ## 2. Build the Windows zip, if you can
 
-Skip this step when no Windows machine is at hand. The zip holds the app and the static Linux daemon, `yetack-x86_64-linux`, which the app's "Update" sends to servers. `just linux-daemon` builds that daemon and copies it beside the app. It needs the musl target once: `rustup target add x86_64-unknown-linux-musl`.
+Skip this step when no Windows machine is at hand. The zip holds the app and the static Linux daemons, `yetack-x86_64-linux` and `yetack-aarch64-linux`, which the app's "Update" and "Add a server" send to servers. `just linux-daemon` builds them and copies them beside the app. It needs the musl targets once: `rustup target add x86_64-unknown-linux-musl aarch64-unknown-linux-musl`.
 
-`YETACK_PACKAGE` tells the app that it comes from the zip, so it updates itself from later releases. That update downloads the app alone, `yetack-desktop-<version>-windows-x64.exe`, with the Linux daemon and `SHA256SUMS`, so the app goes beside the zip.
+`YETACK_PACKAGE` tells the app that it comes from the zip, so it updates itself from later releases. That update downloads the app alone, `yetack-desktop-<version>-windows-x64.exe`, with both Linux daemons and `SHA256SUMS`, so the app goes beside the zip. A release without the aarch64 daemon offers the zip no update: the zip would keep its old one, which servers refuse.
 
 The speech model's C++ builds with clang, whose code takes 13 to 20% less CPU than Microsoft's compiler's ([voice/investigation.md](voice/investigation.md)). It needs LLVM (`winget install LLVM.LLVM`), cmake, and a PowerShell with Visual Studio's x64 build tools: run `Launch-VsDevShell.ps1 -Arch amd64 -HostArch amd64`, in Visual Studio's `Common7\Tools` folder. Without the four `$env:` lines on clang below, Microsoft's compiler builds it, and the app works the same, a little slower.
 
@@ -55,7 +55,7 @@ cargo build --release -p cockpit_desktop
 just linux-daemon
 $version = "0.1.0"
 New-Item -ItemType Directory -Force dist | Out-Null
-Compress-Archive -Force -Path target\release\yetack-desktop.exe, target\release\yetack-x86_64-linux, LICENSE `
+Compress-Archive -Force -Path target\release\yetack-desktop.exe, target\release\yetack-x86_64-linux, target\release\yetack-aarch64-linux, LICENSE `
     -DestinationPath "dist\yetack-desktop-$version-windows-x64.zip"
 Copy-Item target\release\yetack-desktop.exe "dist\yetack-desktop-$version-windows-x64.exe"
 ```
