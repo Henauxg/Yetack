@@ -180,11 +180,16 @@ pub(crate) enum ControlPurpose {
     ContextUsage(Reply),
     /// `reply` is `None` for a refresh after an MCP change.
     McpStatus(Option<Reply>),
-    /// A reconnect, a toggle or the end of a sign-in, answered by `Done` and followed by a
-    /// refresh.
+    /// A reconnect or a toggle, answered by `Done` and followed by a refresh.
     McpChanged(Reply),
     /// The start of a sign-in, answered by `McpSignIn`.
     McpSignIn(Reply),
+    /// The end of a sign-in. Claude Code then holds the token but does not reconnect the server
+    /// when the code came this way, so the daemon asks it to, and answers `Done` once it tried.
+    McpSignInFinished {
+        server: String,
+        reply: Reply,
+    },
     /// `agent.reload_skills`, answered by `SkillsReloaded`. `before` holds the commands as the
     /// request leaves: Claude Code sends the changed ones before it answers.
     ReloadSkills {

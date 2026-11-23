@@ -2917,6 +2917,13 @@ async fn an_mcp_sign_in_reaches_claude_and_its_code_stays_out_of_the_raw_log() {
     let raw = std::fs::read_to_string(setup.state().join("raw/1.jsonl")).unwrap();
     assert!(raw.contains("mcp_oauth_callback_url"), "{raw}");
     assert!(!raw.contains("secret-code"), "{raw}");
+    // Claude Code leaves the reconnect to whoever passed the code.
+    let callback_line = raw.find("mcp_oauth_callback_url").unwrap();
+    let reconnect = raw.get(callback_line..).unwrap();
+    assert!(
+        reconnect.contains(r#"\"subtype\":\"mcp_reconnect\",\"serverName\":\"notes\""#),
+        "{raw}"
+    );
 }
 
 /// A terminal runs the shell the client picks from the daemon's list, in the agent's folder, takes

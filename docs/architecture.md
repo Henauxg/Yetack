@@ -156,7 +156,7 @@ Their answers, `SkillsReloaded` and `PluginsReloaded`, count the skills, or the 
 The new list of commands goes to every client in a `CommandsChanged` event.
 
 `agent.mcp_sign_in` starts a server's OAuth sign-in in the agent's `claude` (`mcp_authenticate`), and its answer `McpSignIn` holds the link of the sign-in page.
-`agent.mcp_sign_in_callback` passes on the address the browser went back to, which carries the authorization code (`mcp_oauth_callback_url`). Claude Code answers once it holds the token, and connects to the server again by itself.
+`agent.mcp_sign_in_callback` passes on the address the browser went back to, which carries the authorization code (`mcp_oauth_callback_url`). Claude Code answers once it holds the token, but does not reconnect the server after a sign-in finished this way. So the daemon then sends `mcp_reconnect`, and answers the app once Claude Code tried.
 
 `agent.read_file`, `agent.list_dir` and `agent.find_files` reach any file the daemon's user can read, as an IDE does, since the agent's commands already can.
 A path with `..` is refused.

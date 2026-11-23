@@ -25,6 +25,7 @@ impl ControlPurpose {
             | Self::ContextUsage(reply)
             | Self::McpChanged(reply)
             | Self::McpSignIn(reply)
+            | Self::McpSignInFinished { reply, .. }
             | Self::ReloadSkills { reply, .. }
             | Self::ReloadPlugins { reply, .. }
             | Self::SetMode {
@@ -80,6 +81,7 @@ impl Hub {
         let mut rename_session = false;
         let mut refresh_effort = false;
         let mut send_queued = false;
+        let mut reconnect_after_sign_in = None;
         match purpose {
             ControlPurpose::Initialize => {
                 rename_session = view.initialized();
@@ -192,6 +194,10 @@ impl Hub {
                     .map(|start| ResponseBody::McpSignIn(sign_in_of(start)));
                 agents::respond(reply, result);
             }
+            ControlPurpose::McpSignInFinished { server, reply } => match result {
+                Ok(_) => reconnect_after_sign_in = Some((server, reply)),
+                Err(failure) => agents::respond(reply, Err(errors::control_failed(id, failure))),
+            },
             ControlPurpose::ReloadSkills { reply, before } => {
                 let result = parse_for_client::<ReloadSkillsResponse>(id, result).map(|answer| {
                     let changes = view.reload_skills(&answer, &before);
@@ -214,6 +220,15 @@ impl Hub {
             }
             // A closed agent leaves the hub at once: its answers go to `fail`.
             ControlPurpose::Closing => {}
+        }
+        if let Some((server, reply)) = reconnect_after_sign_in {
+            self.control(
+                id,
+                ControlRequest::McpReconnect {
+                    server_name: server,
+                },
+                ControlPurpose::McpChanged(reply),
+            );
         }
         if send_queued {
             self.send_next_queued(id);

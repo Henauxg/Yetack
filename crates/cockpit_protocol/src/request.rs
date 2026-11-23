@@ -93,8 +93,8 @@ pub enum Request {
     /// holds the link to open in a browser.
     AgentMcpSignIn(McpServerParams),
     /// Finishes the sign-in with the address the browser went to once the user approved, which
-    /// carries the authorization code. Answered by `Done` once Claude Code holds the token, then
-    /// Claude Code connects to the server again by itself.
+    /// carries the authorization code. The daemon then has Claude Code reconnect the server, and
+    /// answers `Done` once it tried.
     AgentMcpSignInCallback(McpCallbackParams),
     /// The slash commands and skills, for the palette. Answered by `Commands`.
     AgentCommands(AgentParams),

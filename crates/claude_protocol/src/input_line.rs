@@ -76,7 +76,8 @@ pub enum ControlRequest {
         server_name: String,
     },
     /// Finishes the sign-in with the address the browser went to once the user approved. Claude
-    /// Code answers once it holds the token, then connects to the server again by itself.
+    /// Code answers once it holds the token. It does not reconnect the server after a sign-in
+    /// finished this way: send `McpReconnect`.
     #[serde(rename_all = "camelCase")]
     McpOauthCallbackUrl {
         server_name: String,
