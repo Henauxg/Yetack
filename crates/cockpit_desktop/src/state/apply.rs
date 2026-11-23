@@ -272,6 +272,7 @@ pub fn apply_catchup(
         projects::apply_pick(state, agent);
     }
     file_tree::keep_listed_panes(state, machine);
+    terminals::keep_listed_places(state, machine);
     state.fix_selection();
     actions::follow_hidden_title_edit(state, drafts);
     actions::follow_stop_dialog(state);
@@ -340,6 +341,7 @@ pub fn apply(
             forget_agent(state, drafts, agent);
             notification_levels::forget_agent(state, agent);
             file_tree::forget_pane(state, agent);
+            terminals::forget_place(state, agent);
             grouping::forget(state, agent);
             projects::forget_agent(state, agent);
             state.ui.picked_projects.remove(&agent);
@@ -663,7 +665,7 @@ mod tests {
 
     use super::*;
     use crate::daemon_label::DaemonLabel;
-    use crate::prefs::{GroupBy, NotificationLevel, StatusFilter};
+    use crate::prefs::{GroupBy, NotificationLevel, StatusFilter, TerminalPlace};
     use crate::state::app_state::tests::{
         DAEMON_COMMIT, DAEMON_VERSION, connected_update, placed, state_with, summary,
     };
@@ -833,7 +835,7 @@ mod tests {
         for agent in [AgentId::new(1), AgentId::new(2)] {
             state.ui.selected = Some(agent);
             file_tree::toggle_pane(&mut state);
-            terminals::toggle_pane(&mut state);
+            terminals::move_to(&mut state, TerminalPlace::Right);
         }
 
         apply_catchup(
@@ -857,7 +859,15 @@ mod tests {
             .values()
             .flat_map(|panes| panes.keys().copied())
             .collect();
+        let places: Vec<AgentId> = state
+            .prefs
+            .terminal
+            .agents
+            .values()
+            .flat_map(|places| places.keys().copied())
+            .collect();
         assert_eq!(kept, [AgentId::new(2)]);
+        assert_eq!(places, [AgentId::new(2)]);
         assert_eq!(state.ui.terminal_panes, BTreeSet::from([AgentId::new(2)]));
     }
 

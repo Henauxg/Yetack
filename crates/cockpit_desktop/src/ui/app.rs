@@ -26,7 +26,7 @@ use crate::ui::header::Header;
 use crate::ui::icons::{Icon, IconKind};
 use crate::ui::kept_folds::use_kept_folds;
 use crate::ui::no_daemon::NoDaemonScreen;
-use crate::ui::presence::use_presence;
+use crate::ui::presence::{Shown, use_presence};
 use crate::ui::project_menu::ProjectMenu;
 use crate::ui::quotes::{QuoteLayer, use_quotes};
 use crate::ui::reorder::use_reorder;
@@ -86,7 +86,11 @@ pub fn App() -> Element {
     // with a fold only for the agent that closed it.
     let terminal_agent = selected.filter(|_| terminals::pane_open(&state));
     let terminal_pane =
-        use_presence(terminal_agent.map(|agent| (agent, state.prefs.terminal.place)));
+        use_presence(terminal_agent.map(|agent| (agent, terminals::place(&state, agent))));
+    // A switch can show the next agent's terminal in another place, which mounts the pane there
+    // within the same opening: the pane's agent, place and opening tell what the window drew last.
+    let mut last_terminal = use_hook(|| CopyValue::new(TerminalShown::default()));
+    last_terminal.with_mut(|last| last.follow(terminal_pane.as_ref(), switching));
     let files_leaving = files_pane
         .as_ref()
         .is_some_and(|shown| shown.leaving && Some(shown.value) == selected);
@@ -124,6 +128,9 @@ pub fn App() -> Element {
     }
     if files_open && last_files_opening().by_switch {
         app_classes.push("files-pane-instant");
+    }
+    if terminal_agent.is_some() && last_terminal().by_switch {
+        app_classes.push("terminal-instant");
     }
     let app_class = app_classes.join(" ");
     // With servers, the question shows from this computer's panel, and the servers stay in use.
@@ -225,6 +232,31 @@ pub fn App() -> Element {
     }
 }
 
+/// The agent, the place and the opening of the terminal pane the window drew last, and whether an
+/// agent switch showed it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+struct TerminalShown {
+    pane: Option<(AgentId, TerminalPlace)>,
+    opening: u32,
+    by_switch: bool,
+}
+
+impl TerminalShown {
+    /// Follows a render that shows `shown`, in the frame of an agent switch when `switching`.
+    fn follow(&mut self, shown: Option<&Shown<(AgentId, TerminalPlace)>>, switching: bool) {
+        if let Some(shown) = shown
+            && !shown.leaving
+            && (self.pane != Some(shown.value) || self.opening != shown.opening)
+        {
+            *self = Self {
+                pane: Some(shown.value),
+                opening: shown.opening,
+                by_switch: switching,
+            };
+        }
+    }
+}
+
 /// A side panel's last opening, and whether an agent switch opened it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 struct PaneOpening {
@@ -318,5 +350,50 @@ fn ClosedNote() -> Element {
                 Icon { kind: IconKind::Close, size: 12 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn shown(
+        agent: u32,
+        place: TerminalPlace,
+        leaving: bool,
+        opening: u32,
+    ) -> Shown<(AgentId, TerminalPlace)> {
+        Shown {
+            value: (AgentId::new(agent), place),
+            leaving,
+            opening,
+        }
+    }
+
+    /// Agent 1's terminal shows at the bottom, agent 2's is closed. Each time agent 1 comes back
+    /// on screen, its terminal draws at once, and it plays its animation when the user opens it
+    /// again or moves it.
+    #[test]
+    fn a_terminal_draws_at_once_each_time_it_shows_with_its_agent() {
+        let mut last = TerminalShown::default();
+        let mut by_switch = |shown: Option<&Shown<_>>, switching| {
+            last.follow(shown, switching);
+            last.by_switch
+        };
+
+        let opened = by_switch(Some(&shown(1, TerminalPlace::Bottom, false, 1)), false);
+        by_switch(Some(&shown(1, TerminalPlace::Bottom, true, 1)), true);
+        by_switch(None, false);
+        let back = by_switch(Some(&shown(1, TerminalPlace::Bottom, false, 2)), true);
+        let after = by_switch(Some(&shown(1, TerminalPlace::Bottom, false, 2)), false);
+        by_switch(Some(&shown(1, TerminalPlace::Bottom, true, 2)), false);
+        let reopened = by_switch(Some(&shown(1, TerminalPlace::Bottom, false, 3)), false);
+        let moved = by_switch(Some(&shown(1, TerminalPlace::Right, false, 3)), false);
+
+        assert!(!opened);
+        assert!(back, "it came back with its agent");
+        assert!(after, "it stays so while it is open");
+        assert!(!reopened, "the user opened it again");
+        assert!(!moved, "the user moved it");
     }
 }

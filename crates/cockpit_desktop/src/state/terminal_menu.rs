@@ -134,7 +134,7 @@ pub fn target(state: &AppState) -> Option<(MenuSpot, Vec<TerminalRow>)> {
         .terminal_menu
         .clone()
         .filter(|spot| terminals::shows(state, spot.agent, spot.terminal))?;
-    let rows = rows(&spot, state.prefs.terminal.place);
+    let rows = rows(&spot, terminals::place(state, spot.agent));
     Some((spot, rows))
 }
 

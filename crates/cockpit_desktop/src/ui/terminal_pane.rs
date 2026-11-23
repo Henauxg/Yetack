@@ -1006,7 +1006,14 @@ fn receive(cockpit: Cockpit, script: document::Eval, message: FromPage) {
         FromPage::Toggle => cockpit.change(terminals::toggle_pane),
         FromPage::Size { size } => cockpit.update(|state| {
             let size = size.clamp(MIN_TERMINAL_SIZE, MAX_TERMINAL_SIZE);
-            match state.prefs.terminal.place {
+            // The grip is on the selected agent's pane.
+            let place = state
+                .ui
+                .selected
+                .map_or(state.prefs.terminal.place, |agent| {
+                    terminals::place(state, agent)
+                });
+            match place {
                 TerminalPlace::Bottom => state.prefs.terminal.height = Some(size),
                 TerminalPlace::Right => state.prefs.terminal.width = Some(size),
                 // The file view's splitter sizes it.
@@ -1035,7 +1042,8 @@ pub fn TerminalPane(
         .get(MachineId::of(agent))
         .map(|machine| machine.daemon.machine.clone())
         .unwrap_or_default();
-    let prefs = state.prefs.terminal;
+    let (height, width) = (state.prefs.terminal.height, state.prefs.terminal.width);
+    let current = terminals::place(&state, agent);
     let (class, grip, style) = match place {
         TerminalPlace::Bottom => (
             if leaving {
@@ -1044,10 +1052,7 @@ pub fn TerminalPane(
                 "terminal-pane bottom"
             },
             Some("bottom"),
-            format!(
-                "height: {}px",
-                prefs.height.unwrap_or(DEFAULT_TERMINAL_HEIGHT)
-            ),
+            format!("height: {}px", height.unwrap_or(DEFAULT_TERMINAL_HEIGHT)),
         ),
         TerminalPlace::Right => (
             if leaving {
@@ -1056,7 +1061,7 @@ pub fn TerminalPane(
                 "terminal-pane right"
             },
             Some("right"),
-            format!("width: {}px", prefs.width.unwrap_or(DEFAULT_TERMINAL_WIDTH)),
+            format!("width: {}px", width.unwrap_or(DEFAULT_TERMINAL_WIDTH)),
         ),
         TerminalPlace::FileView => (
             if instant {
@@ -1161,13 +1166,13 @@ pub fn TerminalPane(
                                     button {
                                         class: "terminal-move-item",
                                         role: "menuitemradio",
-                                        aria_checked: target == prefs.place,
+                                        aria_checked: target == current,
                                         onclick: move |_| {
                                             moving.set(false);
                                             cockpit.update(|state| terminals::move_to(state, target));
                                         },
                                         span { class: "terminal-move-check",
-                                            if target == prefs.place { Icon { kind: IconKind::Check, size: 12 } }
+                                            if target == current { Icon { kind: IconKind::Check, size: 12 } }
                                         }
                                         "{label}"
                                     }

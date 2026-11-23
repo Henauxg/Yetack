@@ -2,6 +2,7 @@
 //! shells a new terminal can run, and the requests that list, open and close them. The output
 //! does not pass here: it goes from the connection to the page, see `terminal_feed`.
 
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 use cockpit_protocol::{
@@ -164,10 +165,21 @@ pub fn pane_open(state: &AppState) -> bool {
         .is_some_and(|agent| state.ui.terminal_panes.contains(&agent))
 }
 
+/// Where `agent`'s terminal sits: the place kept for it, else the last place chosen.
+pub fn place(state: &AppState, agent: AgentId) -> TerminalPlace {
+    state
+        .daemon_machine(agent)
+        .map_or(state.prefs.terminal.place, |machine| {
+            state
+                .prefs
+                .terminal
+                .agent(machine, MachineId::daemon_agent(agent))
+        })
+}
+
 /// Whether `agent`'s terminal is a tab of its file view.
 pub fn in_file_view(state: &AppState, agent: AgentId) -> bool {
-    state.prefs.terminal.place == TerminalPlace::FileView
-        && state.ui.terminal_panes.contains(&agent)
+    place(state, agent) == TerminalPlace::FileView && state.ui.terminal_panes.contains(&agent)
 }
 
 /// Whether `agent`'s file view shows the terminal: the user picked its tab, or no file is open.
@@ -189,7 +201,7 @@ pub fn file_view_open(state: &AppState, agent: AgentId) -> bool {
 
 /// Shows the terminal's tab in `agent`'s file view, when the terminal is a tab there.
 pub fn show_tab(state: &mut AppState, agent: AgentId) {
-    if state.prefs.terminal.place == TerminalPlace::FileView {
+    if place(state, agent) == TerminalPlace::FileView {
         state.ui.terminal_tab_shown.insert(agent);
     }
 }
@@ -223,13 +235,33 @@ pub fn toggle_pane(state: &mut AppState) -> Vec<Outgoing> {
     Vec::new()
 }
 
-pub fn move_to(state: &mut AppState, place: TerminalPlace) {
+/// Moves the selected agent's terminal to `to`, where the agents that start later put theirs. The
+/// other agents keep theirs where it is.
+pub fn move_to(state: &mut AppState, to: TerminalPlace) {
     let Some(agent) = state.ui.selected else {
-        state.prefs.terminal.place = place;
+        state.prefs.terminal.place = to;
         return;
     };
+    let Some(machine) = state.daemon_machine(agent).map(str::to_owned) else {
+        return;
+    };
+    let others: Vec<(String, AgentId)> = state
+        .agents
+        .keys()
+        .filter(|&&other| other != agent)
+        .filter_map(|&other| {
+            let name = state.daemon_machine(other)?.to_owned();
+            Some((name, MachineId::daemon_agent(other)))
+        })
+        .collect();
+    for (name, other) in others {
+        state.prefs.terminal.keep_place(&name, other);
+    }
     let panel_was_open = file_view_open(state, agent);
-    state.prefs.terminal.place = place;
+    state
+        .prefs
+        .terminal
+        .set_agent(&machine, MachineId::daemon_agent(agent), to);
     state.ui.terminal_panes.insert(agent);
     show_tab(state, agent);
     // A terminal that leaves the file view alone in it closes it, and its badges go.
@@ -446,6 +478,42 @@ pub fn apply_update(state: &mut AppState, update: TerminalUpdate) {
         // Output goes to the page, not to the state.
         TerminalChange::Output { .. } => {}
     }
+}
+
+/// Keeps the places of the agents a snapshot of `machine` holds: the others closed while the app
+/// was away.
+pub fn keep_listed_places(state: &mut AppState, machine: MachineId) {
+    let Some(known) = state.machines.get(machine) else {
+        return;
+    };
+    let listed: BTreeSet<AgentId> = state
+        .agents
+        .keys()
+        .filter(|&&agent| MachineId::of(agent) == machine)
+        .map(|&agent| MachineId::daemon_agent(agent))
+        .collect();
+    state
+        .prefs
+        .terminal
+        .keep_agents(&known.daemon.machine, |agent| listed.contains(&agent));
+}
+
+/// Drops the places of a machine's agents before the app forgets the machine.
+pub fn forget_machine_places(state: &mut AppState, machine: MachineId) {
+    if let Some(known) = state.machines.get(machine) {
+        state.prefs.terminal.forget_machine(&known.daemon.machine);
+    }
+}
+
+/// Drops the place of an agent the daemon removed.
+pub fn forget_place(state: &mut AppState, agent: AgentId) {
+    let Some(machine) = state.daemon_machine(agent).map(str::to_owned) else {
+        return;
+    };
+    state
+        .prefs
+        .terminal
+        .forget_agent(&machine, MachineId::daemon_agent(agent));
 }
 
 /// A connection to `machine`'s daemon came. It may be a new daemon, whose terminals reuse the old
@@ -1046,6 +1114,38 @@ mod tests {
 
         assert!(in_file_view(&state, agent()));
         assert!(!shows_terminal(&state), "the file stays over it");
+    }
+
+    #[test]
+    fn each_agent_keeps_its_terminals_place_and_a_later_agent_takes_the_last_one() {
+        let other = AgentId::new(2);
+        let later = AgentId::new(3);
+        let mut state = state_with(vec![
+            summary(1, AgentStatus::Idle),
+            summary(2, AgentStatus::Idle),
+        ]);
+        state.ui.selected = Some(agent());
+
+        move_to(&mut state, TerminalPlace::Right);
+        let kept = place(&state, other);
+        state.ui.selected = Some(other);
+        move_to(&mut state, TerminalPlace::FileView);
+
+        assert_eq!(kept, TerminalPlace::Bottom, "the other agent's stays");
+        assert_eq!(place(&state, agent()), TerminalPlace::Right);
+        assert_eq!(place(&state, other), TerminalPlace::FileView);
+        assert_eq!(place(&state, later), TerminalPlace::FileView);
+    }
+
+    #[test]
+    fn a_removed_agent_leaves_no_terminal_place_behind() {
+        let mut state = state_with(vec![summary(1, AgentStatus::Idle)]);
+        state.ui.selected = Some(agent());
+        move_to(&mut state, TerminalPlace::Right);
+
+        forget_place(&mut state, agent());
+
+        assert!(state.prefs.terminal.agents.is_empty());
     }
 
     #[test]

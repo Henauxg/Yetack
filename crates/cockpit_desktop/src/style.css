@@ -12075,6 +12075,11 @@ html.splitting .sidebar {
   animation: none;
 }
 
+/* A terminal at the bottom or the right that shows with its agent draws at once. */
+.app.terminal-instant .terminal-pane:is(.bottom, .right):not(.leaving) {
+  animation: none;
+}
+
 .files-pane.leaving {
   pointer-events: none;
   animation: files-pane-out var(--motion-out) var(--ease-in) forwards;

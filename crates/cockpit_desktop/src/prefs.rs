@@ -866,12 +866,18 @@ pub struct ClearedFolders {
     pub after: Option<ItemId>,
 }
 
-/// Where the terminal pane sits, and its size there. Whether it shows is not kept: it opens
-/// closed.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+/// Where each agent's terminal pane sits, and its size in each place. Whether it shows is not
+/// kept: it opens closed.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct TerminalPrefs {
+    /// The place of an agent that has none in `agents`: the last place chosen, which the agents
+    /// that start after it take.
     pub place: TerminalPlace,
+    /// The agents' places, by daemon machine, then by the daemon's agent id. A move keeps the
+    /// place of every agent the app lists.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub agents: BTreeMap<String, BTreeMap<AgentId, TerminalPlace>>,
     /// The bottom panel's height in pixels. `None` keeps the default.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub height: Option<u16>,
@@ -883,6 +889,51 @@ pub struct TerminalPrefs {
 impl TerminalPrefs {
     fn is_default(&self) -> bool {
         *self == Self::default()
+    }
+
+    pub fn agent(&self, machine: &str, agent: AgentId) -> TerminalPlace {
+        self.agents
+            .get(machine)
+            .and_then(|places| places.get(&agent))
+            .copied()
+            .unwrap_or(self.place)
+    }
+
+    /// Keeps the agent's terminal where it is now, whatever place the next agents take.
+    pub fn keep_place(&mut self, machine: &str, agent: AgentId) {
+        let place = self.place;
+        self.agents
+            .entry(machine.to_owned())
+            .or_default()
+            .entry(agent)
+            .or_insert(place);
+    }
+
+    /// Moves the agent's terminal to `place`, which the next agents take too.
+    pub fn set_agent(&mut self, machine: &str, agent: AgentId, place: TerminalPlace) {
+        self.agents
+            .entry(machine.to_owned())
+            .or_default()
+            .insert(agent, place);
+        self.place = place;
+    }
+
+    /// Keeps the places of the machine's agents that `keep` names.
+    pub fn keep_agents(&mut self, machine: &str, keep: impl Fn(AgentId) -> bool) {
+        if let Some(places) = self.agents.get_mut(machine) {
+            places.retain(|&agent, _| keep(agent));
+            if places.is_empty() {
+                self.agents.remove(machine);
+            }
+        }
+    }
+
+    pub fn forget_agent(&mut self, machine: &str, agent: AgentId) {
+        self.keep_agents(machine, |kept| kept != agent);
+    }
+
+    pub fn forget_machine(&mut self, machine: &str) {
+        self.agents.remove(machine);
     }
 }
 
@@ -1103,8 +1154,8 @@ pub fn file(environment: &Environment) -> Option<PathBuf> {
 
 impl Prefs {
     /// Moves what the preferences keep under a server's name to its new name: its account
-    /// colors, its agents' notification levels, projects, files panes, cleared folders and places
-    /// in the sidebar.
+    /// colors, its agents' notification levels, projects, files panes, cleared folders, terminal
+    /// places and places in the sidebar.
     /// What the new name held, left by a server removed earlier, goes.
     pub fn rename_machine(&mut self, old: &str, new: &str) {
         fn moved<V>(map: &mut BTreeMap<String, V>, old: &str, new: &str) {
@@ -1121,6 +1172,7 @@ impl Prefs {
         moved(&mut self.projects.agents, old, new);
         moved(&mut self.files_pane.agents, old, new);
         moved(&mut self.files_pane.cleared, old, new);
+        moved(&mut self.terminal.agents, old, new);
         self.agent_order.retain(|key| key.machine != new);
         for key in &mut self.agent_order {
             if key.machine == old {
@@ -1660,6 +1712,23 @@ mod tests {
     }
 
     #[test]
+    fn a_renamed_server_keeps_its_agents_terminal_places() {
+        let mut prefs = Prefs::default();
+        prefs
+            .terminal
+            .set_agent("devbox", AgentId::new(4), TerminalPlace::Right);
+        prefs.terminal.place = TerminalPlace::Bottom;
+
+        prefs.rename_machine("devbox", "lab");
+
+        assert_eq!(
+            prefs.terminal.agent("lab", AgentId::new(4)),
+            TerminalPlace::Right
+        );
+        assert!(!prefs.terminal.agents.contains_key("devbox"));
+    }
+
+    #[test]
     fn a_renamed_server_keeps_its_agents_place_in_the_sidebar() {
         let key = |machine: &str, agent| AgentKey {
             machine: machine.to_owned(),
@@ -1901,6 +1970,43 @@ mod tests {
             Prefs::default()
         );
         assert_eq!(Prefs::load(&broken), Prefs::default());
+    }
+
+    #[test]
+    fn each_agent_keeps_its_terminals_place_and_new_agents_take_the_last_one() {
+        let mut prefs = TerminalPrefs::default();
+        prefs.set_agent("build-box", AgentId::new(4), TerminalPlace::Right);
+        prefs.set_agent("laptop", AgentId::new(2), TerminalPlace::FileView);
+
+        let saved = serde_json::to_value(&prefs).unwrap();
+        let read: TerminalPrefs = serde_json::from_value(saved.clone()).unwrap();
+        let older: TerminalPrefs = serde_json::from_str(r#"{"place": "right"}"#).unwrap();
+        prefs.forget_agent("build-box", AgentId::new(4));
+
+        assert_eq!(
+            saved,
+            serde_json::json!({
+                "place": "file_view",
+                "agents": {"build-box": {"4": "right"}, "laptop": {"2": "file_view"}},
+            })
+        );
+        assert_eq!(
+            read.agent("build-box", AgentId::new(4)),
+            TerminalPlace::Right
+        );
+        assert_eq!(
+            read.agent("build-box", AgentId::new(5)),
+            TerminalPlace::FileView
+        );
+        assert_eq!(
+            older.agent("build-box", AgentId::new(4)),
+            TerminalPlace::Right
+        );
+        assert_eq!(
+            prefs.agent("build-box", AgentId::new(4)),
+            TerminalPlace::FileView
+        );
+        assert!(!prefs.agents.contains_key("build-box"));
     }
 
     #[test]
