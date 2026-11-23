@@ -22,6 +22,7 @@ Ideas and fixes noted for later. None of them is planned yet.
   - The open button under a failed read (`PdfSource::unread`) shows for any failure of a `.pdf` on this computer, and opens the path asked for. When the daemon found the file by a bare name and refused it for its size, that path may name no file. The daemon's error would need to say which file it found and that it was too large (a protocol change).
 - **Notes on an agent.** A short Markdown note per agent session, which the user writes and edits by hand: what the agent is for, what to check next. Open question: whether the agent can read the note too, or write to it.
 - **Smaller fixes, not done:**
+  - Closing files in the file view sometimes does not close them: opening the file view again shows them. Not reproduced yet.
   - `settings.set` takes a value of any size. Give it a limit.
   - `sessions.resume` copies nothing, but when the session's recorded folder is in the project of a fork of that session waiting for its first message, the resumed agent writes into the file that fork starts from.
   - A session copy for a fork or a move that passes its 2-minute limit keeps running, and may still put the file in place after the daemon stopped tracking it.
