@@ -13,8 +13,8 @@ use cockpit_protocol::{
 
 use super::app_state::AppState;
 use super::requests::{Outgoing, Purpose};
-use super::terminal_menu;
 use super::ui_state::{MenuSide, Popover};
+use super::{blocks_view, terminal_menu};
 use crate::machine::MachineId;
 use crate::path_style::PathStyle;
 use crate::prefs::TerminalPlace;
@@ -209,11 +209,11 @@ pub fn show_tab(state: &mut AppState, agent: AgentId) {
 /// Hides `agent`'s pane. Its shells keep running.
 pub fn hide(state: &mut AppState, agent: AgentId) {
     close_shell_menu(state, |shown| shown == agent);
-    let panel_was_open = file_view_open(state, agent);
+    let badges_before = blocks_view::shows_badges(state, agent);
     state.ui.terminal_panes.remove(&agent);
     state.ui.terminal_tab_shown.remove(&agent);
     // The cards over the chat leave their badges, as when the file view closes.
-    if panel_was_open && !file_view_open(state, agent) {
+    if badges_before && !blocks_view::shows_badges(state, agent) {
         state.ui.badge = None;
     }
 }
@@ -257,7 +257,7 @@ pub fn move_to(state: &mut AppState, to: TerminalPlace) {
     for (name, other) in others {
         state.prefs.terminal.keep_place(&name, other);
     }
-    let panel_was_open = file_view_open(state, agent);
+    let badges_before = blocks_view::shows_badges(state, agent);
     state
         .prefs
         .terminal
@@ -265,7 +265,7 @@ pub fn move_to(state: &mut AppState, to: TerminalPlace) {
     state.ui.terminal_panes.insert(agent);
     show_tab(state, agent);
     // A terminal that leaves the file view alone in it closes it, and its badges go.
-    if panel_was_open && !file_view_open(state, agent) {
+    if badges_before && !blocks_view::shows_badges(state, agent) {
         state.ui.badge = None;
     }
 }
@@ -603,6 +603,7 @@ mod tests {
     use cockpit_protocol::{AgentStatus, Catchup, Method, ResponseBody};
 
     use super::*;
+    use crate::prefs::BlocksForm;
     use crate::state::find::{self, FindPane};
     use crate::state::tab_menu::{self, TabGroup};
     use crate::state::{
@@ -1102,6 +1103,21 @@ mod tests {
         assert!(opened);
         assert!(!file_view_open(&state, agent()));
         assert_eq!(state.ui.badge, None);
+    }
+
+    #[test]
+    fn hiding_the_terminal_keeps_the_badges_card_while_the_user_keeps_the_blocks_folded() {
+        let mut state = state_with(vec![summary(1, AgentStatus::Idle)]);
+        state.ui.selected = Some(agent());
+        state.prefs.blocks.form = BlocksForm::Badges;
+        state.prefs.terminal.place = TerminalPlace::FileView;
+        toggle_pane(&mut state);
+        state.ui.badge = Some(Block::Tasks);
+
+        toggle_pane(&mut state);
+
+        assert!(!file_view_open(&state, agent()));
+        assert_eq!(state.ui.badge, Some(Block::Tasks));
     }
 
     #[test]

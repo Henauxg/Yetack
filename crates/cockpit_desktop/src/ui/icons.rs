@@ -18,6 +18,10 @@ pub enum IconKind {
     Close,
     /// The terminal's "Move to" button: a window with a panel at its bottom.
     PanelBottom,
+    /// Folds the blocks into badges: a window with a panel on its right, and an arrow towards it.
+    PanelRightClose,
+    /// Unfolds the badges into blocks: the same window, the arrow away from the panel.
+    PanelRightOpen,
     Copy,
     Check,
     /// A target, to show the file view's file in the tree.
@@ -104,6 +108,12 @@ impl IconKind {
             Self::Close => r#"<path d="M6 6l12 12"></path><path d="M18 6L6 18"></path>"#,
             Self::PanelBottom => {
                 r#"<rect x="3" y="4" width="18" height="16" rx="2"></rect><path d="M3 14h18"></path>"#
+            }
+            Self::PanelRightClose => {
+                r#"<rect x="3" y="4" width="18" height="16" rx="2"></rect><path d="M15 4v16"></path><path d="M8 9l3 3-3 3"></path>"#
+            }
+            Self::PanelRightOpen => {
+                r#"<rect x="3" y="4" width="18" height="16" rx="2"></rect><path d="M15 4v16"></path><path d="M10 15l-3-3 3-3"></path>"#
             }
             Self::Copy => {
                 r#"<rect x="9" y="9" width="11" height="11" rx="2"></rect><path d="M5 15V6a2 2 0 0 1 2-2h9"></path>"#

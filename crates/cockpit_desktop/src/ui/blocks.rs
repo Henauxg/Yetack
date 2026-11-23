@@ -1,7 +1,7 @@
 //! The blocks at the top right of the chat: tasks, the messages sent, background work and MCP
-//! servers. Each folds to one line. While the file view is open they become badges on the chat's
-//! right edge, and a click opens one as a popover. A drag of a block's head, or Alt+Up and Alt+Down
-//! on it, moves it: every agent's blocks and badges follow the order.
+//! servers. Each folds to one line. Folded together, by their button or for want of room, they
+//! become badges on the chat's right edge, and a click opens one as a popover. A drag of a block's
+//! head, or Alt+Up and Alt+Down on it, moves it: every agent's blocks and badges follow the order.
 
 use std::cmp::Reverse;
 use std::time::{Duration, SystemTime};
@@ -14,19 +14,137 @@ use dioxus::prelude::*;
 use serde::Serialize;
 
 use crate::connection::{Clock, Cockpit};
-use crate::keymap::Command;
+use crate::keymap::{Command, SPACE};
 use crate::machine::MachineId;
 use crate::state::actions::Direction;
-use crate::state::{Block, actions, agent_map, subagent_menu, terminals};
+use crate::state::blocks_view::{self, BlocksView, ChatRoom};
+use crate::state::{Block, actions, agent_map, subagent_menu};
+use crate::ui::app::SWITCHING_CLASS;
 use crate::ui::chat_scroll::InView;
 use crate::ui::icons::{Icon, IconKind};
 use crate::ui::mcp::{McpPanel, mcp_summary};
 use crate::ui::messages::MessagesBody;
+use crate::ui::presence::use_agent_presence;
 use crate::ui::reorder::block_id;
+use crate::ui::splitter::APP_ID;
 use crate::{bridge, format};
 
 /// The floating blocks' box. The quotes' notes go below its cards.
 pub const BLOCKS_CLASS: &str = "blocks";
+/// The badges' rail, on the chat's right edge.
+const BADGES_CLASS: &str = "badges";
+const FOLD_BUTTON_CLASS: &str = "blocks-fold";
+/// The fold button that takes input, which keeps the focus as the column and the rail trade
+/// places: the leaving one goes without it.
+const FOLD_BUTTON_ID: &str = "blocks-fold";
+
+/// The chat's stage, whose width decides whether the blocks show as cards.
+pub const CHAT_STAGE_ID: &str = "chat-stage";
+
+/// The root's attribute while the blocks take the form a switch or the first measure gave them:
+/// the style sheet draws that form at once.
+const SETTLING_ATTRIBUTE: &str = "data-blocks-settling";
+
+/// How long the root keeps `SETTLING_ATTRIBUTE`: past the frames the app takes to draw the new
+/// form, and past its animations, which then stay finished.
+const SETTLING_MS: u32 = 400;
+
+/// Tells the app whether the chat stage is wide enough for the blocks as cards, each time that
+/// changes. A change in the frame that draws another agent, or the first measure, belongs to the
+/// layout the window shows at once: the root keeps `SETTLING_ATTRIBUTE` while the app draws it.
+/// Message fields are serde's names for `ChatRoomSettings`.
+const CHAT_ROOM_SCRIPT: &str = r#"
+const settings = await dioxus.recv();
+let watched = null;
+let wide = null;
+let settled = null;
+const settle = () => {
+  const root = document.documentElement;
+  root.setAttribute(settings.settling_attribute, "");
+  clearTimeout(settled);
+  settled = setTimeout(() => root.removeAttribute(settings.settling_attribute), settings.settling_ms);
+};
+const sizes = new ResizeObserver(() => {
+  if (watched === null) {
+    return;
+  }
+  const now = watched.getBoundingClientRect().width >= settings.room;
+  if (now !== wide) {
+    const app = document.getElementById(settings.app_id);
+    if (wide === null || app?.classList.contains(settings.switching_class)) {
+      settle();
+    }
+    wide = now;
+    dioxus.send(now);
+  }
+});
+// The stage outlives the chat's changes: the script observes it again only when the window draws
+// it anew.
+const attach = () => {
+  const stage = document.getElementById(settings.stage_id);
+  if (stage === watched) {
+    return;
+  }
+  sizes.disconnect();
+  watched = stage;
+  if (stage !== null) {
+    sizes.observe(stage);
+  }
+};
+new MutationObserver(attach).observe(document.body, { childList: true, subtree: true });
+attach();
+"#;
+
+#[derive(Serialize)]
+struct ChatRoomSettings {
+    stage_id: &'static str,
+    room: u16,
+    app_id: &'static str,
+    switching_class: &'static str,
+    settling_attribute: &'static str,
+    settling_ms: u32,
+}
+
+impl ChatRoomSettings {
+    fn new() -> Self {
+        Self {
+            stage_id: CHAT_STAGE_ID,
+            room: blocks_view::CARDS_ROOM,
+            app_id: APP_ID,
+            switching_class: SWITCHING_CLASS,
+            settling_attribute: SETTLING_ATTRIBUTE,
+            settling_ms: SETTLING_MS,
+        }
+    }
+}
+
+/// Starts the page's measure of the chat for the window's life.
+pub fn use_chat_room(cockpit: Cockpit) {
+    use_hook(|| {
+        let mut script = document::eval(CHAT_ROOM_SCRIPT);
+        if let Err(error) = script.send(ChatRoomSettings::new()) {
+            tracing::warn!("cannot start the script that measures the chat: {error}");
+        }
+        spawn(async move {
+            loop {
+                match script.recv::<bool>().await {
+                    Ok(wide) => {
+                        let room = if wide {
+                            ChatRoom::ForCards
+                        } else {
+                            ChatRoom::TooNarrow
+                        };
+                        cockpit.update(|state| blocks_view::set_chat_room(state, room));
+                    }
+                    Err(error) => {
+                        tracing::warn!("the script that measures the chat stopped: {error}");
+                        return;
+                    }
+                }
+            }
+        });
+    });
+}
 pub const BLOCK_CARD_CLASS: &str = "block-card";
 
 /// The rows of its list a card keeps in sight when a short window shrinks it: its list marked
@@ -151,12 +269,21 @@ pub fn FloatingBlocks(in_view: Signal<Option<InView>>) -> Element {
     let cockpit: Cockpit = use_context();
     use_hook(start_kept_rows_script);
     let state = cockpit.state.read();
+    // The cards' column and the badges' rail fade in and out as the blocks fold and unfold. A
+    // switch draws the other agent's at once.
+    let selected = state.ui.selected;
+    let view = selected.map(|agent| blocks_view::view(&state, agent));
+    let as_cards = selected.filter(|_| view == Some(BlocksView::Cards));
+    let as_badges = selected.filter(|_| view.is_some_and(BlocksView::shows_badges));
+    let column = use_agent_presence(selected, as_cards);
+    let rail = use_agent_presence(selected, as_badges);
     let Some(entry) = state.selected() else {
         return rsx! {};
     };
     let agent = entry.id();
     let details = entry.details.loaded().cloned().unwrap_or_default();
-    let badge_mode = terminals::file_view_open(&state, agent);
+    let view = blocks_view::view(&state, agent);
+    let badge_mode = view.shows_badges();
     let badge = state.ui.badge;
     let open_blocks = state.ui.open_blocks.clone();
     let finished_rows = if state.ui.finished_tasks_unfolded.contains(&agent) {
@@ -201,129 +328,150 @@ pub fn FloatingBlocks(in_view: Signal<Option<InView>>) -> Element {
     let tasks_badge = format!("{done}/{}", tasks.len());
     let background_head = BackgroundHead::new(&background);
     let (mcp_alert, mcp_text) = mcp_summary(alive, &servers, &hidden);
-    let is_open = |block: Block| {
-        if badge_mode {
+    let has_messages = sent > 0 || !waiting.is_empty();
+    let has_content = |block: &Block| match block {
+        Block::Tasks => !tasks.is_empty(),
+        Block::Messages => has_messages,
+        Block::Running => !background.is_empty(),
+        Block::Mcp => true,
+    };
+    // A card shows unfolded in the column, or alone as its badge's popover.
+    let is_open = |block: Block, from_badge: bool| {
+        if from_badge {
             badge == Some(block)
         } else {
             open_blocks.contains(&block)
         }
     };
-    let is_shown =
-        |block: Block, has_content: bool| has_content && (!badge_mode || badge == Some(block));
-    let mcp_wide = is_open(Block::Mcp) && mcp_view.detail.is_some();
-    let show_tasks = is_shown(Block::Tasks, !tasks.is_empty());
-    let has_messages = sent > 0 || !waiting.is_empty();
-    let show_messages = is_shown(Block::Messages, has_messages);
-    let messages_open = is_open(Block::Messages);
-    let show_running = is_shown(Block::Running, !background.is_empty());
-    let show_mcp = is_shown(Block::Mcp, true);
-    let tasks_open = is_open(Block::Tasks);
-    let running_open = is_open(Block::Running);
-    let mcp_open = is_open(Block::Mcp);
-    let has_tasks = !tasks.is_empty();
-    let has_background = !background.is_empty();
-    let order = state.prefs.blocks.order();
-    // The cards drawn and the badges drawn, in order. Each loop item has one keyed root, so that
-    // a move keeps every card's state.
-    let cards: Vec<Block> = order
-        .iter()
-        .copied()
-        .filter(|block| match block {
-            Block::Tasks => show_tasks,
-            Block::Messages => show_messages,
-            Block::Running => show_running,
-            Block::Mcp => show_mcp,
-        })
+    // The blocks with something to show, in order: the column's cards and the rail's badges. Each
+    // loop item has one keyed root, so that a move keeps every card's state.
+    let shown: Vec<Block> = state
+        .prefs
+        .blocks
+        .order()
+        .into_iter()
+        .filter(has_content)
         .collect();
-    let badges: Vec<Block> = order
-        .iter()
-        .copied()
-        .filter(|block| match block {
-            Block::Tasks => has_tasks,
-            Block::Messages => has_messages,
-            Block::Running => has_background,
-            Block::Mcp => true,
-        })
-        .collect();
-    let class = if badge_mode {
-        format!("{BLOCKS_CLASS} beside-badges")
-    } else {
-        BLOCKS_CLASS.to_owned()
-    };
+    let mut boxes = Vec::new();
+    if let Some(column) = column {
+        boxes.push(CardBox {
+            key: format!("column-{}", column.opening),
+            id: (!column.leaving).then_some(BLOCKS_LIST_ID),
+            class: column.class(BLOCKS_CLASS),
+            leaving: column.leaving,
+            cards: shown.clone(),
+            from_badge: false,
+            fold_button: true,
+        });
+    }
+    if badge_mode {
+        let opened: Vec<Block> = shown
+            .iter()
+            .copied()
+            .filter(|block| badge == Some(*block))
+            .collect();
+        boxes.push(CardBox {
+            key: "badge".to_owned(),
+            id: Some(BLOCKS_LIST_ID),
+            class: format!("{BLOCKS_CLASS} beside-badges"),
+            leaving: false,
+            cards: opened,
+            from_badge: true,
+            fold_button: false,
+        });
+    }
     rsx! {
-        div { id: BLOCKS_LIST_ID, class,
-            for block in cards.clone() {
-            div { key: "{block:?}", class: BLOCK_SLOT_CLASS,
-            if block == Block::Tasks {
-                BlockCard {
-                    agent,
-                    block: Block::Tasks,
-                    title: "Tasks",
-                    icon: IconKind::Tasks,
-                    running: false,
-                    summary: tasks_summary.clone(),
-                    alert: false,
-                    open: tasks_open,
-                    badge_mode,
-                    wide: false,
-                    shown: cards.clone(),
-                    TasksBody { tasks: tasks.clone() }
+        for card_box in boxes {
+            div {
+                key: "{card_box.key}",
+                id: card_box.id,
+                class: "{card_box.class}",
+                inert: card_box.leaving.then_some(true),
+                if card_box.fold_button {
+                    div { class: "blocks-fold-row",
+                        FoldButton { view, live: !card_box.leaving }
+                    }
                 }
-            }
-            if block == Block::Messages {
-                BlockCard {
-                    agent,
-                    block: Block::Messages,
-                    title: "Messages",
-                    icon: IconKind::Message,
-                    running: false,
-                    summary: messages_summary.clone(),
-                    alert: false,
-                    open: messages_open,
-                    badge_mode,
-                    wide: false,
-                    shown: cards.clone(),
-                    MessagesBody { agent, folder: folder.clone(), waiting: waiting.clone(), in_view }
+                for block in card_box.cards.clone() {
+                div { key: "{block:?}", class: BLOCK_SLOT_CLASS,
+                if block == Block::Tasks {
+                    BlockCard {
+                        agent,
+                        block: Block::Tasks,
+                        title: "Tasks",
+                        icon: IconKind::Tasks,
+                        running: false,
+                        summary: tasks_summary.clone(),
+                        alert: false,
+                        open: is_open(Block::Tasks, card_box.from_badge),
+                        badge_mode: card_box.from_badge,
+                        wide: false,
+                        shown: card_box.cards.clone(),
+                        TasksBody { tasks: tasks.clone() }
+                    }
                 }
-            }
-            if block == Block::Running {
-                BlockCard {
-                    agent,
-                    block: Block::Running,
-                    title: background_head.title,
-                    icon: background_head.icon(),
-                    running: background_head.running,
-                    summary: background_head.summary.clone(),
-                    alert: false,
-                    open: running_open,
-                    badge_mode,
-                    wide: false,
-                    shown: cards.clone(),
-                    RunningBody { agent, tasks: background.clone(), finished_rows, subagent_tasks: subagent_tasks.clone() }
+                if block == Block::Messages {
+                    BlockCard {
+                        agent,
+                        block: Block::Messages,
+                        title: "Messages",
+                        icon: IconKind::Message,
+                        running: false,
+                        summary: messages_summary.clone(),
+                        alert: false,
+                        open: is_open(Block::Messages, card_box.from_badge),
+                        badge_mode: card_box.from_badge,
+                        wide: false,
+                        shown: card_box.cards.clone(),
+                        MessagesBody { agent, folder: folder.clone(), waiting: waiting.clone(), in_view }
+                    }
                 }
-            }
-            if block == Block::Mcp {
-                BlockCard {
-                    agent,
-                    block: Block::Mcp,
-                    title: "MCP servers",
-                    icon: IconKind::Plug,
-                    running: false,
-                    summary: mcp_text.clone(),
-                    alert: mcp_alert,
-                    open: mcp_open,
-                    badge_mode,
-                    wide: mcp_wide,
-                    shown: cards.clone(),
-                    McpPanel { agent, alive, servers: servers.clone(), hidden: hidden.clone(), view: mcp_view.clone(), machine: machine.clone() }
+                if block == Block::Running {
+                    BlockCard {
+                        agent,
+                        block: Block::Running,
+                        title: background_head.title,
+                        icon: background_head.icon(),
+                        running: background_head.running,
+                        summary: background_head.summary.clone(),
+                        alert: false,
+                        open: is_open(Block::Running, card_box.from_badge),
+                        badge_mode: card_box.from_badge,
+                        wide: false,
+                        shown: card_box.cards.clone(),
+                        RunningBody { agent, tasks: background.clone(), finished_rows, subagent_tasks: subagent_tasks.clone() }
+                    }
                 }
-            }
-            }
+                if block == Block::Mcp {
+                    BlockCard {
+                        agent,
+                        block: Block::Mcp,
+                        title: "MCP servers",
+                        icon: IconKind::Plug,
+                        running: false,
+                        summary: mcp_text.clone(),
+                        alert: mcp_alert,
+                        open: is_open(Block::Mcp, card_box.from_badge),
+                        badge_mode: card_box.from_badge,
+                        wide: is_open(Block::Mcp, card_box.from_badge) && mcp_view.detail.is_some(),
+                        shown: card_box.cards.clone(),
+                        McpPanel { agent, alive, servers: servers.clone(), hidden: hidden.clone(), view: mcp_view.clone(), machine: machine.clone() }
+                    }
+                }
+                }
+                }
             }
         }
-        if badge_mode {
-            div { class: "badges", role: "toolbar", aria_label: "Agent activity", aria_orientation: "vertical",
-                for block in badges {
+        if let Some(rail) = rail {
+            div {
+                key: "rail-{rail.opening}",
+                class: rail.class(BADGES_CLASS),
+                inert: rail.leaving.then_some(true),
+                role: "toolbar",
+                aria_label: "Agent activity",
+                aria_orientation: "vertical",
+                FoldButton { view, live: !rail.leaving }
+                for block in shown.clone() {
                 div { key: "{block:?}", class: BLOCK_SLOT_CLASS,
                 if block == Block::Tasks {
                     Badge { agent, block: Block::Tasks, pressed: badge == Some(Block::Tasks), icon: IconKind::Tasks, running: false, text: tasks_badge.clone(), label: "Tasks, {tasks_summary} done", alert: false }
@@ -340,6 +488,82 @@ pub fn FloatingBlocks(in_view: Signal<Option<InView>>) -> Element {
                 }
                 }
             }
+        }
+    }
+}
+
+/// A box of cards at the chat's top right: the column of cards, the column leaving as the blocks
+/// fold, or the card a badge opened.
+struct CardBox {
+    key: String,
+    id: Option<&'static str>,
+    class: String,
+    leaving: bool,
+    cards: Vec<Block>,
+    /// The card is its badge's popover: it shows alone, and closes rather than folds.
+    from_badge: bool,
+    fold_button: bool,
+}
+
+/// The button at the top of the cards' column and of the badges' rail: folds the blocks into
+/// badges, or unfolds them. While the chat has no room for the cards, it shows dimmed and does
+/// nothing.
+#[component]
+fn FoldButton(
+    view: BlocksView,
+    /// Not in a leaving column or rail: it holds the id the focus goes back to.
+    live: bool,
+) -> Element {
+    let cockpit: Cockpit = use_context();
+    // Pressed with a key, the button hands the focus to the one that takes its place. Pressed
+    // with the pointer, it does not: a focus given by a script would draw the keyboard's ring.
+    let mut by_key = use_hook(|| CopyValue::new(false));
+    let shortcut = cockpit.state.read().prefs.keys.shown(Command::Blocks);
+    let (icon, label, title) = match view {
+        BlocksView::Cards => (
+            IconKind::PanelRightClose,
+            "Fold the blocks into badges",
+            format!("Fold the blocks into badges ({shortcut})"),
+        ),
+        BlocksView::Folded => (
+            IconKind::PanelRightOpen,
+            "Show the blocks",
+            format!("Show the blocks ({shortcut})"),
+        ),
+        BlocksView::BesideFileView => (
+            IconKind::PanelRightOpen,
+            "Show the blocks",
+            "The file view takes the blocks' room: open a badge, or close the file view".to_owned(),
+        ),
+        BlocksView::TooNarrow => (
+            IconKind::PanelRightOpen,
+            "Show the blocks",
+            "The chat is too narrow for the blocks: widen it, or open a badge".to_owned(),
+        ),
+    };
+    rsx! {
+        button {
+            id: live.then_some(FOLD_BUTTON_ID),
+            class: FOLD_BUTTON_CLASS,
+            aria_label: label,
+            aria_disabled: view.squeezed(),
+            title: "{title}",
+            onpointerdown: move |_| by_key.set(false),
+            onkeydown: move |event| {
+                by_key.set(match event.key() {
+                    Key::Enter => true,
+                    Key::Character(typed) => typed == SPACE,
+                    _ => false,
+                });
+            },
+            onclick: move |_| {
+                cockpit.update(blocks_view::toggle);
+                // The button pressed leaves with its column or rail.
+                if by_key() && !view.squeezed() {
+                    bridge::keep_focus(FOLD_BUTTON_ID.to_owned());
+                }
+            },
+            Icon { kind: icon, size: 14 }
         }
     }
 }
@@ -884,6 +1108,36 @@ mod tests {
         let head = BackgroundHead::new(&[stopped, done.clone(), done]);
         assert_eq!(head.summary, "2 done, 1 stopped");
         assert_eq!(head.badge, "3");
+    }
+
+    #[test]
+    fn the_chat_room_script_reads_each_setting_by_its_serde_name() {
+        let settings = ChatRoomSettings::new();
+
+        assert_eq!(
+            serde_json::to_value(settings).expect("the settings are strings and numbers"),
+            json!({
+                "stage_id": "chat-stage",
+                "room": 760,
+                "app_id": "app",
+                "switching_class": "switching",
+                "settling_attribute": "data-blocks-settling",
+                "settling_ms": 400,
+            })
+        );
+        for name in [
+            "stage_id",
+            "room",
+            "app_id",
+            "switching_class",
+            "settling_attribute",
+            "settling_ms",
+        ] {
+            assert!(
+                CHAT_ROOM_SCRIPT.contains(&format!("settings.{name}")),
+                "the script does not read {name}"
+            );
+        }
     }
 
     #[test]

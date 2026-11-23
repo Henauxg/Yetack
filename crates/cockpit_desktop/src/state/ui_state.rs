@@ -15,6 +15,7 @@ use strum::{EnumString, IntoStaticStr, VariantArray};
 use super::accounts::{AccountsView, AddAccountForm};
 use super::agent_map::MapView;
 use super::app_state::{self, Loadable};
+use super::blocks_view::ChatRoom;
 use super::find::FindFocus;
 use super::mcp_reconnect::Reconnects;
 use super::mcp_sign_in::SignIns;
@@ -650,8 +651,10 @@ pub struct UiState {
     pub focus_returns: u64,
     /// The floating blocks shown unfolded.
     pub open_blocks: BTreeSet<Block>,
-    /// The block shown as a popover from its badge, while the file view is open.
+    /// The block shown as a popover from its badge, while the blocks show as badges.
     pub badge: Option<Block>,
+    /// Whether the chat has room for the blocks as cards, as the page last measured it.
+    pub chat_room: ChatRoom,
     /// The agents whose background block lists the finished tasks, not only the running ones.
     pub finished_tasks_unfolded: BTreeSet<AgentId>,
     pub popover: Option<Popover>,
@@ -713,6 +716,7 @@ impl Default for UiState {
             focus_returns: 0,
             open_blocks: BTreeSet::from([Block::Tasks, Block::Messages, Block::Running]),
             badge: None,
+            chat_room: ChatRoom::ForCards,
             finished_tasks_unfolded: BTreeSet::new(),
             popover: None,
             dialog: None,

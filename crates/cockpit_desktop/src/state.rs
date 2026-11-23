@@ -7,6 +7,7 @@ pub mod agent_map;
 mod app_state;
 pub mod app_update;
 mod apply;
+pub mod blocks_view;
 pub mod chat_images;
 pub mod chat_reveal;
 pub mod claude_code_version;

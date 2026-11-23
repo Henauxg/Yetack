@@ -2536,7 +2536,8 @@ html.reordering * {
   overflow-anchor: none;
 }
 
-.center.narrow-chat .chat-scroll {
+/* Folded into badges, the blocks leave the chat only the badges' strip. */
+.center.blocks-folded .chat-scroll {
   padding-right: 52px;
 }
 
@@ -2613,11 +2614,11 @@ html.reordering * {
     right var(--motion-in) var(--ease-out);
 }
 
-.center.narrow-chat .jump-latest {
+.center.blocks-folded .jump-latest {
   right: calc(52px + 24px);
 }
 
-.center:not(.narrow-chat):has(.block-card.wide) .jump-latest {
+.center:not(.blocks-folded):has(.block-card.wide) .jump-latest {
   right: calc(404px + 24px);
 }
 
@@ -2656,7 +2657,7 @@ html.reordering * {
 }
 
 /* The server detail widens the MCP block from 272 to 380 px. */
-.center:not(.narrow-chat):has(.block-card.wide) :is(.chat-scroll, .composer-wrap) {
+.center:not(.blocks-folded):has(.block-card.wide) :is(.chat-scroll, .composer-wrap) {
   padding-right: 404px;
 }
 
@@ -5122,6 +5123,80 @@ html.reordering * {
   gap: 6px;
 }
 
+/* The button that folds the blocks into badges and back, at the top of the cards' column and of
+   the badges' rail. */
+.blocks-fold-row {
+  flex: none;
+  display: flex;
+  justify-content: flex-end;
+  width: 100%;
+}
+
+.blocks-fold {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 26px;
+  border: 0;
+  border-radius: 8px;
+  background: var(--panel);
+  color: var(--dim);
+  box-shadow: 0 6px 16px rgba(0, 0, 0, 0.4);
+  transition: color var(--motion-hover) var(--ease), background var(--motion-hover) var(--ease);
+}
+
+.blocks-fold:not([aria-disabled="true"]):hover {
+  background: var(--raised);
+  color: var(--text);
+}
+
+.blocks-fold:not([aria-disabled="true"]):active {
+  transform: scale(var(--press-scale));
+}
+
+/* No room for the cards: the button cannot unfold them, and its tooltip says why. */
+.blocks-fold[aria-disabled="true"] {
+  opacity: 0.45;
+  cursor: default;
+}
+
+/* On the rail, it takes a badge's width. */
+.badges > .blocks-fold {
+  width: 40px;
+  box-shadow: none;
+}
+
+/* The cards' column and the badges' rail fade in and out as the blocks fold and unfold. A switch
+   to another agent draws its blocks at once. */
+
+/* A form a switch or the first measure gave the blocks shows at once: the page marks the root
+   while the app draws it (`CHAT_ROOM_SCRIPT`). An animation of no length is over, and stays over
+   when the mark goes. */
+html[data-blocks-settling] :is(.blocks, .badges) {
+  animation-duration: 0s !important;
+}
+
+html[data-blocks-settling] :is(.chat-scroll, .composer-wrap, .jump-latest) {
+  transition-duration: 0s !important;
+}
+.blocks:not(.beside-badges),
+.badges {
+  animation: fade-in var(--motion-in) var(--ease-out) backwards;
+}
+
+.blocks.instant,
+.badges.instant {
+  animation: none;
+}
+
+.blocks.leaving,
+.badges.leaving {
+  pointer-events: none;
+  animation: fade-out var(--motion-out) var(--ease-in) forwards;
+}
+
 .badge {
   position: relative;
   width: 40px;
@@ -5580,7 +5655,7 @@ html.reordering * {
   padding-right: 296px;
 }
 
-.center.narrow-chat .composer-wrap {
+.center.blocks-folded .composer-wrap {
   padding-right: 52px;
 }
 
@@ -12009,8 +12084,8 @@ label.icon-button,
   transition: padding-right var(--motion-out) var(--ease-in);
 }
 
-.center.narrow-chat :is(.chat-scroll, .composer-wrap),
-.center:not(.narrow-chat):has(.block-card.wide) :is(.chat-scroll, .composer-wrap) {
+.center.blocks-folded :is(.chat-scroll, .composer-wrap),
+.center:not(.blocks-folded):has(.block-card.wide) :is(.chat-scroll, .composer-wrap) {
   transition: padding-right var(--motion-in) var(--ease-out);
 }
 

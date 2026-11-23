@@ -29,7 +29,7 @@ const ARROWS: [(&str, &str); 4] = [
     ("ArrowLeft", "←"),
     ("ArrowRight", "→"),
 ];
-const SPACE: &str = " ";
+pub const SPACE: &str = " ";
 const SPACE_NAME: &str = "Space";
 
 /// The keys that are no chord: a modifier pressed alone waits for the key that goes with it, and a
@@ -89,6 +89,8 @@ pub enum Command {
     OpenFile,
     FilesPane,
     Terminal,
+    /// Folds the floating blocks into badges, or unfolds them.
+    Blocks,
     AgentMap,
     Find,
     Rename,
@@ -143,6 +145,7 @@ impl Command {
             Self::OpenFile => "Open a file",
             Self::FilesPane => "Show or hide the files pane",
             Self::Terminal => "Show or hide the terminal",
+            Self::Blocks => "Fold or unfold the blocks beside the chat",
             Self::AgentMap => "Open the agent map",
             Self::Find => "Find in the chat, or in the file view",
             Self::Rename => "Rename",
@@ -162,6 +165,7 @@ impl Command {
             | Self::OpenFile
             | Self::FilesPane
             | Self::Terminal
+            | Self::Blocks
             | Self::AgentMap
             | Self::Find => Group::Anywhere,
             Self::Rename
@@ -183,6 +187,7 @@ impl Command {
             | Self::OpenFile
             | Self::FilesPane
             | Self::Terminal
+            | Self::Blocks
             | Self::AgentMap
             | Self::Find
             | Self::MarkToHandle
@@ -199,6 +204,7 @@ impl Command {
             Self::OpenFile => Chord::ctrl("o"),
             Self::FilesPane => Chord::ctrl("b"),
             Self::Terminal => Chord::ctrl("ù"),
+            Self::Blocks => Chord::ctrl_shift("b"),
             Self::AgentMap => Chord::ctrl("m"),
             Self::Find => Chord::ctrl("f"),
             Self::Rename => Chord::plain("F2"),
@@ -221,6 +227,7 @@ impl Command {
             | Self::OpenFile
             | Self::FilesPane
             | Self::Terminal
+            | Self::Blocks
             | Self::AgentMap
             | Self::Find
             | Self::Rename
@@ -831,6 +838,7 @@ mod tests {
                 "open_file",
                 "files_pane",
                 "terminal",
+                "blocks",
                 "agent_map",
                 "find",
                 "rename",

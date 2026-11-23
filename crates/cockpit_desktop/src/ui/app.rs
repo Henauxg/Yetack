@@ -10,10 +10,10 @@ use crate::connection::{Cockpit, Startup, use_clock, use_cockpit};
 use crate::perf::{self, PerfBox};
 use crate::prefs::{TerminalPlace, use_prefs_saver};
 use crate::state::{
-    ConnectionState, NoteKind, actions, daemon_update, file_tree, sending, terminals,
+    ConnectionState, NoteKind, actions, blocks_view, daemon_update, file_tree, sending, terminals,
 };
 use crate::ui::app_update::use_release_checks;
-use crate::ui::blocks::FloatingBlocks;
+use crate::ui::blocks::{CHAT_STAGE_ID, FloatingBlocks, use_chat_room};
 use crate::ui::branch_card::{BranchCardView, use_card_hover};
 use crate::ui::chat_scroll::InView;
 use crate::ui::composer::Composer;
@@ -67,6 +67,7 @@ pub fn App() -> Element {
     use_page_copies(cockpit);
     use_undrawn_rows();
     use_card_hover();
+    use_chat_room(cockpit);
     // The entries in the chat's view: the bubble and the Messages block follow them.
     let in_view = use_signal(|| None::<InView>);
     let perf_info = use_memo(move || cockpit.state.read().ui.perf_info);
@@ -76,6 +77,13 @@ pub fn App() -> Element {
     let switching = use_switching(cockpit, selected);
     let file_view_agent = selected.filter(|agent| terminals::file_view_open(&state, *agent));
     let file_view_open = file_view_agent.is_some();
+    // The chat keeps the cards' column on its right, or only the badges' strip.
+    let blocks_folded = selected.is_some_and(|agent| blocks_view::shows_badges(&state, agent));
+    let center_class = match (file_view_open, blocks_folded) {
+        (true, _) => "center narrow-chat blocks-folded",
+        (false, true) => "center blocks-folded",
+        (false, false) => "center",
+    };
     let file_view = use_presence(file_view_agent);
     // Each agent keeps its pane open or closed. As the file view, the pane leaves with a slide
     // only for the agent that closed it, and opens at once when a switch shows it.
@@ -121,7 +129,7 @@ pub fn App() -> Element {
     }
     let mut app_classes = vec!["app"];
     if switching {
-        app_classes.push("switching");
+        app_classes.push(SWITCHING_CLASS);
     }
     if file_view_open && last_opening().by_switch {
         app_classes.push("file-view-instant");
@@ -169,7 +177,7 @@ pub fn App() -> Element {
             }
             Sidebar {}
             SidebarSplitter { width: sidebar_width }
-            main { class: if file_view_open { "center narrow-chat" } else { "center" },
+            main { class: center_class,
                 Header {}
                 if disconnected {
                     div { class: "connection-banner",
@@ -177,7 +185,7 @@ pub fn App() -> Element {
                     }
                 }
                 ChatFindBar {}
-                div { class: "chat-stage",
+                div { id: CHAT_STAGE_ID, class: "chat-stage",
                     div { class: "chat-area",
                         TranscriptView { in_view }
                         ErrorNotes {}
@@ -231,6 +239,10 @@ pub fn App() -> Element {
         }
     }
 }
+
+/// The root's class in the frame that draws another agent: the style sheet draws its layout at
+/// once.
+pub const SWITCHING_CLASS: &str = "switching";
 
 /// The agent, the place and the opening of the terminal pane the window drew last, and whether an
 /// agent switch showed it.

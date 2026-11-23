@@ -19,7 +19,8 @@
 //!     "width": 280
 //!   },
 //!   "blocks": {
-//!     "order": ["running", "tasks", "mcp", "messages"]
+//!     "order": ["running", "tasks", "mcp", "messages"],
+//!     "form": "badges"
 //!   },
 //!   "accounts": {
 //!     "colors": {
@@ -805,6 +806,34 @@ pub struct BlocksPrefs {
     /// Their order, top to bottom, by their words. Empty keeps the default order.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub order: Vec<String>,
+    /// How they show while the chat has room for them as cards.
+    pub form: BlocksForm,
+}
+
+/// How the floating blocks show while the chat has room for them as cards, from their fold button.
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, Default, EnumString, IntoStaticStr, VariantArray,
+)]
+#[strum(serialize_all = "snake_case")]
+pub enum BlocksForm {
+    #[default]
+    Cards,
+    /// Folded into badges on the chat's right edge.
+    Badges,
+}
+
+impl Serialize for BlocksForm {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(self.into())
+    }
+}
+
+/// A word this version does not know, from another version of the app, reads as the default.
+impl<'de> Deserialize<'de> for BlocksForm {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let word = String::deserialize(deserializer)?;
+        Ok(word.parse().unwrap_or_default())
+    }
 }
 
 /// The blocks' order until the user moves one: the messages sent come last.
@@ -1371,7 +1400,8 @@ mod tests {
       "tasks",
       "mcp",
       "messages"
-    ]
+    ],
+    "form": "badges"
   },
   "accounts": {
     "colors": {
@@ -1490,6 +1520,7 @@ mod tests {
                     order: ["running", "tasks", "mcp", "messages"]
                         .map(str::to_owned)
                         .to_vec(),
+                    form: BlocksForm::Badges,
                 },
                 accounts: AccountPrefs {
                     colors: BTreeMap::from([(
@@ -1973,6 +2004,18 @@ mod tests {
     }
 
     #[test]
+    fn the_blocks_form_words_are_pinned_and_an_unknown_one_reads_as_cards() {
+        let words: Vec<&str> = BlocksForm::VARIANTS
+            .iter()
+            .map(|&form| form.into())
+            .collect();
+        let unknown: Prefs = serde_json::from_str(r#"{"blocks": {"form": "drawer"}}"#).unwrap();
+
+        assert_eq!(words, ["cards", "badges"]);
+        assert_eq!(unknown.blocks.form, BlocksForm::Cards);
+    }
+
+    #[test]
     fn each_agent_keeps_its_terminals_place_and_new_agents_take_the_last_one() {
         let mut prefs = TerminalPrefs::default();
         prefs.set_agent("build-box", AgentId::new(4), TerminalPlace::Right);
@@ -2015,6 +2058,7 @@ mod tests {
             order: ["mcp", "timeline", "mcp", "messages"]
                 .map(str::to_owned)
                 .to_vec(),
+            form: BlocksForm::Cards,
         };
 
         assert_eq!(

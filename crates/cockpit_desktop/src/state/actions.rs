@@ -34,8 +34,8 @@ use super::ui_state::{
 };
 use super::utf16_offset::Utf16Offset;
 use super::{
-    accounts, export, file_edits, file_reread, file_tree, folder_field, grouping, open_file,
-    projects, quotes, sending, terminals, title_emoji,
+    accounts, blocks_view, export, file_edits, file_reread, file_tree, folder_field, grouping,
+    open_file, projects, quotes, sending, terminals, title_emoji,
 };
 use crate::format::{self, MODE_CHOICES, MODEL_CHOICES};
 use crate::machine::MachineId;
@@ -1834,10 +1834,10 @@ pub fn step_block(state: &mut AppState, block: Block, direction: Direction, show
     state.prefs.blocks.set_order(&order);
 }
 
-/// Folds or unfolds a floating block, or opens its badge's popover while the file view is open.
-/// Opening the MCP servers asks Claude Code for their status.
+/// Folds or unfolds a floating block, or opens its badge's popover while the blocks show as
+/// badges. Opening the MCP servers asks Claude Code for their status.
 pub fn toggle_block(state: &mut AppState, agent: AgentId, block: Block) -> Vec<Outgoing> {
-    let opening = if state.ui.file_view(agent).is_some() {
+    let opening = if blocks_view::shows_badges(state, agent) {
         let opening = state.ui.badge != Some(block);
         state.ui.badge = opening.then_some(block);
         opening
