@@ -692,13 +692,19 @@ pub fn apply_response(
             }
         },
         Purpose::TerminalScreen { agent, terminal } => match result {
-            Ok(ResponseBody::TerminalScreen { offset, data }) => terminals::screen(
+            Ok(ResponseBody::TerminalScreen {
+                offset,
+                data,
+                sizes,
+            }) => terminals::screen(
                 state,
                 terminals::Screen {
                     agent,
                     terminal,
                     offset,
                     data,
+                    sizes,
+                    fresh: false,
                 },
             ),
             other => report(state, method, other),

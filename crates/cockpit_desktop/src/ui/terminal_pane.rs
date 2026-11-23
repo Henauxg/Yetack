@@ -8,7 +8,7 @@
 
 use std::path::PathBuf;
 
-use cockpit_protocol::{AgentId, TerminalId, TerminalParams, TerminalSize};
+use cockpit_protocol::{AgentId, TerminalId, TerminalParams, TerminalSize, TerminalSizeAt};
 use dioxus::prelude::*;
 use serde::{Deserialize, Serialize};
 
@@ -57,6 +57,12 @@ const bytes = (base64) => Uint8Array.from(atob(base64), (character) => character
 // is, rather than asking the daemon for its output again and again. A screen that draws clears it.
 const restarts = new Map();
 const MAX_RESTARTS = 3;
+// The output the daemon keeps of each terminal, in bytes, as `terminal.attach` answers it.
+const KEPT_BYTES = 512 * 1024;
+// The largest size the kept output replays at. Any client can give the PTY a size, and
+// ghostty-web would hold a cell for each of a 65535 by 65535 screen. A real pane is far smaller.
+const MAX_COLS = 1000;
+const MAX_ROWS = 500;
 // The terminal that starts again, while it did not have the focus.
 let unfocused = null;
 // The rows whose `path:line` references the app is finding, by the id of the request.
@@ -154,7 +160,17 @@ function write(entry, offset, data) {
     return;
   }
   if (entry.end === null) {
+    if (entry.lost) {
+      return;
+    }
     entry.pending.push([offset, data]);
+    entry.waiting += data.length;
+    // Before its first fit, as while its box keeps changing size, a terminal would keep a busy
+    // shell's output without end. Past what the daemon keeps, a new attach at that fit gives as
+    // much.
+    if (!entry.fitted && entry.waiting > KEPT_BYTES) {
+      lose(entry);
+    }
     return;
   }
   if (offset > entry.end) {
@@ -170,15 +186,142 @@ function write(entry, offset, data) {
   entry.scrollbar();
 }
 
+// Drops the kept output and the output that waits with it, before the terminal's first fit, and
+// has the page attach again at that fit. The output that comes meanwhile is dropped too. A fresh
+// screen dropped here keeps the next one fresh, since nothing answered its queries.
+function lose(entry) {
+  entry.lost = true;
+  entry.freshLost ||= entry.screen?.fresh === true;
+  entry.screen = null;
+  entry.pending = [];
+  entry.waiting = 0;
+}
+
 // Fits the terminal to its box once the box stops changing size. The pane grows as it opens, and
 // a fit at each step would give the shell several sizes, each of which makes it redraw.
 function fitWhenSettled(entry) {
   clearTimeout(entry.settle);
   entry.settle = setTimeout(() => {
-    if (entry.box.isConnected && entry.box.clientWidth > 0) {
-      entry.fit.fit();
+    if (!entry.box.isConnected || entry.box.clientWidth === 0) {
+      // Hidden before its first fit, it could show the output that waits much later, as live:
+      // the shell would get answers to queries that stopped waiting. It attaches again instead.
+      if (!entry.fitted) {
+        lose(entry);
+      }
+      return;
+    }
+    entry.fit.fit();
+    entry.fitted = true;
+    if (entry.lost) {
+      entry.lost = false;
+      entry.attach();
+    }
+    try {
+      showWaitingScreen(entry);
+    } catch (error) {
+      send({ type: "problem", text: `screen: ${error}` });
+      if (terminals.get(entry.name) === entry) {
+        restart(entry);
+      }
     }
   }, settings.settle_ms);
+}
+
+// Shows the kept output that came, once the terminal has the pane's size: before its first fit,
+// it has ghostty-web's 80 by 24, and the output would wrap there.
+function showWaitingScreen(entry) {
+  if (!entry.fitted || entry.screen === null) {
+    return;
+  }
+  const message = entry.screen;
+  entry.screen = null;
+  const fresh = message.fresh || entry.freshLost;
+  entry.freshLost = false;
+  const data = bytes(message.data);
+  entry.end = message.offset + data.length;
+  const pending = entry.pending.splice(0);
+  entry.waiting = 0;
+  let drawn = false;
+  try {
+    replay(entry, message.offset, data, message.sizes, fresh);
+    entry.scrollbar();
+    drawn = true;
+  } finally {
+    // The output that waited goes on even if the screen fails to draw.
+    for (const [offset, waited] of pending) {
+      write(entry, offset, waited);
+    }
+  }
+  // Only a terminal that drew all of it, and did not start again on a gap, starts its count over.
+  if (drawn && terminals.get(entry.name) === entry) {
+    restarts.delete(entry.name);
+  }
+}
+
+// Gives the terminal `size`, unless it has it or it is out of bounds.
+function resizeTo(term, size) {
+  const fits = size.cols >= 1 && size.rows >= 1 && size.cols <= MAX_COLS && size.rows <= MAX_ROWS;
+  if (fits && (size.cols !== term.cols || size.rows !== term.rows)) {
+    term.resize(size.cols, size.rows);
+  }
+}
+
+// Takes the answers to queries that ghostty-web still holds: a write emits at most 256 bytes of
+// them, and the next write would send the rest to the shell. With `keep`, they go to the shell
+// now, after the ones the writes emitted; without it, they go nowhere.
+function takeAnswers(entry, keep) {
+  const wasm = entry.term.wasmTerm;
+  if (typeof wasm?.readResponse !== "function") {
+    send({ type: "problem", text: "ghostty-web has no response reader to take a replay's answers" });
+    return;
+  }
+  let answer = wasm.readResponse();
+  while (answer !== null) {
+    if (keep) {
+      entry.sendInput(answer);
+    }
+    answer = wasm.readResponse();
+  }
+}
+
+// Writes the kept output `data`, which starts at byte `start`, at the sizes the shell wrote each
+// part for, then gives the terminal the pane's size again: each cursor move lands, and each line
+// wraps, where it did. Without `sizes`, from a daemon that predates them, it all goes in at the
+// pane's size. The PTY learns of no size the replay takes, and the shell gets the answers to the
+// output's queries only for a `fresh` terminal.
+function replay(entry, start, data, sizes, fresh) {
+  const term = entry.term;
+  const pane = { cols: term.cols, rows: term.rows };
+  const at = (offset) => Math.min(data.length, Math.max(0, offset - start));
+  const parts = sizes.length === 0
+    ? [{ from: 0, size: pane }]
+    : sizes.map(({ offset, size }, index) => ({ from: index === 0 ? 0 : at(offset), size }));
+  entry.replaying.on = true;
+  entry.replaying.answers = fresh;
+  try {
+    for (const [index, part] of parts.entries()) {
+      const to = parts[index + 1]?.from ?? data.length;
+      resizeTo(term, part.size);
+      // ghostty-web throws on an empty write, as when the shell has written nothing yet.
+      if (to > part.from) {
+        term.write(data.subarray(part.from, to));
+      }
+    }
+  } finally {
+    // A terminal that fails here and may not start again still takes the keys typed.
+    try {
+      resizeTo(term, pane);
+      takeAnswers(entry, fresh);
+    } finally {
+      entry.replaying.on = false;
+      entry.replaying.answers = false;
+    }
+  }
+  // The PTY keeps the size another client gave it, or the one it opened with, until told.
+  const last = sizes.at(-1)?.size;
+  if (last !== undefined && (last.cols !== pane.cols || last.rows !== pane.rows)) {
+    entry.sendSize(pane);
+  }
 }
 
 // The scrollbar's thumb is never shorter than this, in pixels.
@@ -345,8 +488,22 @@ function terminalFor(agent, terminal) {
   } else {
     send({ type: "problem", text: "ghostty-web has no selection copy to keep a click from copying" });
   }
-  term.onData((data) => send({ type: "input", agent, terminal, data }));
-  term.onResize(({ cols, rows }) => send({ type: "resize", agent, terminal, cols, rows }));
+  // While the kept output replays, the PTY keeps the pane's size. ghostty-web answers the queries
+  // the output holds, such as the cursor's place, and the shell reads those answers as typed: only
+  // the answers to a fresh terminal's queries reach it, since older ones were answered long ago.
+  const replaying = { on: false, answers: false };
+  const sendInput = (data) => send({ type: "input", agent, terminal, data });
+  term.onData((data) => {
+    if (!replaying.on || replaying.answers) {
+      sendInput(data);
+    }
+  });
+  const sendSize = ({ cols, rows }) => send({ type: "resize", agent, terminal, cols, rows });
+  term.onResize((size) => {
+    if (!replaying.on) {
+      sendSize(size);
+    }
+  });
   term.onTitleChange((title) => send({ type: "title", agent, terminal, title }));
   // The pane's shortcut shows and hides it from inside the terminal too. Unlike xterm.js,
   // ghostty-web skips a key the handler returns `true` for.
@@ -434,14 +591,39 @@ function terminalFor(agent, terminal) {
   });
   const scrollbar = scrollbarFor(term, box);
   const name = key(agent, terminal);
-  const entry = { name, paused: false, term, fit, box, scrollbar, end: null, pending: [], settle: null, observer: null };
+  const attach = () => send({ type: "attach", agent, terminal });
+  const entry = {
+    name,
+    paused: false,
+    term,
+    fit,
+    box,
+    scrollbar,
+    sendSize,
+    sendInput,
+    replaying,
+    attach,
+    // Whether the terminal took the pane's size once, and the kept output that waits for it.
+    fitted: false,
+    screen: null,
+    end: null,
+    // The output that waits for the kept output to show, and its size in bytes.
+    pending: [],
+    waiting: 0,
+    // Whether output was dropped before the first fit: the terminal attaches again then. And
+    // whether a fresh screen went with it, so that the next one counts as fresh.
+    lost: false,
+    freshLost: false,
+    settle: null,
+    observer: null,
+  };
   entry.observer = new ResizeObserver(() => {
     fitWhenSettled(entry);
     scrollbar();
   });
   entry.observer.observe(box);
   terminals.set(name, entry);
-  send({ type: "attach", agent, terminal });
+  attach();
   return entry;
 }
 
@@ -554,26 +736,11 @@ function receive(message) {
   if (message.type === "output" && entry !== undefined) {
     write(entry, message.offset, bytes(message.data));
   } else if (message.type === "screen" && entry !== undefined && entry.end === null) {
-    const data = bytes(message.data);
-    entry.end = message.offset + data.length;
-    const pending = entry.pending.splice(0);
-    let drawn = false;
-    try {
-      // ghostty-web throws on an empty write, as when the shell has written nothing yet.
-      if (data.length > 0) {
-        entry.term.write(data);
-      }
-      entry.scrollbar();
-      drawn = true;
-    } finally {
-      // The output that waited goes on even if the screen fails to draw.
-      for (const [offset, waited] of pending) {
-        write(entry, offset, waited);
-      }
-    }
-    // Only a terminal that drew all of it, and did not start again on a gap, starts its count over.
-    if (drawn && terminals.get(entry.name) === entry) {
-      restarts.delete(entry.name);
+    if (entry.lost) {
+      entry.freshLost ||= message.fresh === true;
+    } else {
+      entry.screen = message;
+      showWaitingScreen(entry);
     }
   } else if (message.type === "links") {
     const answer = linkAnswers.get(message.id);
@@ -717,11 +884,15 @@ enum ToPage {
         offset: u64,
         data: String,
     },
+    /// The output a terminal keeps, the sizes it was written at, and whether it is all recent
+    /// ([`terminals::Screen::fresh`]).
     Screen {
         agent: AgentId,
         terminal: TerminalId,
         offset: u64,
         data: String,
+        sizes: Vec<TerminalSizeAt>,
+        fresh: bool,
     },
     /// The terminals the page keeps a screen for.
     Live { terminals: Vec<TerminalParams> },
@@ -914,6 +1085,8 @@ pub fn use_terminal_script(cockpit: Cockpit) {
                 terminal: screen.terminal,
                 offset: screen.offset,
                 data: screen.data,
+                sizes: screen.sizes,
+                fresh: screen.fresh,
             };
             if let Err(error) = script.send(message) {
                 tracing::warn!("cannot show a terminal's output: {error}");
@@ -1248,6 +1421,11 @@ mod tests {
                 terminal,
                 offset: 0,
                 data: "bHMK".to_owned(),
+                sizes: vec![TerminalSizeAt {
+                    offset: 0,
+                    size: TerminalSize { cols: 80, rows: 24 },
+                }],
+                fresh: true,
             },
             ToPage::Live {
                 terminals: vec![TerminalParams { agent, terminal }],
@@ -1297,7 +1475,11 @@ mod tests {
             serde_json::to_value(to_page).unwrap(),
             json!([
                 { "type": "output", "agent": 3, "terminal": 2, "offset": 4, "data": "bHMK" },
-                { "type": "screen", "agent": 3, "terminal": 2, "offset": 0, "data": "bHMK" },
+                {
+                    "type": "screen", "agent": 3, "terminal": 2, "offset": 0, "data": "bHMK",
+                    "sizes": [{ "offset": 0, "size": { "cols": 80, "rows": 24 } }],
+                    "fresh": true,
+                },
                 { "type": "live", "terminals": [{ "agent": 3, "terminal": 2 }] },
                 { "type": "links", "id": 5, "links": [{ "start": 0, "end": 6, "path": "a.rs", "line": 2 }] },
                 { "type": "act", "agent": 3, "terminal": 2, "action": "select_all" },

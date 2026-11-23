@@ -41,6 +41,15 @@ pub struct TerminalSize {
     pub rows: u16,
 }
 
+/// The size a terminal took once its shell had written `offset` bytes in all. A client that shows
+/// the kept output again writes each part at the size the shell wrote it for, so that its cursor
+/// moves land where they did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TerminalSizeAt {
+    pub offset: u64,
+    pub size: TerminalSize,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TerminalOpenParams {
     pub agent: AgentId,

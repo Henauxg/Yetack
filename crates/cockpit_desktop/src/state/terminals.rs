@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use cockpit_protocol::{
     AgentId, AgentParams, Request, ShellChoice, TerminalChange, TerminalExit, TerminalId,
     TerminalInfo, TerminalInputParams, TerminalOpenParams, TerminalParams, TerminalResizeParams,
-    TerminalSize, TerminalUpdate,
+    TerminalSize, TerminalSizeAt, TerminalUpdate,
 };
 
 use super::app_state::AppState;
@@ -46,6 +46,8 @@ pub struct AgentTerminals {
     /// The shells a terminal can run, the default one among them. Empty from a daemon that
     /// predates them.
     pub shells: Vec<ShellChoice>,
+    /// The terminals this window opened whose kept output has not come yet.
+    pub fresh: BTreeSet<TerminalId>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -74,6 +76,13 @@ pub struct Screen {
     pub offset: u64,
     /// Base64.
     pub data: String,
+    /// The sizes the terminal took over that output, oldest first. Empty from a daemon that
+    /// predates them.
+    pub sizes: Vec<TerminalSizeAt>,
+    /// Whether this is the first screen of a terminal this window opened, whose output is all
+    /// recent: a query in it may still wait for an answer, as Windows' pseudo console holds a
+    /// starting shell until it learns where the cursor is. [`screen`] sets it.
+    pub fresh: bool,
 }
 
 impl AgentTerminals {
@@ -107,6 +116,7 @@ impl AgentTerminals {
             return;
         };
         self.tabs.remove(index);
+        self.fresh.remove(&terminal);
         if self.shown == Some(terminal) {
             // The tab beside it takes its place.
             let next = index.min(self.tabs.len().saturating_sub(1));
@@ -444,6 +454,7 @@ pub fn opened(state: &mut AppState, agent: AgentId, opened: Option<TerminalId>) 
     terminals.open_failed = opened.is_none();
     if let Some(terminal) = opened {
         terminals.add(terminal, String::new());
+        terminals.fresh.insert(terminal);
         terminals.shown = Some(terminal);
         // The new terminal takes the screen from the one a menu may be open on.
         terminal_menu::close_if(state, |spot| spot.agent == agent);
@@ -589,8 +600,11 @@ pub fn attach(agent: AgentId, terminal: TerminalId) -> Outgoing {
     )
 }
 
-/// `terminal.attach` answered: the page writes it before the output that follows.
-pub fn screen(state: &mut AppState, screen: Screen) {
+/// `terminal.attach` answered: the page writes it before the output that follows. Only the first
+/// screen of a terminal this window opened is fresh.
+pub fn screen(state: &mut AppState, mut screen: Screen) {
+    screen.fresh = terminals_mut(state, screen.agent)
+        .is_some_and(|terminals| terminals.fresh.remove(&screen.terminal));
     state.ui.terminal_screens.push(screen);
 }
 
@@ -978,6 +992,125 @@ mod tests {
         );
 
         assert!(state.ui.errors.is_empty());
+    }
+
+    /// The page writes each part of the kept output at the size the shell wrote it for.
+    #[test]
+    fn the_kept_output_goes_to_the_page_with_its_sizes() {
+        let mut state = state_with(vec![summary(1, AgentStatus::Idle)]);
+        let asked = attach(agent(), TerminalId::new(2));
+        let sizes = vec![
+            TerminalSizeAt {
+                offset: 0,
+                size: TerminalSize { cols: 80, rows: 24 },
+            },
+            TerminalSizeAt {
+                offset: 6,
+                size: TerminalSize {
+                    cols: 160,
+                    rows: 40,
+                },
+            },
+        ];
+
+        apply_response(
+            &mut state,
+            &mut Drafts::default(),
+            Method::TerminalAttach,
+            asked.purpose,
+            Ok(ResponseBody::TerminalScreen {
+                offset: 4,
+                data: "bHMK".to_owned(),
+                sizes: sizes.clone(),
+            }),
+            MachineId::THIS,
+        );
+
+        assert_eq!(
+            state.ui.terminal_screens,
+            [Screen {
+                agent: agent(),
+                terminal: TerminalId::new(2),
+                offset: 4,
+                data: "bHMK".to_owned(),
+                sizes,
+                fresh: false,
+            }]
+        );
+    }
+
+    fn screen_is_fresh(state: &mut AppState, terminal: u32) -> Option<bool> {
+        apply_response(
+            state,
+            &mut Drafts::default(),
+            Method::TerminalAttach,
+            attach(agent(), TerminalId::new(terminal)).purpose,
+            Ok(ResponseBody::TerminalScreen {
+                offset: 0,
+                data: "bHMK".to_owned(),
+                sizes: Vec::new(),
+            }),
+            MachineId::THIS,
+        );
+        state.ui.terminal_screens.pop().map(|screen| screen.fresh)
+    }
+
+    /// The output of a terminal this window just opened is all recent: a query in it may wait for
+    /// the page's answer. Any later screen of it, and another client's terminal, hold history.
+    #[test]
+    fn only_the_first_screen_of_a_terminal_this_window_opened_is_fresh() {
+        let mut state = state_with(vec![summary(1, AgentStatus::Idle)]);
+        opened(&mut state, agent(), Some(TerminalId::new(2)));
+        apply_update(
+            &mut state,
+            TerminalUpdate {
+                agent: agent(),
+                terminal: TerminalId::new(3),
+                change: TerminalChange::Opened {
+                    title: "fish".to_owned(),
+                },
+            },
+        );
+
+        assert_eq!(screen_is_fresh(&mut state, 2), Some(true));
+        assert_eq!(screen_is_fresh(&mut state, 2), Some(false));
+        assert_eq!(screen_is_fresh(&mut state, 3), Some(false));
+    }
+
+    /// The daemon may tell every client of the new terminal before it answers the window that
+    /// opened it.
+    #[test]
+    fn a_terminal_this_window_opened_is_fresh_when_its_opening_event_comes_first() {
+        let mut state = state_with(vec![summary(1, AgentStatus::Idle)]);
+        apply_update(
+            &mut state,
+            TerminalUpdate {
+                agent: agent(),
+                terminal: TerminalId::new(2),
+                change: TerminalChange::Opened {
+                    title: "pwsh".to_owned(),
+                },
+            },
+        );
+        opened(&mut state, agent(), Some(TerminalId::new(2)));
+
+        assert_eq!(screen_is_fresh(&mut state, 2), Some(true));
+    }
+
+    /// A tab closed before its screen keeps no mark, and after a reconnect the output may be old.
+    #[test]
+    fn a_terminal_closed_or_reconnected_before_its_screen_is_not_fresh() {
+        let mut state = state_with(vec![summary(1, AgentStatus::Idle)]);
+        opened(&mut state, agent(), Some(TerminalId::new(2)));
+        opened(&mut state, agent(), Some(TerminalId::new(3)));
+
+        close(&mut state, agent(), TerminalId::new(2));
+        let fresh_after_close = state.agents[&agent()].terminals.fresh.clone();
+        connected(&mut state, MachineId::THIS);
+        listed(&mut state, agent(), Some(vec![tab(3)]), Vec::new());
+
+        assert_eq!(fresh_after_close, BTreeSet::from([TerminalId::new(3)]));
+        assert_eq!(screen_is_fresh(&mut state, 3), Some(false));
     }
 
     /// The terminal is a tab of the file view, which shows `a.rs` and `b.rs`.

@@ -18,7 +18,7 @@ use base64::engine::general_purpose::STANDARD;
 use cockpit_protocol::{
     AgentId, ErrorBody, ErrorCode, Frame, ResponseBody, ServerMessage, ShellChoice, TerminalChange,
     TerminalExit, TerminalId, TerminalInfo, TerminalInputParams, TerminalOpenParams,
-    TerminalParams, TerminalResizeParams, TerminalSize, TerminalUpdate,
+    TerminalParams, TerminalResizeParams, TerminalSize, TerminalSizeAt, TerminalUpdate,
 };
 use portable_pty::{Child, ChildKiller, CommandBuilder, MasterPty, PtySize, native_pty_system};
 use tokio::sync::mpsc;
@@ -35,8 +35,23 @@ use crate::hub::{errors, start};
 /// The output a terminal keeps for a client that shows it again: a few screens of a busy build.
 const RECENT_BYTES: usize = 512 * 1024;
 
+/// The most sizes a terminal keeps over its kept output. A pane resizes the PTY once it stops
+/// moving, so the kept output rarely spans more.
+const MAX_SIZES: usize = 256;
+
 /// What one read of a shell's output takes at most.
 const READ_BYTES: usize = 64 * 1024;
+
+/// The output a terminal keeps, as `terminal.attach` answers it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct Screen {
+    /// Where the kept output starts in everything the shell wrote.
+    pub(super) offset: u64,
+    /// The kept output, base64.
+    pub(super) data: String,
+    /// The sizes the PTY took over it, oldest first.
+    pub(super) sizes: Vec<TerminalSizeAt>,
+}
 
 #[derive(Default)]
 pub(super) struct Terminals {
@@ -55,14 +70,52 @@ struct Terminal {
     recent: VecDeque<u8>,
     /// How many bytes the shell wrote in all.
     written: u64,
+    /// The sizes the PTY took over `recent`, oldest first, at most [`MAX_SIZES`]: the first is the
+    /// size where `recent` starts, unless it was dropped among too many.
+    sizes: VecDeque<TerminalSizeAt>,
     /// `Some` once the shell ended.
     exited: Option<TerminalExit>,
+}
+
+impl Terminal {
+    /// Notes that the PTY took `size` after the output so far. A size taken before any more
+    /// output replaces the one before it.
+    fn note_size(&mut self, size: TerminalSize) {
+        let size = taken(size);
+        if self
+            .sizes
+            .back()
+            .is_some_and(|last| last.offset == self.written)
+        {
+            self.sizes.pop_back();
+        }
+        if self.sizes.back().map(|last| last.size) != Some(size) {
+            self.sizes.push_back(TerminalSizeAt {
+                offset: self.written,
+                size,
+            });
+        }
+        self.trim_sizes();
+    }
+
+    /// Drops the sizes that no kept output was written at: those before the one where `recent`
+    /// starts, and the oldest past [`MAX_SIZES`].
+    fn trim_sizes(&mut self) {
+        let start = self.written - self.recent.len() as u64;
+        while self.sizes.get(1).is_some_and(|next| next.offset <= start) {
+            self.sizes.pop_front();
+        }
+        let excess = self.sizes.len().saturating_sub(MAX_SIZES);
+        self.sizes.drain(..excess);
+    }
 }
 
 /// A shell that runs on its PTY and waits for [`Terminals::add`]: the thread that waits for it
 /// reports nothing before then. Dropping it ends the shell.
 pub(crate) struct SpawnedShell {
     title: String,
+    /// The PTY's size as the shell starts.
+    size: TerminalSize,
     master: Box<dyn MasterPty + Send>,
     killer: Box<dyn ChildKiller + Send + Sync>,
     /// Tells the thread that waits for the shell that a terminal owns it. Dropped unsent, it
@@ -92,6 +145,7 @@ impl Terminals {
     ) -> Result<String, String> {
         let SpawnedShell {
             title,
+            size,
             master,
             killer,
             owned,
@@ -120,6 +174,10 @@ impl Terminals {
                 killer,
                 recent: VecDeque::new(),
                 written: 0,
+                sizes: VecDeque::from([TerminalSizeAt {
+                    offset: 0,
+                    size: taken(size),
+                }]),
                 exited: None,
             },
         );
@@ -168,22 +226,28 @@ impl Terminals {
         let open = self.of_agent(agent, terminal)?;
         open.master
             .resize(pty_size(size))
-            .map_err(|error| format!("cannot resize the terminal: {error}"))
+            .map_err(|error| format!("cannot resize the terminal: {error}"))?;
+        open.note_size(size);
+        Ok(())
     }
 
-    /// The output kept, base64, and where it starts in everything the shell wrote.
+    /// The output kept, base64, where it starts in everything the shell wrote, and the sizes the
+    /// PTY took over it.
     pub(super) fn screen(
         &mut self,
         agent: AgentId,
         terminal: TerminalId,
-    ) -> Result<(u64, String), String> {
+    ) -> Result<Screen, String> {
         let open = self.of_agent(agent, terminal)?;
         let (front, back) = open.recent.as_slices();
         let mut bytes = Vec::with_capacity(open.recent.len());
         bytes.extend_from_slice(front);
         bytes.extend_from_slice(back);
-        let start = open.written - bytes.len() as u64;
-        Ok((start, STANDARD.encode(bytes)))
+        Ok(Screen {
+            offset: open.written - bytes.len() as u64,
+            data: STANDARD.encode(bytes),
+            sizes: open.sizes.iter().copied().collect(),
+        })
     }
 
     /// Ends the shell and forgets the terminal.
@@ -219,6 +283,7 @@ impl Terminals {
         open.recent.extend(data);
         let excess = open.recent.len().saturating_sub(RECENT_BYTES);
         open.recent.drain(..excess);
+        open.trim_sizes();
         Some(TerminalUpdate {
             agent: open.agent,
             terminal,
@@ -261,10 +326,19 @@ fn end(open: &mut Terminal) {
     }
 }
 
-fn pty_size(size: TerminalSize) -> PtySize {
-    PtySize {
-        rows: size.rows.max(1),
+/// The size a PTY takes when asked for `size`: at least one row and one column.
+fn taken(size: TerminalSize) -> TerminalSize {
+    TerminalSize {
         cols: size.cols.max(1),
+        rows: size.rows.max(1),
+    }
+}
+
+fn pty_size(size: TerminalSize) -> PtySize {
+    let TerminalSize { cols, rows } = taken(size);
+    PtySize {
+        rows,
+        cols,
         pixel_width: 0,
         pixel_height: 0,
     }
@@ -334,6 +408,7 @@ fn spawn(
     }
     Ok(SpawnedShell {
         title: shell.title().to_owned(),
+        size,
         master: pair.master,
         killer,
         owned,
@@ -522,11 +597,19 @@ impl Hub {
         &mut self,
         params: TerminalParams,
     ) -> Result<ResponseBody, ErrorBody> {
-        let (offset, data) = self
+        let Screen {
+            offset,
+            data,
+            sizes,
+        } = self
             .terminals
             .screen(params.agent, params.terminal)
             .map_err(not_found)?;
-        Ok(ResponseBody::TerminalScreen { offset, data })
+        Ok(ResponseBody::TerminalScreen {
+            offset,
+            data,
+            sizes,
+        })
     }
 
     pub(super) fn type_in_terminal(
@@ -915,8 +998,37 @@ mod tests {
             killer,
             recent: VecDeque::new(),
             written: 0,
+            sizes: VecDeque::from([TerminalSizeAt {
+                offset: 0,
+                size: SMALL,
+            }]),
             exited: Some(TerminalExit { code: Some(0) }),
         }
+    }
+
+    const SMALL: TerminalSize = TerminalSize { cols: 80, rows: 24 };
+    const WIDE: TerminalSize = TerminalSize {
+        cols: 200,
+        rows: 24,
+    };
+    const TALL: TerminalSize = TerminalSize { cols: 80, rows: 60 };
+
+    fn at(offset: u64, size: TerminalSize) -> TerminalSizeAt {
+        TerminalSizeAt { offset, size }
+    }
+
+    /// Notes that terminal 1's PTY took `size`, as `terminal.resize` does once the PTY resized.
+    fn resize(terminals: &mut Terminals, size: TerminalSize) {
+        if let Some(open) = terminals.open.get_mut(&TerminalId::new(1)) {
+            open.note_size(size);
+        }
+    }
+
+    fn sizes(terminals: &mut Terminals) -> Vec<TerminalSizeAt> {
+        terminals
+            .screen(AgentId::new(3), TerminalId::new(1))
+            .unwrap()
+            .sizes
     }
 
     #[test]
@@ -927,7 +1039,11 @@ mod tests {
 
         let first = terminals.output(TerminalId::new(1), &chunk);
         terminals.output(TerminalId::new(1), &chunk);
-        let (start, screen) = terminals
+        let Screen {
+            offset: start,
+            data: screen,
+            ..
+        } = terminals
             .screen(AgentId::new(3), TerminalId::new(1))
             .unwrap();
 
@@ -942,6 +1058,94 @@ mod tests {
                 .screen(AgentId::new(4), TerminalId::new(1))
                 .is_err()
         );
+    }
+
+    /// The kept output says at which byte the PTY took each size, so a client writes each part at
+    /// the size the shell wrote it for.
+    #[test]
+    fn the_screen_carries_each_size_from_the_byte_it_was_taken_at() {
+        let mut terminals = Terminals::default();
+        terminals.open.insert(TerminalId::new(1), ended_terminal());
+
+        terminals.output(TerminalId::new(1), b"apt");
+        resize(&mut terminals, WIDE);
+        terminals.output(TerminalId::new(1), b" install");
+
+        assert_eq!(sizes(&mut terminals), [at(0, SMALL), at(3, WIDE)]);
+    }
+
+    /// No output was written at a size the PTY left before writing any, and a size the PTY
+    /// already has is no change.
+    #[test]
+    fn a_size_without_output_since_the_last_replaces_it_and_a_repeat_adds_none() {
+        let mut terminals = Terminals::default();
+        terminals.open.insert(TerminalId::new(1), ended_terminal());
+
+        resize(&mut terminals, WIDE);
+        resize(&mut terminals, TALL);
+        resize(&mut terminals, TALL);
+        terminals.output(TerminalId::new(1), b"ls\r\n");
+        resize(&mut terminals, SMALL);
+        resize(&mut terminals, SMALL);
+
+        assert_eq!(sizes(&mut terminals), [at(0, TALL), at(4, SMALL)]);
+    }
+
+    /// Once the kept output starts past a size's change, the sizes before it go, but for the one
+    /// the first kept byte was written at.
+    #[test]
+    fn the_sizes_go_with_the_output_they_were_taken_over() {
+        let mut terminals = Terminals::default();
+        terminals.open.insert(TerminalId::new(1), ended_terminal());
+        let chunk = vec![b'a'; RECENT_BYTES / 2];
+
+        terminals.output(TerminalId::new(1), &chunk);
+        resize(&mut terminals, WIDE);
+        terminals.output(TerminalId::new(1), &chunk);
+        resize(&mut terminals, TALL);
+        // The kept output now starts one byte past the change to WIDE.
+        terminals.output(TerminalId::new(1), &vec![b'b'; RECENT_BYTES / 2 + 1]);
+
+        let half = (RECENT_BYTES / 2) as u64;
+        assert_eq!(sizes(&mut terminals), [at(half, WIDE), at(2 * half, TALL)]);
+    }
+
+    #[test]
+    fn a_terminal_keeps_at_most_its_limit_of_sizes() {
+        let mut terminals = Terminals::default();
+        terminals.open.insert(TerminalId::new(1), ended_terminal());
+
+        for cols in 1..=MAX_SIZES as u16 + 10 {
+            terminals.output(TerminalId::new(1), b"a");
+            resize(&mut terminals, TerminalSize { cols, rows: 24 });
+        }
+
+        let kept = sizes(&mut terminals);
+        assert_eq!(kept.len(), MAX_SIZES);
+        assert_eq!(
+            kept.last().map(|last| last.size.cols),
+            Some(MAX_SIZES as u16 + 10)
+        );
+    }
+
+    /// A PTY has at least one row and one column, so a client that replays the output writes it
+    /// at the size the shell had, not at one that no terminal can take.
+    #[test]
+    fn a_size_without_rows_or_columns_is_kept_as_the_one_the_pty_took() {
+        let mut terminals = Terminals::default();
+        terminals.open.insert(TerminalId::new(1), ended_terminal());
+
+        terminals.output(TerminalId::new(1), b"ls\r\n");
+        terminals
+            .resize(
+                AgentId::new(3),
+                TerminalId::new(1),
+                TerminalSize { cols: 0, rows: 0 },
+            )
+            .unwrap();
+
+        let one = TerminalSize { cols: 1, rows: 1 };
+        assert_eq!(sizes(&mut terminals), [at(0, SMALL), at(4, one)]);
     }
 
     #[test]

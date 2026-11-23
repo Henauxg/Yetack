@@ -11,7 +11,7 @@ use crate::details::{AgentDetails, ContextUsage, McpServer, SlashCommand};
 use crate::git::{GitBlame, GitCommitFile, GitFile, GitStatus, LogEntry};
 use crate::ids::{AccountId, AgentId, ClaudeSessionId, Seq};
 use crate::machine_load::MachineLoad;
-use crate::terminal::{ShellChoice, TerminalId, TerminalInfo};
+use crate::terminal::{ShellChoice, TerminalId, TerminalInfo, TerminalSizeAt};
 use crate::time::Timestamp;
 use crate::transcript::{FileEdit, Image, TranscriptItem};
 
@@ -95,6 +95,11 @@ pub enum ResponseBody {
     TerminalScreen {
         offset: u64,
         data: String,
+        /// The sizes the terminal took over that output, oldest first. The first is the size at
+        /// `offset`, unless the daemon dropped it among too many. Empty from a daemon that
+        /// predates the field.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        sizes: Vec<TerminalSizeAt>,
     },
     /// `path` is where the file was read, absolute: the path asked for, or the file the daemon
     /// found for it. `None` from a daemon that predates it, which reads only the path asked for.

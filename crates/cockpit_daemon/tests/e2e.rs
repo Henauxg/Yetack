@@ -29,8 +29,8 @@ use cockpit_protocol::{
     PromptDelivery, PromptParams, Question, QuestionAnswer, QueuedPromptParams, ReadFileParams,
     RenameParams, Request, ResponseBody, Seq, SessionResumeParams, SetEffortParams, SetModeParams,
     SetModelParams, Settings, SignIn, SignInWait, StartParams, StopProcessParams, StopTaskParams,
-    TerminalInputParams, TerminalOpenParams, TerminalParams, TerminalSize, TranscriptItem,
-    TurnOutcome, UsageWindow, WaitingPrompt, WaitingState,
+    TerminalInputParams, TerminalOpenParams, TerminalParams, TerminalResizeParams, TerminalSize,
+    TranscriptItem, TurnOutcome, UsageWindow, WaitingPrompt, WaitingState,
 };
 use rustix::process::{Pid, Signal};
 use serde_json::{Value, json};
@@ -2961,6 +2961,17 @@ async fn a_terminal_runs_a_shell_in_the_agents_folder() {
         panic!("expected a terminal, got {opened:?}");
     };
     let params = TerminalParams { agent, terminal };
+    let wide = TerminalSize {
+        cols: 120,
+        rows: 40,
+    };
+    client
+        .ok(Request::TerminalResize(TerminalResizeParams {
+            agent,
+            terminal,
+            size: wide,
+        }))
+        .await;
 
     client
         .ok(Request::TerminalInput(TerminalInputParams {
@@ -2971,14 +2982,24 @@ async fn a_terminal_runs_a_shell_in_the_agents_folder() {
         .await;
     let deadline = Instant::now() + WAIT;
     let screen = loop {
-        let ResponseBody::TerminalScreen { offset, data } =
-            client.ok(Request::TerminalAttach(params)).await
+        let ResponseBody::TerminalScreen {
+            offset,
+            data,
+            sizes,
+        } = client.ok(Request::TerminalAttach(params)).await
         else {
             panic!("expected a screen");
         };
         let text = String::from_utf8_lossy(&STANDARD.decode(data).unwrap()).into_owned();
         if text.contains("marker-42") || Instant::now() > deadline {
             assert_eq!(offset, 0);
+            // The shell may have written its prompt before the resize, or not.
+            assert_eq!(
+                sizes.first().map(|first| first.offset),
+                Some(0),
+                "{sizes:?}"
+            );
+            assert_eq!(sizes.last().map(|last| last.size), Some(wide), "{sizes:?}");
             break text;
         }
         tokio::time::sleep(Duration::from_millis(50)).await;

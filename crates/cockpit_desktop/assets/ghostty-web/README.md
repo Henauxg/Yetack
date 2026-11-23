@@ -10,6 +10,7 @@ The pane's script uses these private members:
 - `Terminal.linkDetector.providers`, to open the library's own web links in the browser: their `activate` calls `window.open`, which the window ignores.
 - `Terminal.selectionManager`: its `copyToClipboard`, `selectionStart` and `selectionEnd`, so that a click, which selects the cell under it, copies nothing.
 - `Terminal.renderer.renderScrollbar()` and `Terminal.handleMouseDown`, which the pane's own scrollbar replaces: ghostty-web paints its scrollbar on the canvas, over the last column, and its click handler on the terminal's box takes the clicks there. The pane's scrollbar reads `getScrollbackLength()`, `getViewportY()` and `rows`, and moves the view with `scrollToLine()`, which counts lines up from the end.
+- `Terminal.wasmTerm.readResponse()`, which returns `null` once no answer is left, to send or drop the answers to a replay's queries past the 256 bytes of them that a write emits. The replay also counts on `write()` emitting its answers through `onData` before it returns.
 - `Terminal.canvas`, `renderer.charWidth`, `renderer.charHeight`, `wasmTerm.getScrollbackLength()`, `getViewportY()`, `linkDetector.getLinkAt()` and `linkDetector.scannedRows`, to find the link under a right-click as ghostty-web finds the one a click opens.
 
 Check them when updating the library.

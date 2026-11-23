@@ -39,8 +39,9 @@ use cockpit_protocol::{
     StopProcessParams, StopTaskParams, Subagent, SubagentRun, SubagentStatus, SubagentToolCall,
     TaskListItem, TaskProgress, TaskStatus, TerminalChange, TerminalExit, TerminalId, TerminalInfo,
     TerminalInputParams, TerminalOpenParams, TerminalParams, TerminalResizeParams, TerminalSize,
-    TerminalUpdate, Timestamp, TokenUsage, ToolCall, ToolCallStatus, TranscriptItem, TurnEnd,
-    TurnOutcome, Upstream, UsageWindow, UserMessage, WaitingPrompt, WaitingState, WindowUsage,
+    TerminalSizeAt, TerminalUpdate, Timestamp, TokenUsage, ToolCall, ToolCallStatus,
+    TranscriptItem, TurnEnd, TurnOutcome, Upstream, UsageWindow, UserMessage, WaitingPrompt,
+    WaitingState, WindowUsage,
 };
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -986,6 +987,19 @@ fn response_bodies() -> Vec<ResponseBody> {
         ResponseBody::TerminalScreen {
             offset: 4096,
             data: "bHMK".to_owned(),
+            sizes: vec![
+                TerminalSizeAt {
+                    offset: 0,
+                    size: TerminalSize { cols: 80, rows: 24 },
+                },
+                TerminalSizeAt {
+                    offset: 4098,
+                    size: TerminalSize {
+                        cols: 120,
+                        rows: 40,
+                    },
+                },
+            ],
         },
         ResponseBody::File {
             path: Some(PathBuf::from("/srv/projects/shop/src/main.rs")),
@@ -1773,6 +1787,46 @@ fn an_image_answer_on_the_wire() {
             "image": {"media_type": "image/png", "data": "iVBORw0KGgo="},
         }),
     );
+}
+
+#[test]
+fn a_terminal_screen_on_the_wire_with_its_sizes() {
+    let answer = ResponseBody::TerminalScreen {
+        offset: 4096,
+        data: "bHMK".to_owned(),
+        sizes: vec![TerminalSizeAt {
+            offset: 0,
+            size: TerminalSize { cols: 80, rows: 24 },
+        }],
+    };
+
+    assert_wire(
+        &answer,
+        json!({
+            "type": "terminal_screen",
+            "offset": 4096,
+            "data": "bHMK",
+            "sizes": [{ "offset": 0, "size": { "cols": 80, "rows": 24 } }],
+        }),
+    );
+}
+
+/// A daemon that predates the sizes sends none, and the protocol's version stays.
+#[test]
+fn a_terminal_screen_without_sizes_reads_as_an_empty_list() {
+    let older = json!({ "type": "terminal_screen", "offset": 4096, "data": "bHMK" });
+
+    let answer: ResponseBody = serde_json::from_value(older.clone()).unwrap();
+
+    assert_eq!(
+        answer,
+        ResponseBody::TerminalScreen {
+            offset: 4096,
+            data: "bHMK".to_owned(),
+            sizes: Vec::new(),
+        }
+    );
+    assert_eq!(serde_json::to_value(&answer).unwrap(), older);
 }
 
 #[test]

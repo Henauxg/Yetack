@@ -2444,6 +2444,8 @@ pub fn answer(state: &AppState, request: &Request) -> Result<ResponseBody, Reque
             Ok(ResponseBody::TerminalScreen {
                 offset: 0,
                 data: BASE64.encode(TERMINAL_OUTPUT),
+                // The demo runs no PTY, so its terminal never took a size.
+                sizes: Vec::new(),
             })
         }
         Request::AgentTerminalOpen(_) => {
@@ -5742,7 +5744,8 @@ mod tests {
                 .collect::<Vec<_>>(),
             [demo_terminal()]
         );
-        let ResponseBody::TerminalScreen { offset, data } = answer(&state, &attach).unwrap() else {
+        let ResponseBody::TerminalScreen { offset, data, .. } = answer(&state, &attach).unwrap()
+        else {
             panic!("expected the terminal's screen");
         };
         assert_eq!(offset, 0);
