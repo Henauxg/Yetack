@@ -167,6 +167,7 @@ function write(entry, offset, data) {
   }
   entry.term.write(data.subarray(Math.max(0, entry.end - offset)));
   entry.end = end;
+  entry.scrollbar();
 }
 
 // Fits the terminal to its box once the box stops changing size. The pane grows as it opens, and
@@ -178,6 +179,99 @@ function fitWhenSettled(entry) {
       entry.fit.fit();
     }
   }, settings.settle_ms);
+}
+
+// The scrollbar's thumb is never shorter than this, in pixels.
+const MIN_THUMB = 20;
+
+// ghostty-web paints its scrollbar on its canvas, over the last column, where the pointer keeps
+// the text's shape, and its fit leaves the strip at the canvas's right empty. The pane draws a
+// scrollbar of its own in that strip instead, styled as the app's other scrollbars. Returns a
+// function that redraws the thumb, at most once per frame.
+function scrollbarFor(term, box) {
+  const bar = document.createElement("div");
+  bar.className = "terminal-scrollbar";
+  bar.hidden = true;
+  const thumb = document.createElement("div");
+  thumb.className = "terminal-scrollbar-thumb";
+  bar.append(thumb);
+  box.append(bar);
+  if (typeof term.renderer?.renderScrollbar === "function" && typeof term.handleMouseDown === "function") {
+    term.renderer.renderScrollbar = () => {};
+    // Its click handler takes the presses on the last column, where its scrollbar no longer shows.
+    box.removeEventListener("mousedown", term.handleMouseDown, { capture: true });
+  } else {
+    send({ type: "problem", text: "ghostty-web has no painted scrollbar or click handler to turn off" });
+  }
+  let frame = 0;
+  const update = () => {
+    frame = 0;
+    const scrollback = term.getScrollbackLength();
+    bar.hidden = scrollback === 0;
+    if (scrollback === 0) {
+      return;
+    }
+    const track = bar.clientHeight;
+    const size = Math.min(track, Math.max(MIN_THUMB, (track * term.rows) / (scrollback + term.rows)));
+    // How many lines the view is above the end.
+    const up = Math.min(scrollback, Math.max(0, term.getViewportY()));
+    thumb.style.height = `${size}px`;
+    thumb.style.transform = `translateY(${(track - size) * (1 - up / scrollback)}px)`;
+  };
+  const later = () => {
+    if (frame === 0) {
+      frame = requestAnimationFrame(update);
+    }
+  };
+  // The terminal keeps the focus.
+  bar.addEventListener("mousedown", (event) => event.preventDefault());
+  // ghostty-web clears the selection on a click outside its canvas.
+  bar.addEventListener("click", (event) => event.stopPropagation());
+  // A press on the track brings the thumb's middle under the pointer.
+  bar.addEventListener("pointerdown", (event) => {
+    if (event.button !== 0 || event.target === thumb) {
+      return;
+    }
+    const rect = bar.getBoundingClientRect();
+    const room = rect.height - thumb.offsetHeight;
+    if (room <= 0) {
+      return;
+    }
+    const along = (event.clientY - rect.top - thumb.offsetHeight / 2) / room;
+    term.scrollToLine(Math.round((1 - Math.min(1, Math.max(0, along))) * term.getScrollbackLength()));
+  });
+  thumb.addEventListener("pointerdown", (event) => {
+    if (event.button !== 0) {
+      return;
+    }
+    const startY = event.clientY;
+    const startUp = term.getViewportY();
+    thumb.setPointerCapture(event.pointerId);
+    bar.classList.add("dragging");
+    const end = () => {
+      thumb.removeEventListener("pointermove", move);
+      thumb.removeEventListener("lostpointercapture", end);
+      bar.classList.remove("dragging");
+    };
+    const move = (moved) => {
+      // A box taken out of the page mid-drag loses the capture without telling the thumb.
+      if (!thumb.hasPointerCapture(moved.pointerId)) {
+        end();
+        return;
+      }
+      const room = bar.clientHeight - thumb.offsetHeight;
+      if (room > 0) {
+        const lines = ((moved.clientY - startY) * term.getScrollbackLength()) / room;
+        term.scrollToLine(Math.round(startUp - lines));
+      }
+    };
+    thumb.addEventListener("pointermove", move);
+    thumb.addEventListener("lostpointercapture", end);
+  });
+  term.onScroll(later);
+  term.onResize(later);
+  later();
+  return later;
 }
 
 // The pane's shortcut, as the app's settings set it. Ctrl stands for Cmd on macOS too, as in
@@ -338,9 +432,13 @@ function terminalFor(agent, terminal) {
       send({ type: "links", id, agent, text });
     },
   });
+  const scrollbar = scrollbarFor(term, box);
   const name = key(agent, terminal);
-  const entry = { name, paused: false, term, fit, box, end: null, pending: [], settle: null, observer: null };
-  entry.observer = new ResizeObserver(() => fitWhenSettled(entry));
+  const entry = { name, paused: false, term, fit, box, scrollbar, end: null, pending: [], settle: null, observer: null };
+  entry.observer = new ResizeObserver(() => {
+    fitWhenSettled(entry);
+    scrollbar();
+  });
   entry.observer.observe(box);
   terminals.set(name, entry);
   send({ type: "attach", agent, terminal });
@@ -465,6 +563,7 @@ function receive(message) {
       if (data.length > 0) {
         entry.term.write(data);
       }
+      entry.scrollbar();
       drawn = true;
     } finally {
       // The output that waited goes on even if the screen fails to draw.
