@@ -73,6 +73,7 @@ use crate::config::Environment;
 use crate::connection::Cockpit;
 use crate::keymap::Keymap;
 use crate::state::Block;
+use crate::state::projects::ProjectKey;
 
 pub const PREFS_FOLDER: &str = "yetack-desktop";
 const PREFS_FILE: &str = "prefs.json";
@@ -147,12 +148,29 @@ pub struct ProjectsPrefs {
     /// By daemon machine, then by the daemon's agent id: the project an agent was moved to, or
     /// `None` for "No project". It wins over the rules.
     pub agents: BTreeMap<String, BTreeMap<AgentId, Option<ProjectId>>>,
+    /// The projects whose agents the sidebar folds under their header.
+    #[serde(
+        skip_serializing_if = "BTreeSet::is_empty",
+        deserialize_with = "known_projects"
+    )]
+    pub folded: BTreeSet<ProjectKey>,
 }
 
 impl ProjectsPrefs {
     fn is_empty(&self) -> bool {
-        self.list.is_empty() && self.agents.is_empty() && self.next_id == 0
+        self.list.is_empty()
+            && self.agents.is_empty()
+            && self.next_id == 0
+            && self.folded.is_empty()
     }
+}
+
+/// The projects that read, leaving out a key a later version wrote.
+fn known_projects<'de, D: Deserializer<'de>>(
+    deserializer: D,
+) -> Result<BTreeSet<ProjectKey>, D::Error> {
+    let keys: Vec<String> = Vec::deserialize(deserializer)?;
+    Ok(keys.iter().filter_map(|key| key.parse().ok()).collect())
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
@@ -1363,7 +1381,11 @@ mod tests {
         "4": 0,
         "5": null
       }
-    }
+    },
+    "folded": [
+      "kept:0",
+      "none"
+    ]
   },
   "updates": {
     "check": false,
@@ -1476,6 +1498,9 @@ mod tests {
                             (AgentId::new(5), None),
                         ]),
                     )]),
+                    folded: BTreeSet::from(
+                        [ProjectKey::Kept(ProjectId::new(0)), ProjectKey::None,]
+                    ),
                 },
             }
         );
@@ -2037,6 +2062,18 @@ mod tests {
 
         assert_eq!(file(&environment), Some(PathBuf::from(expected)));
         assert_eq!(file(&Environment::default()), None);
+    }
+
+    #[test]
+    fn a_folded_project_key_a_later_version_wrote_is_left_out() {
+        let text = r#"{"projects": {"folded": ["kept:3", "planet:mars", "none"]}}"#;
+
+        let prefs: Prefs = serde_json::from_str(text).unwrap();
+
+        assert_eq!(
+            prefs.projects.folded,
+            BTreeSet::from([ProjectKey::Kept(ProjectId::new(3)), ProjectKey::None])
+        );
     }
 
     #[test]

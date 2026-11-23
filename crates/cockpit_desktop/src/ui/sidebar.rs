@@ -696,7 +696,7 @@ impl ProjectGroup {
         }
         Self {
             key: project.to_string(),
-            folded: state.ui.folded_projects.contains(&project),
+            folded: state.prefs.projects.folded.contains(&project),
             machine: grouping::machine_on_project_head(state, &project)
                 .and_then(|machine| RowMachine::new(state, machine)),
             project,

@@ -2,6 +2,7 @@
 
 Ideas and fixes noted for later. None of them is planned yet.
 
+- **Keep the folded machine panels after a restart.** Grouped by machine, a folded panel (Local, a server) unfolds when the app starts again: `UiState.folded_machines` is not saved, while the folded projects are (`projects.folded` in `prefs.json`). Save them by machine name, as `agent_order` does. A removed server drops its entry.
 - **Scheduled jobs.** An agent with a job scheduled through `/loop` or `CronCreate` shows as Idle, with nothing saying it will run again.
   - The daemon keeps each agent's active jobs from the `CronCreate` and `CronDelete` calls it already sees (job id, schedule, repeating or not, prompt), and computes the next run from the schedule rather than from Claude Code's sentence. A job leaves the list when it is deleted, when it expires (Claude Code drops a recurring job after 7 days) and when the `claude` process ends.
   - When a job fires, Claude Code sends no user message: it sends `{"type": "command_lifecycle", "state": "started", "wakeup_source": "schedule_wakeup"}`, then `"state": "completed"`. The daemon ignores that line today, so a scheduled run starts with no prompt above it. It becomes a "Scheduled run" marker in the transcript.

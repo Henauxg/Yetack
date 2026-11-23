@@ -24,7 +24,7 @@ pub enum GroupKey {
 pub fn is_folded(state: &AppState, group: &GroupKey) -> bool {
     match group {
         GroupKey::Machine(machine) => state.ui.folded_machines.contains(machine),
-        GroupKey::Project(project) => state.ui.folded_projects.contains(project),
+        GroupKey::Project(project) => state.prefs.projects.folded.contains(project),
     }
 }
 
@@ -37,10 +37,10 @@ pub fn set_folded(state: &mut AppState, group: &GroupKey, folded: bool) {
             state.ui.folded_machines.remove(machine);
         }
         (GroupKey::Project(project), true) => {
-            state.ui.folded_projects.insert(project.clone());
+            state.prefs.projects.folded.insert(project.clone());
         }
         (GroupKey::Project(project), false) => {
-            state.ui.folded_projects.remove(project);
+            state.prefs.projects.folded.remove(project);
         }
     }
 }
@@ -416,5 +416,18 @@ mod tests {
             ]
         );
         assert_eq!(machine_tag(&state, MachineId::new(9)), None);
+    }
+
+    #[test]
+    fn a_folded_project_goes_into_the_preferences() {
+        let mut state = two_machines();
+        let project = GroupKey::Project(ProjectKey::None);
+
+        toggle_folded(&mut state, &project);
+
+        assert!(state.prefs.projects.folded.contains(&ProjectKey::None));
+        assert!(is_folded(&state, &project));
+        toggle_folded(&mut state, &project);
+        assert!(state.prefs.projects.folded.is_empty());
     }
 }

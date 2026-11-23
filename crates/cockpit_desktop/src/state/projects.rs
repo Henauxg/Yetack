@@ -19,7 +19,7 @@ use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
 use cockpit_protocol::{AgentId, Repository};
-use serde::{Deserialize, Deserializer};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use strum::VariantArray;
 
 use super::app_state::{AgentEntry, AppState, RecentFolder};
@@ -72,6 +72,13 @@ impl FromStr for ProjectKey {
             .and_then(|id| id.parse().ok())
             .map(|id| Self::Kept(ProjectId::new(id)))
             .ok_or_else(|| format!("not a project: {text}"))
+    }
+}
+
+/// The preferences keep the folded projects by their key's text.
+impl Serialize for ProjectKey {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.collect_str(self)
     }
 }
 

@@ -637,8 +637,6 @@ pub struct UiState {
     pub unread: BTreeSet<AgentId>,
     /// The machines whose agents the sidebar folds under their header.
     pub folded_machines: BTreeSet<MachineId>,
-    /// The projects whose agents the sidebar folds under their header.
-    pub folded_projects: BTreeSet<ProjectKey>,
     /// The project whose header menu is open, while `popover` is `ProjectMenu`.
     pub project_menu: Option<ProjectKey>,
     /// The kept project whose name the sidebar's header holds in a field.
@@ -708,7 +706,6 @@ impl Default for UiState {
             terminal_screens: Vec::new(),
             unread: BTreeSet::new(),
             folded_machines: BTreeSet::new(),
-            folded_projects: BTreeSet::new(),
             project_menu: None,
             project_rename: None,
             picked_projects: BTreeMap::new(),
