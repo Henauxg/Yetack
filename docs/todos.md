@@ -41,6 +41,7 @@ Ideas and fixes noted for later. None of them is planned yet.
 
 Things nobody has run or seen yet.
 
+- **The MCP sign-in in the app.** Through a scratch daemon and Claude Code 2.1.316, `agent.mcp_sign_in` returns the sign-in link and a port, `claude` listens on that port, and a made-up callback gets Claude Code's refusal. Nobody has run a whole sign-in in the app with a real browser yet, for an agent on Local or on a server. A Notion address copied from a terminal sign-in had `code` and `iss` but no `state`: if Notion leaves `state` out, Claude Code refuses the sign-in, in the app too. After a claude.ai connector's sign-in, which ends in the browser, nobody knows whether Claude Code connects the server by itself.
 - **Claude Code's sandbox and the daemon's socket.** A command an agent runs can pass the peer check by detaching on purpose (architecture.md, "Security"). Check whether Claude Code's sandbox can deny the agents' commands the state folder, its Unix socket included.
 - **Several machines with a real server, from Windows.** Add a server in the Machines dialog, start an agent there, stop the server, and watch "Retry now". The user tests with WSL as the server, reached over SSH on localhost. The daemon there needs `claude` on the `PATH` of the terminal that runs `serve`: Claude Desktop does not provide it.
 - **The find in WebKitGTK.** The find was checked on Windows only, in the demo. Its highlights need the CSS Custom Highlight API, which WebKitGTK has from 2.44 on.

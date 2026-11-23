@@ -62,11 +62,12 @@ pub enum ControlResponse {
 pub struct ControlSuccess {
     pub request_id: ControlRequestId,
     /// The body, raw. Read the ones this crate types with `TryFrom`: [`InitializeResponse`],
-    /// [`ContextUsage`] and [`McpStatus`].
+    /// [`ContextUsage`], [`McpStatus`] and [`McpSignInStart`].
     ///
     /// [`InitializeResponse`]: crate::InitializeResponse
     /// [`ContextUsage`]: crate::ContextUsage
     /// [`McpStatus`]: crate::McpStatus
+    /// [`McpSignInStart`]: crate::McpSignInStart
     #[serde(default)]
     pub response: Value,
 }

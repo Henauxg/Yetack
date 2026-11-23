@@ -1,11 +1,11 @@
 //! The daemon's control requests to Claude Code, and their answers.
 
 use claude_protocol::{
-    ContextUsage as ClaudeContextUsage, ControlRequest, InitializeResponse, McpStatus, ParseError,
-    ReloadPluginsResponse, ReloadSkillsResponse, SettingsAnswer,
+    ContextUsage as ClaudeContextUsage, ControlRequest, InitializeResponse, McpSignInStart,
+    McpStatus, ParseError, ReloadPluginsResponse, ReloadSkillsResponse, SettingsAnswer,
 };
 use cockpit_protocol::{
-    AgentId, ErrorBody, ErrorCode, ResponseBody, SetModeParams, SetModelParams,
+    AgentId, ErrorBody, ErrorCode, McpSignIn, ResponseBody, SetModeParams, SetModelParams,
 };
 use serde_json::Value;
 
@@ -24,6 +24,7 @@ impl ControlPurpose {
             | Self::SetModel { reply, .. }
             | Self::ContextUsage(reply)
             | Self::McpChanged(reply)
+            | Self::McpSignIn(reply)
             | Self::ReloadSkills { reply, .. }
             | Self::ReloadPlugins { reply, .. }
             | Self::SetMode {
@@ -186,6 +187,11 @@ impl Hub {
                     .map_err(|failure| errors::control_failed(id, failure));
                 agents::respond(reply, result);
             }
+            ControlPurpose::McpSignIn(reply) => {
+                let result = parse_for_client::<McpSignInStart>(id, result)
+                    .map(|start| ResponseBody::McpSignIn(sign_in_of(start)));
+                agents::respond(reply, result);
+            }
             ControlPurpose::ReloadSkills { reply, before } => {
                 let result = parse_for_client::<ReloadSkillsResponse>(id, result).map(|answer| {
                     let changes = view.reload_skills(&answer, &before);
@@ -300,6 +306,14 @@ impl Hub {
         self.save_agents();
         self.publish(id);
         agents::respond(reply, Ok(ResponseBody::Done));
+    }
+}
+
+fn sign_in_of(start: McpSignInStart) -> McpSignIn {
+    match start {
+        McpSignInStart::NotNeeded => McpSignIn::NotNeeded,
+        McpSignInStart::InBrowser { url } => McpSignIn::InBrowser { url },
+        McpSignInStart::Callback { url, port } => McpSignIn::Callback { url, port },
     }
 }
 

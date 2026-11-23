@@ -31,6 +31,7 @@ mod loading;
 mod machines;
 mod markdown;
 mod mcp;
+mod mcp_sign_in;
 mod menu;
 mod messages;
 mod no_daemon;

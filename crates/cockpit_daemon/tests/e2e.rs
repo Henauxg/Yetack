@@ -23,12 +23,12 @@ use cockpit_protocol::{
     ApprovalAnswer, ApprovalDecision, BackgroundTaskId, Base64, Catchup, ClaudeSessionId,
     CommandChanges, CommandKind, CostUsd, CredentialSource, DetailsChange, EditTexts, Effort,
     EffortSource, EnvironmentCredentials, ErrorCode, Event, EventRecord, FileEdit, HistoryParams,
-    Image, ImageMediaType, ItemBody, McpRemoveParams, McpScope, McpServerParams, McpServerStatus,
-    McpToggleAction, McpToggleParams, MoveParams, PROTOCOL_VERSION, PendingId, PermissionMode,
-    Plan, PlanAnswer, PlanDecision, PlanUsage, ProcessId, Prompt, PromptDelivery, PromptParams,
-    Question, QuestionAnswer, QueuedPromptParams, ReadFileParams, RenameParams, Request,
-    ResponseBody, Seq, SessionResumeParams, SetEffortParams, SetModeParams, SetModelParams,
-    Settings, SignIn, SignInWait, StartParams, StopProcessParams, StopTaskParams,
+    Image, ImageMediaType, ItemBody, McpCallbackParams, McpRemoveParams, McpScope, McpServerParams,
+    McpServerStatus, McpSignIn, McpToggleAction, McpToggleParams, MoveParams, PROTOCOL_VERSION,
+    PendingId, PermissionMode, Plan, PlanAnswer, PlanDecision, PlanUsage, ProcessId, Prompt,
+    PromptDelivery, PromptParams, Question, QuestionAnswer, QueuedPromptParams, ReadFileParams,
+    RenameParams, Request, ResponseBody, Seq, SessionResumeParams, SetEffortParams, SetModeParams,
+    SetModelParams, Settings, SignIn, SignInWait, StartParams, StopProcessParams, StopTaskParams,
     TerminalInputParams, TerminalOpenParams, TerminalParams, TerminalSize, TranscriptItem,
     TurnOutcome, UsageWindow, WaitingPrompt, WaitingState,
 };
@@ -2872,6 +2872,51 @@ async fn the_daemon_names_itself_in_its_lock_and_stops_when_asked() {
     assert!(status.success(), "{status:?}");
     assert_eq!(cockpit_daemon::lock_holder(&setup.state()).unwrap(), None);
     setup.start();
+}
+
+#[tokio::test]
+async fn an_mcp_sign_in_reaches_claude_and_its_code_stays_out_of_the_raw_log() {
+    let setup = Setup::new();
+    let mut client = setup.connect().await;
+    let agent = client.start(&setup.work(), "hello").await;
+    client.idle(agent).await;
+
+    let sign_in = Request::AgentMcpSignIn(McpServerParams {
+        agent,
+        server: "notes".to_owned(),
+    });
+    assert_eq!(
+        client.ok(sign_in).await,
+        ResponseBody::McpSignIn(McpSignIn::Callback {
+            url: "https://notes.example/authorize?state=s1".to_owned(),
+            port: Some(50123),
+        })
+    );
+    let callback = |callback_url: &str| {
+        Request::AgentMcpSignInCallback(McpCallbackParams {
+            agent,
+            server: "notes".to_owned(),
+            callback_url: callback_url.to_owned(),
+        })
+    };
+    assert_eq!(
+        client
+            .ok(callback(
+                "http://localhost:50123/callback?code=secret-code&state=s1"
+            ))
+            .await,
+        ResponseBody::Done
+    );
+    assert_eq!(
+        client
+            .error_code(callback("http://localhost:50123/callback?state=s1"))
+            .await,
+        ErrorCode::ClaudeFailed
+    );
+
+    let raw = std::fs::read_to_string(setup.state().join("raw/1.jsonl")).unwrap();
+    assert!(raw.contains("mcp_oauth_callback_url"), "{raw}");
+    assert!(!raw.contains("secret-code"), "{raw}");
 }
 
 /// A terminal runs the shell the client picks from the daemon's list, in the agent's folder, takes

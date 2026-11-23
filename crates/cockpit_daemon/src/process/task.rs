@@ -523,7 +523,11 @@ where
             tracing::debug!("dropped a line for claude: its stdin is closed");
             return;
         }
-        self.raw(Direction::ToClaude, &text);
+        match line.redacted().map(|redacted| redacted.to_line()) {
+            None => self.raw(Direction::ToClaude, &text),
+            Some(Ok(redacted)) => self.raw(Direction::ToClaude, &redacted),
+            Some(Err(error)) => tracing::warn!(%error, "cannot encode a redacted line for the log"),
+        }
         if let Some(stdin) = &self.stdin {
             // When the writer has stopped, the process is ending and reports it.
             let _ = stdin.send(text);

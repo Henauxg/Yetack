@@ -5415,6 +5415,76 @@ html.reordering * {
   color: #f7c46b;
 }
 
+/* The sign-in box on a server's page. It folds open and shut by its height, as the reconnect
+   note does, so the facts and tools under it move with it. */
+.mcp-sign-in {
+  display: grid;
+  grid-template-rows: 1fr;
+  animation: note-in var(--motion-in) var(--ease-out) backwards;
+}
+
+.mcp-sign-in.leaving {
+  animation: note-out var(--motion-out) var(--ease-in) forwards;
+}
+
+.mcp-sign-in-body {
+  min-height: 0;
+  overflow: hidden;
+}
+
+.mcp-sign-in-box {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.done-box {
+  padding: 8px 10px;
+  border-radius: 8px;
+  border: 1px solid #2c4a35;
+  background: rgba(74, 194, 107, 0.08);
+  color: var(--green);
+  font-size: 12.5px;
+}
+
+.mcp-sign-in-text {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.mcp-sign-in-text.busy {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.mcp-sign-in-note {
+  margin: 0;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.mcp-sign-in-paste {
+  display: flex;
+  gap: 6px;
+}
+
+.mcp-sign-in-paste .text-field {
+  flex: 1;
+  min-width: 0;
+  min-height: 32px;
+  font-size: 12px;
+}
+
+.mcp-sign-in-paste .text-field[aria-invalid="true"] {
+  border-color: rgba(244, 112, 103, 0.6);
+}
+
+.mcp-sign-in-error {
+  font-size: 12px;
+  color: var(--red);
+}
+
 .mcp-tools,
 .mcp-remove {
   display: flex;

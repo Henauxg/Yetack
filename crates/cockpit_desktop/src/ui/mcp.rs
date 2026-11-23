@@ -12,9 +12,10 @@ use dioxus::prelude::*;
 use crate::connection::{Clock, Cockpit};
 use crate::format;
 use crate::state::mcp_reconnect::{self, Reconnect};
-use crate::state::{McpView, ToolFilter, actions};
+use crate::state::{McpView, ToolFilter, actions, mcp_sign_in};
 use crate::ui::blocks::KEPT_ROWS;
 use crate::ui::icons::{Icon, IconKind};
+use crate::ui::mcp_sign_in::SignInBox;
 use crate::ui::presence::use_presence;
 
 /// The red dot on the folded block or the badge, and the block's one-line summary. A hidden
@@ -271,11 +272,13 @@ fn McpDetail(
         "Claude Code lists the tools once the server connects."
     };
     let removable_scope = server.scope.filter(|scope| format::removable_scope(*scope));
+    let signing_in = mcp_sign_in::shown(&cockpit.state.read(), agent, &name, Instant::now())
+        .is_some_and(|sign_in| sign_in.is_running());
+    let pending = format::mcp_status_class(McpServerStatus::Pending);
     let (status_class, status_label) = if busy {
-        (
-            format::mcp_status_class(McpServerStatus::Pending),
-            "Reconnecting…",
-        )
+        (pending, "Reconnecting…")
+    } else if signing_in {
+        (pending, "Signing in…")
     } else {
         (
             format::mcp_status_class(status),
@@ -301,6 +304,7 @@ fn McpDetail(
                 onclick: move |_| cockpit.update(|state| {
                     state.ui.mcp.detail = None;
                     mcp_reconnect::forget_ended(state, agent);
+                    mcp_sign_in::forget_ended(state, agent);
                 }),
                 Icon { kind: IconKind::ChevronLeft, size: 12 }
                 "All servers"
@@ -374,11 +378,7 @@ fn McpDetail(
                     div { class: "error-box", "{error}" }
                 }
             }
-            if status == McpServerStatus::NeedsAuth {
-                div { class: "warning-box",
-                    "Sign in once with /mcp in a terminal on {machine}. Every agent then uses that sign-in."
-                }
-            }
+            SignInBox { agent, server: name.clone(), status, machine }
             if hidden {
                 span { class: "block-note",
                     "Hidden in every agent. It still runs, but the list and the red dot ignore it, even when it fails."

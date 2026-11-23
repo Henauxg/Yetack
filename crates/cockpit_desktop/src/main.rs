@@ -32,6 +32,8 @@ mod server_daemon;
 #[cfg(unix)]
 mod service;
 mod service_update;
+mod sign_in_listener;
+mod sign_in_tasks;
 mod state;
 mod terminal_feed;
 mod ui;

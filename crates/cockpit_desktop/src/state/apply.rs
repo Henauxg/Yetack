@@ -230,6 +230,10 @@ pub fn apply_catchup(
         .retain(|(agent, _), _| agents.contains_key(agent));
     state
         .ui
+        .mcp_sign_ins
+        .retain(|(agent, _), _| agents.contains_key(agent));
+    state
+        .ui
         .title_edit
         .take_if(|edit| !agents.contains_key(&edit.agent));
     state
@@ -481,6 +485,10 @@ pub fn forget_agent(
     state
         .ui
         .mcp_reconnects
+        .retain(|(owner, _), _| *owner != agent);
+    state
+        .ui
+        .mcp_sign_ins
         .retain(|(owner, _), _| *owner != agent);
     state.ui.file_views.remove(&agent);
     state.ui.terminal_panes.remove(&agent);

@@ -247,6 +247,20 @@ impl<W: Write> Fake<W> {
                 json!({"effective": {}, "sources": [],
                        "applied": {"model": self.model, "effort": effort}})
             }
+            "mcp_authenticate" => json!({
+                "authUrl": "https://notes.example/authorize?state=s1",
+                "requiresUserAction": true, "callbackExpected": true,
+                "redirectScheme": "localhost", "state": "s1", "callbackPort": 50123
+            }),
+            "mcp_oauth_callback_url"
+                if !text(message, &["request", "callbackUrl"]).contains("code=") =>
+            {
+                return self.emit(&json!({"type": "control_response", "response": {
+                    "subtype": "error", "request_id": request_id,
+                    "error": "Invalid callback URL: missing authorization code."
+                }}));
+            }
+            "mcp_oauth_callback_url" => json!({}),
             "mcp_reconnect" | "mcp_toggle" | "stop_task" => json!({}),
             "interrupt" => {
                 self.emit(&json!({"type": "control_response", "response": {

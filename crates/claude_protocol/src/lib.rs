@@ -55,6 +55,7 @@ mod ids;
 mod initialize_response;
 mod input_line;
 mod line_time;
+mod mcp_sign_in_start;
 mod mcp_status;
 mod message;
 mod open_word;
@@ -89,6 +90,7 @@ pub use input_line::{
     UserInput,
 };
 pub use line_time::line_time_millis;
+pub use mcp_sign_in_start::McpSignInStart;
 pub use mcp_status::{
     McpScope, McpServerConfig, McpServerInfo, McpServerState, McpServerStatus, McpStatus, McpTool,
     McpToolAnnotations, McpTransport,

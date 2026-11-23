@@ -109,6 +109,19 @@ fn control_requests() {
             r#"{"subtype":"mcp_toggle","serverName":"notes","enabled":false}"#,
         ),
         (
+            ControlRequest::McpAuthenticate {
+                server_name: "notes".to_owned(),
+            },
+            r#"{"subtype":"mcp_authenticate","serverName":"notes"}"#,
+        ),
+        (
+            ControlRequest::McpOauthCallbackUrl {
+                server_name: "notes".to_owned(),
+                callback_url: "http://localhost:50123/callback?code=c1&state=s1".to_owned(),
+            },
+            r#"{"subtype":"mcp_oauth_callback_url","serverName":"notes","callbackUrl":"http://localhost:50123/callback?code=c1&state=s1"}"#,
+        ),
+        (
             ControlRequest::StopTask {
                 task_id: TaskId::new("task-0001".to_owned()),
             },
@@ -276,4 +289,31 @@ fn keep_planning() {
         line(&InputLine::permission(request_id("req-8"), decision)),
         r#"{"type":"control_response","response":{"subtype":"success","request_id":"req-8","response":{"behavior":"deny","message":"Keep planning: cover the migration too."}}}"#
     );
+}
+
+#[test]
+fn a_redacted_sign_in_callback_loses_its_authorization_code() {
+    let callback = InputLine::control_request(
+        request_id("cockpit-9"),
+        ControlRequest::McpOauthCallbackUrl {
+            server_name: "notes".to_owned(),
+            callback_url: "http://localhost:50123/callback?code=c1&state=s1".to_owned(),
+        },
+    );
+
+    let redacted = callback.redacted().map(|redacted| line(&redacted));
+
+    assert_eq!(
+        redacted.as_deref(),
+        Some(
+            r#"{"type":"control_request","request_id":"cockpit-9","request":{"subtype":"mcp_oauth_callback_url","serverName":"notes","callbackUrl":"http://localhost:50123/callback?(left out)"}}"#
+        )
+    );
+}
+
+#[test]
+fn a_line_without_a_secret_has_no_redacted_form() {
+    let prompt = InputLine::prompt("Fix the login form".to_owned());
+
+    assert_eq!(prompt.redacted(), None);
 }

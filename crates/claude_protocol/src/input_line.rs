@@ -69,6 +69,19 @@ pub enum ControlRequest {
     McpReconnect {
         server_name: String,
     },
+    /// Starts an MCP server's OAuth sign-in. The answer reads as an
+    /// [`McpSignInStart`](crate::McpSignInStart).
+    #[serde(rename_all = "camelCase")]
+    McpAuthenticate {
+        server_name: String,
+    },
+    /// Finishes the sign-in with the address the browser went to once the user approved. Claude
+    /// Code answers once it holds the token, then connects to the server again by itself.
+    #[serde(rename_all = "camelCase")]
+    McpOauthCallbackUrl {
+        server_name: String,
+        callback_url: String,
+    },
     #[serde(rename_all = "camelCase")]
     McpToggle {
         server_name: String,
@@ -152,4 +165,33 @@ impl InputLine {
         line.push('\n');
         Ok(line)
     }
+
+    /// The line as a log may keep it: an MCP sign-in's callback address loses its query, which
+    /// holds the authorization code. `None` when the line holds no secret.
+    pub fn redacted(&self) -> Option<Self> {
+        let Self::ControlRequest(OutgoingControlRequest {
+            request_id,
+            request:
+                ControlRequest::McpOauthCallbackUrl {
+                    server_name,
+                    callback_url,
+                },
+        }) = self
+        else {
+            return None;
+        };
+        let address = callback_url
+            .split_once('?')
+            .map_or(callback_url.as_str(), |(address, _)| address);
+        Some(Self::control_request(
+            request_id.clone(),
+            ControlRequest::McpOauthCallbackUrl {
+                server_name: server_name.clone(),
+                callback_url: format!("{address}?{REDACTED_QUERY}"),
+            },
+        ))
+    }
 }
+
+/// What a logged callback address shows in place of its query.
+const REDACTED_QUERY: &str = "(left out)";

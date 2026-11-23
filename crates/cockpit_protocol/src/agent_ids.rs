@@ -45,6 +45,8 @@ impl Request {
             Self::AgentStopProcess(params) => &mut params.agent,
             Self::AgentMcpReconnect(params) => &mut params.agent,
             Self::AgentMcpToggle(params) => &mut params.agent,
+            Self::AgentMcpSignIn(params) => &mut params.agent,
+            Self::AgentMcpSignInCallback(params) => &mut params.agent,
             Self::AgentReadFile(params) => &mut params.agent,
             Self::AgentListDir(params) => &mut params.agent,
             Self::AgentFindFiles(params) => &mut params.agent,
@@ -89,6 +91,7 @@ impl ResponseBody {
             | Self::Details { .. }
             | Self::ContextUsage(_)
             | Self::McpServers { .. }
+            | Self::McpSignIn(_)
             | Self::Commands { .. }
             | Self::SkillsReloaded { .. }
             | Self::PluginsReloaded { .. }

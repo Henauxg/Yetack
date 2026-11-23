@@ -113,6 +113,21 @@ impl Hub {
                 },
                 ControlPurpose::McpChanged(reply),
             ),
+            Request::AgentMcpSignIn(params) => self.control(
+                params.agent,
+                ControlRequest::McpAuthenticate {
+                    server_name: params.server,
+                },
+                ControlPurpose::McpSignIn(reply),
+            ),
+            Request::AgentMcpSignInCallback(params) => self.control(
+                params.agent,
+                ControlRequest::McpOauthCallbackUrl {
+                    server_name: params.server,
+                    callback_url: params.callback_url,
+                },
+                ControlPurpose::McpChanged(reply),
+            ),
             Request::AgentReloadSkills(params) => {
                 let before = self.commands_of(params.agent);
                 self.control(

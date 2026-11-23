@@ -27,17 +27,17 @@ use cockpit_protocol::{
     FoldersListParams, GitBlame, GitCommitFile, GitFile, GitFileParams, GitIgnore, GitShowParams,
     GitStatus, HistoryPage, HistoryParams, Image, ImageMediaType, ItemBody, ItemId, LineCounts,
     ListDirParams, LoadAverage, LoadHistory, LogEntry, MachineLoad, Mark, MarkParams,
-    McpRemoveParams, McpScope, McpServer, McpServerParams, McpServerStatus, McpToggleAction,
-    McpToggleParams, McpTool, McpTransport, Method, MoveParams, NoticeKind, OlderItems, OnRemote,
-    PROTOCOL_VERSION, PastSession, PendingId, PermissionMode, Plan, PlanAnswer, PlanDecision,
-    PlanUsage, Position, ProcessId, Prompt, PromptDelivery, PromptId, PromptParams, Question,
-    QuestionAnswer, QuestionOption, QueuedPromptParams, RateLimitStatus, ReadFileParams,
-    ReleaseVersion, Remote, RenameParams, Repository, Request, RequestId, ResourceUse,
-    ResponseBody, ResponseResult, Selection, Seq, ServerLoad, ServerMessage, ServerPoint,
-    SessionResumeParams, SessionUse, SetEffortParams, SetModeParams, SetModelParams, Settings,
-    ShellChoice, SignIn, SignInWait, SlashCommand, Snapshot, StartParams, StopProcessParams,
-    StopTaskParams, Subagent, SubagentRun, SubagentStatus, SubagentToolCall, TaskListItem,
-    TaskProgress, TaskStatus, TerminalChange, TerminalExit, TerminalId, TerminalInfo,
+    McpCallbackParams, McpRemoveParams, McpScope, McpServer, McpServerParams, McpServerStatus,
+    McpSignIn, McpToggleAction, McpToggleParams, McpTool, McpTransport, Method, MoveParams,
+    NoticeKind, OlderItems, OnRemote, PROTOCOL_VERSION, PastSession, PendingId, PermissionMode,
+    Plan, PlanAnswer, PlanDecision, PlanUsage, Position, ProcessId, Prompt, PromptDelivery,
+    PromptId, PromptParams, Question, QuestionAnswer, QuestionOption, QueuedPromptParams,
+    RateLimitStatus, ReadFileParams, ReleaseVersion, Remote, RenameParams, Repository, Request,
+    RequestId, ResourceUse, ResponseBody, ResponseResult, Selection, Seq, ServerLoad,
+    ServerMessage, ServerPoint, SessionResumeParams, SessionUse, SetEffortParams, SetModeParams,
+    SetModelParams, Settings, ShellChoice, SignIn, SignInWait, SlashCommand, Snapshot, StartParams,
+    StopProcessParams, StopTaskParams, Subagent, SubagentRun, SubagentStatus, SubagentToolCall,
+    TaskListItem, TaskProgress, TaskStatus, TerminalChange, TerminalExit, TerminalId, TerminalInfo,
     TerminalInputParams, TerminalOpenParams, TerminalParams, TerminalResizeParams, TerminalSize,
     TerminalUpdate, Timestamp, TokenUsage, ToolCall, ToolCallStatus, TranscriptItem, TurnEnd,
     TurnOutcome, Upstream, UsageWindow, UserMessage, WaitingPrompt, WaitingState, WindowUsage,
@@ -681,6 +681,15 @@ fn requests() -> Vec<Request> {
             server: "issues".to_owned(),
             action: McpToggleAction::Disable,
         }),
+        Request::AgentMcpSignIn(McpServerParams {
+            agent,
+            server: "issues".to_owned(),
+        }),
+        Request::AgentMcpSignInCallback(McpCallbackParams {
+            agent,
+            server: "issues".to_owned(),
+            callback_url: "http://localhost:50123/callback?code=c1&state=s1".to_owned(),
+        }),
         Request::AgentCommands(AgentParams { agent }),
         Request::AgentReloadSkills(AgentParams { agent }),
         Request::AgentReloadPlugins(AgentParams { agent }),
@@ -914,6 +923,14 @@ fn response_bodies() -> Vec<ResponseBody> {
         ResponseBody::McpServers {
             servers: mcp_servers(),
         },
+        ResponseBody::McpSignIn(McpSignIn::NotNeeded),
+        ResponseBody::McpSignIn(McpSignIn::InBrowser {
+            url: "https://claude.example/connect".to_owned(),
+        }),
+        ResponseBody::McpSignIn(McpSignIn::Callback {
+            url: "https://issues.example/authorize?state=s1".to_owned(),
+            port: Some(50123),
+        }),
         ResponseBody::Commands {
             commands: commands(),
         },
@@ -1332,6 +1349,8 @@ fn method_names_are_pinned() {
             "agent.mcp_status",
             "agent.mcp_reconnect",
             "agent.mcp_toggle",
+            "agent.mcp_sign_in",
+            "agent.mcp_sign_in_callback",
             "agent.commands",
             "agent.reload_skills",
             "agent.reload_plugins",
@@ -1395,6 +1414,7 @@ fn message_and_body_tags_are_pinned() {
             "details",
             "context_usage",
             "mcp_servers",
+            "mcp_sign_in",
             "commands",
             "skills_reloaded",
             "plugins_reloaded",
@@ -3249,6 +3269,45 @@ fn transcript_pages_and_mcp_toggles_on_the_wire() {
             "server": "issues",
             "action": "enable",
         }}),
+    );
+}
+
+#[test]
+fn mcp_sign_ins_on_the_wire() {
+    assert_wire(
+        &Request::AgentMcpSignIn(McpServerParams {
+            agent: agent(),
+            server: "issues".to_owned(),
+        }),
+        json!({"method": "agent.mcp_sign_in", "params": {"agent": 3, "server": "issues"}}),
+    );
+    assert_wire(
+        &Request::AgentMcpSignInCallback(McpCallbackParams {
+            agent: agent(),
+            server: "issues".to_owned(),
+            callback_url: "http://localhost:50123/callback?code=c1&state=s1".to_owned(),
+        }),
+        json!({"method": "agent.mcp_sign_in_callback", "params": {
+            "agent": 3,
+            "server": "issues",
+            "callback_url": "http://localhost:50123/callback?code=c1&state=s1",
+        }}),
+    );
+    assert_wire(
+        &ResponseBody::McpSignIn(McpSignIn::Callback {
+            url: "https://issues.example/authorize?state=s1".to_owned(),
+            port: Some(50123),
+        }),
+        json!({
+            "type": "mcp_sign_in",
+            "step": "callback",
+            "url": "https://issues.example/authorize?state=s1",
+            "port": 50123,
+        }),
+    );
+    assert_wire(
+        &ResponseBody::McpSignIn(McpSignIn::NotNeeded),
+        json!({"type": "mcp_sign_in", "step": "not_needed"}),
     );
 }
 

@@ -62,6 +62,7 @@ pub enum ResponseBody {
     McpServers {
         servers: Vec<McpServer>,
     },
+    McpSignIn(McpSignIn),
     Commands {
         commands: Vec<SlashCommand>,
     },
@@ -149,6 +150,22 @@ pub enum ResponseBody {
     },
     /// The account added or changed.
     Account(AccountState),
+}
+
+/// How an MCP server's OAuth sign-in goes on, once Claude Code started it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "step", rename_all = "snake_case")]
+pub enum McpSignIn {
+    /// Claude Code needs no sign-in from the user, as it already holds a token.
+    NotNeeded,
+    /// Open `url` in a browser. The sign-in ends there, as for a claude.ai connector: no address
+    /// comes back.
+    InBrowser { url: String },
+    /// Open `url` in a browser. Once the user approves, the browser goes to
+    /// `http://localhost:<port>/callback?code=…`, where Claude Code listens on the agent's machine.
+    /// On another machine, pass that address with `agent.mcp_sign_in_callback`. `port` is `None`
+    /// when Claude Code did not say it.
+    Callback { url: String, port: Option<u16> },
 }
 
 const PDF_EXTENSION: &str = "pdf";

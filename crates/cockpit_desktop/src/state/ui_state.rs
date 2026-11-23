@@ -17,6 +17,7 @@ use super::agent_map::MapView;
 use super::app_state::{self, Loadable};
 use super::find::FindFocus;
 use super::mcp_reconnect::Reconnects;
+use super::mcp_sign_in::SignIns;
 use super::projects::{ProjectKey, RuleKind};
 use super::terminal_menu::MenuSpot;
 use super::terminals::Screen;
@@ -661,6 +662,8 @@ pub struct UiState {
     pub mcp: McpView,
     /// The MCP reconnects running, and the outcomes their servers' pages show.
     pub mcp_reconnects: Reconnects,
+    /// The MCP sign-ins running, and the outcomes their servers' pages show.
+    pub mcp_sign_ins: SignIns,
     /// The agent title the header or a sidebar row shows as a text field.
     pub title_edit: Option<TitleEdit>,
     /// The notes at the bottom left: errors, and what an action did.
@@ -719,6 +722,7 @@ impl Default for UiState {
             file_views: BTreeMap::new(),
             mcp: McpView::default(),
             mcp_reconnects: Reconnects::new(),
+            mcp_sign_ins: SignIns::new(),
             title_edit: None,
             errors: Vec::new(),
             next_error: 0,
@@ -838,9 +842,11 @@ impl UiState {
         self.badge = None;
         self.mcp.detail = None;
         self.mcp.filter = ToolFilter::All;
-        // The server pages close: their outcomes go, the reconnects still running stay.
+        // The server pages close: their outcomes go, the reconnects and sign-ins still running
+        // stay.
         self.mcp_reconnects
             .retain(|_, reconnect| reconnect.is_busy());
+        self.mcp_sign_ins.retain(|_, sign_in| sign_in.is_running());
     }
 
     /// Closes the dialog. The "Accounts" and "Add an account" dialogs go back to the new agent

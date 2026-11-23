@@ -155,6 +155,9 @@ A card sends its answer once. The daemon takes a repeat of an item's answer as d
 Their answers, `SkillsReloaded` and `PluginsReloaded`, count the skills, or the plugins and the errors loading them, and name the commands the reload added or removed (`CommandChanges`).
 The new list of commands goes to every client in a `CommandsChanged` event.
 
+`agent.mcp_sign_in` starts a server's OAuth sign-in in the agent's `claude` (`mcp_authenticate`), and its answer `McpSignIn` holds the link of the sign-in page.
+`agent.mcp_sign_in_callback` passes on the address the browser went back to, which carries the authorization code (`mcp_oauth_callback_url`). Claude Code answers once it holds the token, and connects to the server again by itself.
+
 `agent.read_file`, `agent.list_dir` and `agent.find_files` reach any file the daemon's user can read, as an IDE does, since the agent's commands already can.
 A path with `..` is refused.
 A relative name is also searched for in each git checkout that holds a file the agent read or changed, unless that checkout is `/` or holds the home folder.
@@ -276,7 +279,7 @@ A client that reads too slowly is disconnected rather than buffered without boun
 
 ### Store
 
-Everything lives in `$XDG_STATE_HOME/yetack/`: the socket, `serve.lock`, `agents.json`, `settings.json` (the accounts included), and for each agent its events, its latest details and every line exchanged with `claude`.
+Everything lives in `$XDG_STATE_HOME/yetack/`: the socket, `serve.lock`, `agents.json`, `settings.json` (the accounts included), and for each agent its events, its latest details and every line exchanged with `claude`. An MCP sign-in's callback address is logged without its query, which holds the authorization code.
 `serve.lock` is held while a daemon runs, so a second daemon refuses to start and a leftover socket is safe to delete (see [The holder of `serve.lock`](#the-holder-of-servelock)).
 The daemon leaves the umask alone, since `claude` and the agents' commands inherit it. It creates folders with mode 700 and files with mode 600. The folder protects the socket until the socket's mode is set, right after the bind.
 
@@ -543,6 +546,11 @@ The daemon in the app has no socket to check (see [The daemon in the app](#the-d
 - **Agent order**: grouped by machine, the sidebar shows the daemon's order. A move sends `agent.move`, shows at once, and goes back when the daemon refuses it. A page script follows the drag (`ui/reorder.rs`), and Rust hears of it once, on release.
 - **Block order**: the floating blocks follow one order for every agent (`blocks.order` in the preferences). Alt+Up and Alt+Down on a focused head move its block: the page script leaves those keys to the head.
 - **MCP reconnect** (`state/mcp_reconnect.rs`): the daemon answers `agent.mcp_reconnect` once Claude Code has tried, without the outcome. So the app then asks `agent.mcp_status` and shows the server's status.
+- **MCP sign-in** (`state/mcp_sign_in.rs`, `sign_in_tasks.rs`, `sign_in_listener.rs`, `ui/mcp_sign_in.rs`): a server that needs a sign-in shows a "Sign in" box. The app opens the link of `agent.mcp_sign_in` in the browser, which goes back to `http://localhost:<port>/callback?code=…&state=…` once the user approves.
+  - For an agent on this computer, `claude` listens on that port and takes the code itself.
+  - For an agent on another machine, or of this computer's daemon reached over SSH, the app listens on `127.0.0.1:<port>` and passes the address on with `agent.mcp_sign_in_callback`. It takes only an address whose `state` is the link's, and reads each connection on its own for at most 5 seconds. When the port is taken, the box asks to paste the address.
+  - The app asks `agent.mcp_status` every 2 seconds until the server connects. It gives up after 10 minutes in the browser, or 30 seconds after the token. Cancel, a new attempt or the end of the wait stops the listener within a second.
+  - One loop (`sign_in_tasks::drive`) serves every sign-in: it reads the state every 250 ms, and changes it only when a page, a listener or a status request is due.
 - **Reloads** (`state/reload.rs`): the "/" palette lists `/reload-skills` and `/reload-plugins` among the commands, whether Claude Code lists them or not, and leaves out Claude Code's own entries of those names. They match by their name alone. A pick sends `agent.reload_skills` or `agent.reload_plugins` at once, and drops the "/" word typed for it. A message that is one of them alone sends the request too, in place of a prompt, and the draft keeps its images and quotes. An info note says what the reload found: "Reloaded plugins: 3 plugins, 1 error. New: /notes:search."
   An exited agent lists them turned off, and a pick shows a note that asks to resume the agent. The new agent dialog's palette leaves them out, since the agent has not started.
 - **Sidebar rows**: an agent that finishes out of sight gets the unread dot, as does one marked unread, even the selected one.
@@ -606,13 +614,14 @@ The daemon in the app has no socket to check (see [The daemon in the app](#the-d
 
 ### Measures
 
-- No TCP port anywhere: the daemon listens only on its Unix socket, and the daemon in the app on nothing. The VS Code and Cursor remote servers listen on a 127.0.0.1 port that every user of the machine can reach, protected only by a token file.
+- No TCP port anywhere: the daemon listens only on its Unix socket, and the daemon in the app on nothing. The exception is an MCP sign-in for an agent on another machine: the app listens on the laptop's `127.0.0.1:<port>` until the browser comes back with the sign-in's `state`, for 10 minutes at most. Another user of the laptop who sends a made-up address gets an error page, and one who takes the port first gets only a code that is useless alone (below). The VS Code and Cursor remote servers listen on a 127.0.0.1 port that every user of the machine can reach, protected only by a token file.
 - The state folder has mode 700, and the socket mode 600. On Linux, connecting to a Unix socket needs write permission on its file, so other users cannot connect.
 - The [peer checks](#server-and-peer-checks) turn away another user, and a command an agent runs that simply connects. A process that detaches on purpose (a double fork, `setsid`) gets a new parent and passes. Claude Code's sandbox, set to deny the agents' commands the state folder, is meant to stop it. Yetack does not set that sandbox up, and nobody has checked that it covers a Unix socket.
 - `agent.git_status` lists the filters the checkout's config defines, then runs `git status` with each one turned off. A command the agent runs can make the two see different configs every time, as by serving an included config from a FIFO, and git then runs the filter as the daemon. Only an agent that already runs commands can do it, so it matters only under Claude Code's sandbox, as the socket does.
 - The SSH key is the only login to a server: the app runs `ssh <host> yetack bridge`, with `ForwardAgent=no` (see [Client](#client-cockpit_client)).
 - A prompt goes to `claude` only through stdin (see [Claude Code processes](#claude-code-processes)).
 - The daemon never reads, stores or passes a credential on its own. The file view is the exception, as in an IDE: it shows any file the user opens, and sends it only to the user's app.
+- An MCP sign-in from the app passes one secret through the daemon: the authorization code in the address the browser goes back to. The code works once, and only with the verifier the agent's `claude` keeps in memory (PKCE). The daemon logs that line without the code, and Claude Code keeps the token in the account's folder.
 - A terminal runs a shell as the daemon's user, in the agent's folder: it can do what the agents' commands can. A client names the shell from the daemon's list, and the daemon runs no other program. Its output goes only to clients that passed the peer checks.
 - Dictation records only while the talk key is held, after a tap of it, or after a click on the mic, and keeps the audio in memory. Neither the audio nor its text leaves the computer, but as the message the user sends. The speech model downloads only on the user's click, over HTTPS (rustls) from the pinned addresses, and the app uses a file only once its SHA-256 matches.
 - Choosing a folder in the app trusts it: `claude` runs without a terminal, so it shows no trust prompt, and a repository's project MCP servers and settings start with the agent. The app asks no confirmation.

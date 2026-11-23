@@ -24,7 +24,7 @@ use super::transcript::HistoryState;
 use super::ui_state::{Dialog, FolderAction, OpenFileView};
 use super::{
     accounts, actions, chat_images, chat_reveal, details_updates, file_edits, file_tree, git,
-    mcp_reconnect, page_copy, terminals, working_folder,
+    mcp_reconnect, mcp_sign_in, page_copy, terminals, working_folder,
 };
 use crate::machine::MachineId;
 use crate::path_style;
@@ -79,6 +79,22 @@ pub enum Purpose {
     },
     /// The servers' status once Claude Code tried to reconnect `server`.
     McpReconnected {
+        agent: AgentId,
+        server: String,
+        details_seq: Option<Seq>,
+    },
+    /// `agent.mcp_sign_in` from a server's page, which shows how it goes.
+    McpSignIn {
+        agent: AgentId,
+        server: String,
+    },
+    /// `agent.mcp_sign_in_callback`, with the browser's address for `server`.
+    McpSignInCallback {
+        agent: AgentId,
+        server: String,
+    },
+    /// The servers' status while the app waits for `server` to connect after its sign-in.
+    McpSignInStatus {
         agent: AgentId,
         server: String,
         details_seq: Option<Seq>,
@@ -617,6 +633,41 @@ pub fn apply_response(
             }
             Err(failure) => {
                 mcp_reconnect::checked(state, agent, &server, Err(failure.message), Instant::now());
+            }
+        },
+        Purpose::McpSignIn { agent, server } => {
+            let answer = match result {
+                Ok(ResponseBody::McpSignIn(sign_in)) => Ok(sign_in),
+                Ok(_) => Err(format!("{method} gave an unexpected answer.")),
+                Err(failure) if failure.unknown_method => Err(
+                    "This machine's daemon is older than the app: update it to sign in from here."
+                        .to_owned(),
+                ),
+                Err(failure) => Err(failure.message),
+            };
+            mcp_sign_in::started(state, agent, &server, answer, Instant::now());
+        }
+        Purpose::McpSignInCallback { agent, server } => {
+            let refusal = result.err().map(|failure| failure.message);
+            mcp_sign_in::callback_answered(state, agent, &server, refusal, Instant::now());
+        }
+        Purpose::McpSignInStatus {
+            agent,
+            server,
+            details_seq,
+        } => match result {
+            Ok(ResponseBody::McpServers { servers }) => {
+                mcp_sign_in::polled(state, agent, &server, Ok(&servers), Instant::now());
+                if let Some(details) = details_unchanged_since(state, agent, details_seq) {
+                    details.mcp_servers = servers;
+                }
+            }
+            Ok(_) => {
+                let unexpected = format!("{method} gave an unexpected answer.");
+                mcp_sign_in::polled(state, agent, &server, Err(unexpected), Instant::now());
+            }
+            Err(failure) => {
+                mcp_sign_in::polled(state, agent, &server, Err(failure.message), Instant::now());
             }
         },
         Purpose::Terminals { agent } => match result {

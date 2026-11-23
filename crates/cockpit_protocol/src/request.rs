@@ -89,6 +89,13 @@ pub enum Request {
     AgentMcpReconnect(McpServerParams),
     /// Enables or disables an MCP server for this agent only. Answered by `Done`.
     AgentMcpToggle(McpToggleParams),
+    /// Starts the server's OAuth sign-in in the agent's `claude`. Answered by `McpSignIn`, which
+    /// holds the link to open in a browser.
+    AgentMcpSignIn(McpServerParams),
+    /// Finishes the sign-in with the address the browser went to once the user approved, which
+    /// carries the authorization code. Answered by `Done` once Claude Code holds the token, then
+    /// Claude Code connects to the server again by itself.
+    AgentMcpSignInCallback(McpCallbackParams),
     /// The slash commands and skills, for the palette. Answered by `Commands`.
     AgentCommands(AgentParams),
     /// Has Claude Code read its skill folders again. Answered by `SkillsReloaded`, and a
@@ -214,6 +221,10 @@ pub enum Method {
     AgentMcpReconnect,
     #[strum(serialize = "agent.mcp_toggle")]
     AgentMcpToggle,
+    #[strum(serialize = "agent.mcp_sign_in")]
+    AgentMcpSignIn,
+    #[strum(serialize = "agent.mcp_sign_in_callback")]
+    AgentMcpSignInCallback,
     #[strum(serialize = "agent.commands")]
     AgentCommands,
     #[strum(serialize = "agent.reload_skills")]
@@ -495,6 +506,14 @@ pub enum McpToggleAction {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct McpCallbackParams {
+    pub agent: AgentId,
+    pub server: String,
+    /// The whole address, such as `http://localhost:50123/callback?code=…&state=…`.
+    pub callback_url: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ReadFileParams {
     pub agent: AgentId,
     /// Absolute, or relative to the agent's folder. A relative path that names no file there is
@@ -605,6 +624,8 @@ impl Request {
             Self::AgentMcpStatus(_) => Method::AgentMcpStatus,
             Self::AgentMcpReconnect(_) => Method::AgentMcpReconnect,
             Self::AgentMcpToggle(_) => Method::AgentMcpToggle,
+            Self::AgentMcpSignIn(_) => Method::AgentMcpSignIn,
+            Self::AgentMcpSignInCallback(_) => Method::AgentMcpSignInCallback,
             Self::AgentCommands(_) => Method::AgentCommands,
             Self::AgentReloadSkills(_) => Method::AgentReloadSkills,
             Self::AgentReloadPlugins(_) => Method::AgentReloadPlugins,
@@ -679,6 +700,8 @@ impl Serialize for Request {
             Self::AgentMcpStatus(params) => tagged(method, params, serializer),
             Self::AgentMcpReconnect(params) => tagged(method, params, serializer),
             Self::AgentMcpToggle(params) => tagged(method, params, serializer),
+            Self::AgentMcpSignIn(params) => tagged(method, params, serializer),
+            Self::AgentMcpSignInCallback(params) => tagged(method, params, serializer),
             Self::AgentCommands(params)
             | Self::AgentReloadSkills(params)
             | Self::AgentReloadPlugins(params) => tagged(method, params, serializer),
@@ -751,6 +774,8 @@ impl<'de> Deserialize<'de> for Request {
             Method::AgentMcpStatus => Self::AgentMcpStatus(params(raw)?),
             Method::AgentMcpReconnect => Self::AgentMcpReconnect(params(raw)?),
             Method::AgentMcpToggle => Self::AgentMcpToggle(params(raw)?),
+            Method::AgentMcpSignIn => Self::AgentMcpSignIn(params(raw)?),
+            Method::AgentMcpSignInCallback => Self::AgentMcpSignInCallback(params(raw)?),
             Method::AgentCommands => Self::AgentCommands(params(raw)?),
             Method::AgentReloadSkills => Self::AgentReloadSkills(params(raw)?),
             Method::AgentReloadPlugins => Self::AgentReloadPlugins(params(raw)?),
