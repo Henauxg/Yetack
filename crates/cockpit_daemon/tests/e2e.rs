@@ -3002,3 +3002,28 @@ async fn a_terminal_runs_a_shell_in_the_agents_folder() {
         ErrorCode::NotFound
     );
 }
+
+#[tokio::test]
+async fn a_sign_in_whose_reconnect_fails_still_ends_with_the_token_kept() {
+    let setup = Setup::new();
+    let mut client = setup.connect().await;
+    let agent = client.start(&setup.work(), "hello").await;
+    client.idle(agent).await;
+    let server = "offline".to_owned();
+    client
+        .ok(Request::AgentMcpSignIn(McpServerParams {
+            agent,
+            server: server.clone(),
+        }))
+        .await;
+
+    let finished = client
+        .ok(Request::AgentMcpSignInCallback(McpCallbackParams {
+            agent,
+            server,
+            callback_url: "http://localhost:50123/callback?code=c1&state=s1".to_owned(),
+        }))
+        .await;
+
+    assert_eq!(finished, ResponseBody::Done);
+}

@@ -25,7 +25,6 @@ use url::Url;
 use super::app_state::AppState;
 use super::requests::{Outgoing, Purpose};
 use crate::daemon_label::DaemonPlace;
-use crate::format;
 use crate::machine::MachineId;
 
 /// How often the app asks for the servers' status while it waits for the server to connect.
@@ -49,18 +48,40 @@ pub enum SignIn {
     /// The app passes the browser's address to Claude Code, which asks the server for the token.
     Finishing,
     /// Claude Code holds the token and connects to the server, since `since`.
-    Connecting { since: Instant, poll: Poll },
+    Connecting {
+        since: Instant,
+        poll: Poll,
+        reconnect: ReconnectBy,
+    },
     /// The server connected, at `at`.
     SignedIn { at: Instant },
+    /// Claude Code holds the token, but the server did not connect: its status, and its error if
+    /// it gives one. `None` when the server is not listed.
+    NotConnected {
+        status: Option<McpServerStatus>,
+        error: Option<String>,
+    },
     /// The sign-in stopped, for the reason given.
     Failed(String),
 }
 
 impl SignIn {
-    /// Until the server connects or the sign-in fails.
+    /// Until the server connects or the sign-in ends otherwise.
     pub fn is_running(&self) -> bool {
-        !matches!(self, Self::SignedIn { .. } | Self::Failed(_))
+        !matches!(
+            self,
+            Self::SignedIn { .. } | Self::NotConnected { .. } | Self::Failed(_)
+        )
     }
+}
+
+/// Who reconnects the server once Claude Code holds the token.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReconnectBy {
+    /// The daemon, which answered once Claude Code tried: the next status is the outcome.
+    Daemon,
+    /// Claude Code, on its own and later: the app waits for a while.
+    Claude,
 }
 
 /// The sign-in page is open, and the app waits for the user.
@@ -190,6 +211,7 @@ pub fn started(
         Ok(McpSignIn::NotNeeded) => SignIn::Connecting {
             since: now,
             poll: Poll::default(),
+            reconnect: ReconnectBy::Claude,
         },
         Ok(McpSignIn::InBrowser { url }) => waiting(url, Finish::Connector),
         Ok(McpSignIn::Callback { url, port }) => {
@@ -224,10 +246,14 @@ pub fn is_due(state: &AppState, now: Instant) -> bool {
                 || waiting.poll.due(now)
                 || now.saturating_duration_since(waiting.since) >= BROWSER_WAIT
         }
-        SignIn::Connecting { since, poll } => {
+        SignIn::Connecting { since, poll, .. } => {
             poll.due(now) || now.saturating_duration_since(*since) >= CONNECT_WAIT
         }
-        SignIn::Starting | SignIn::Finishing | SignIn::SignedIn { .. } | SignIn::Failed(_) => false,
+        SignIn::Starting
+        | SignIn::Finishing
+        | SignIn::SignedIn { .. }
+        | SignIn::NotConnected { .. }
+        | SignIn::Failed(_) => false,
     })
 }
 
@@ -242,7 +268,7 @@ pub fn tick(state: &mut AppState, now: Instant) -> (Vec<Outgoing>, Effects) {
     let mut requests = Vec::new();
     let mut effects = Effects::default();
     // Read before the loop, which borrows the sign-ins mutably.
-    let mut not_connected_reasons: BTreeMap<(AgentId, String), String> = state
+    let mut not_connected_outcomes: BTreeMap<(AgentId, String), SignIn> = state
         .ui
         .mcp_sign_ins
         .keys()
@@ -281,14 +307,17 @@ pub fn tick(state: &mut AppState, now: Instant) -> (Vec<Outgoing>, Effects) {
             SignIn::Connecting { since, .. }
                 if now.saturating_duration_since(*since) >= CONNECT_WAIT =>
             {
-                let reason = not_connected_reasons
+                *sign_in = not_connected_outcomes
                     .remove(&(*agent, server.clone()))
                     .unwrap_or_else(|| not_connected(None));
-                *sign_in = SignIn::Failed(reason);
                 continue;
             }
             SignIn::Connecting { poll, .. } => poll,
-            SignIn::Starting | SignIn::Finishing | SignIn::SignedIn { .. } | SignIn::Failed(_) => {
+            SignIn::Starting
+            | SignIn::Finishing
+            | SignIn::SignedIn { .. }
+            | SignIn::NotConnected { .. }
+            | SignIn::Failed(_) => {
                 continue;
             }
         };
@@ -311,15 +340,10 @@ pub fn tick(state: &mut AppState, now: Instant) -> (Vec<Outgoing>, Effects) {
     (requests, effects)
 }
 
-fn not_connected(listed: Option<&McpServer>) -> String {
-    let start = "Signed in, but the server did not connect";
-    let Some(listed) = listed else {
-        return format!("{start}.");
-    };
-    let status = format::mcp_status_label(listed.status);
-    match &listed.error {
-        None => format!("{start}: {status}."),
-        Some(error) => format!("{start}: {status}. {error}"),
+fn not_connected(listed: Option<&McpServer>) -> SignIn {
+    SignIn::NotConnected {
+        status: listed.map(|listed| listed.status),
+        error: listed.and_then(|listed| listed.error.clone()),
     }
 }
 
@@ -334,22 +358,30 @@ pub fn polled(
     let Some(sign_in) = state.ui.mcp_sign_ins.get_mut(&(agent, server.to_owned())) else {
         return;
     };
-    let poll = match sign_in {
-        SignIn::InBrowser(waiting) => &mut waiting.poll,
-        SignIn::Connecting { poll, .. } => poll,
-        SignIn::Starting | SignIn::Finishing | SignIn::SignedIn { .. } | SignIn::Failed(_) => {
+    let (poll, reconnect) = match sign_in {
+        SignIn::InBrowser(waiting) => (&mut waiting.poll, None),
+        SignIn::Connecting {
+            poll, reconnect, ..
+        } => (poll, Some(*reconnect)),
+        SignIn::Starting
+        | SignIn::Finishing
+        | SignIn::SignedIn { .. }
+        | SignIn::NotConnected { .. }
+        | SignIn::Failed(_) => {
             return;
         }
     };
     poll.answered = true;
     // A failed status request leaves the wait as it is: the next one may work.
-    let connected = servers.is_ok_and(|servers| {
-        servers
-            .iter()
-            .any(|listed| listed.name == server && listed.status == McpServerStatus::Connected)
-    });
-    if connected {
+    let Ok(servers) = servers else {
+        return;
+    };
+    let listed = servers.iter().find(|listed| listed.name == server);
+    let status = listed.map(|listed| listed.status);
+    if status == Some(McpServerStatus::Connected) {
         *sign_in = SignIn::SignedIn { at: now };
+    } else if reconnect == Some(ReconnectBy::Daemon) && status != Some(McpServerStatus::Pending) {
+        *sign_in = not_connected(listed);
     }
 }
 
@@ -476,6 +508,7 @@ pub fn callback_answered(
         None => SignIn::Connecting {
             since: now,
             poll: Poll::default(),
+            reconnect: ReconnectBy::Daemon,
         },
     };
 }
@@ -487,17 +520,20 @@ pub fn cancel(state: &mut AppState, agent: AgentId, server: &str) {
 }
 
 /// What the server's page shows of its sign-in at `now`. "Signed in" leaves after a few seconds,
-/// or as soon as the server's status no longer says it is connected.
+/// or as soon as the server's status no longer says it is connected. "Not connected" leaves once
+/// the server connects, as after a reconnect.
 pub fn shown(state: &AppState, agent: AgentId, server: &str, now: Instant) -> Option<SignIn> {
     let sign_in = state.ui.mcp_sign_ins.get(&(agent, server.to_owned()))?;
+    let connected = listed_server(state, agent, server)
+        .map(|listed| listed.status == McpServerStatus::Connected);
     match sign_in {
         SignIn::SignedIn { at }
             if now.saturating_duration_since(*at) >= SIGNED_IN_SHOWS
-                || listed_server(state, agent, server)
-                    .is_some_and(|listed| listed.status != McpServerStatus::Connected) =>
+                || connected == Some(false) =>
         {
             None
         }
+        SignIn::NotConnected { .. } if connected == Some(true) => None,
         sign_in => Some(sign_in.clone()),
     }
 }
@@ -530,12 +566,12 @@ fn listed_server<'state>(
 #[cfg(test)]
 mod tests {
     use cockpit_client::RequestError;
-    use cockpit_protocol::{AgentStatus, ErrorBody, ErrorCode, Method, ResponseBody};
+    use cockpit_protocol::{AgentDetails, AgentStatus, ErrorBody, ErrorCode, Method, ResponseBody};
 
     use super::*;
     use crate::daemon_label::DaemonLabel;
     use crate::state::drafts::Drafts;
-    use crate::state::{apply_response, state_with, summary};
+    use crate::state::{Loadable, apply_response, state_with, summary};
 
     const SERVER: &str = "wiki";
     const URL: &str = "https://wiki.example/authorize?state=s1";
@@ -813,10 +849,85 @@ mod tests {
 
         assert_eq!(
             sign_in(&state, local()),
-            Some(&SignIn::Failed(
-                "Signed in, but the server did not connect.".to_owned()
-            ))
+            Some(&SignIn::NotConnected {
+                status: None,
+                error: None,
+            })
         );
+    }
+
+    #[test]
+    fn the_status_after_the_daemons_reconnect_is_the_outcome() {
+        let at = Instant::now();
+        let mut state = in_browser(remote(), at);
+        received(&mut state, remote(), SERVER, at, CALLBACK.to_owned());
+        callback_answered(&mut state, remote(), SERVER, None, at);
+        tick(&mut state, at);
+
+        polled(
+            &mut state,
+            remote(),
+            SERVER,
+            Ok(&[listed(McpServerStatus::NeedsAuth)]),
+            at,
+        );
+
+        assert_eq!(
+            sign_in(&state, remote()),
+            Some(&SignIn::NotConnected {
+                status: Some(McpServerStatus::NeedsAuth),
+                error: None,
+            })
+        );
+        assert!(!any_running(&state));
+    }
+
+    #[test]
+    fn claude_codes_own_reconnect_gets_time_to_finish() {
+        let at = Instant::now();
+        let mut state = local_state();
+        start(&mut state, local(), SERVER);
+        started(&mut state, local(), SERVER, Ok(McpSignIn::NotNeeded), at);
+        tick(&mut state, at);
+
+        polled(
+            &mut state,
+            local(),
+            SERVER,
+            Ok(&[listed(McpServerStatus::NeedsAuth)]),
+            at,
+        );
+
+        assert!(matches!(
+            sign_in(&state, local()),
+            Some(SignIn::Connecting { .. })
+        ));
+    }
+
+    #[test]
+    fn not_connected_leaves_once_the_server_connects() {
+        let mut state = local_state();
+        state.ui.mcp_sign_ins.insert(
+            (local(), SERVER.to_owned()),
+            SignIn::NotConnected {
+                status: Some(McpServerStatus::NeedsAuth),
+                error: None,
+            },
+        );
+        let set = |state: &mut AppState, status| {
+            let details = AgentDetails {
+                mcp_servers: vec![listed(status)],
+                ..AgentDetails::default()
+            };
+            if let Some(entry) = state.agents.get_mut(&local()) {
+                entry.details = Loadable::Loaded(details);
+            }
+        };
+
+        set(&mut state, McpServerStatus::NeedsAuth);
+        assert!(shown(&state, local(), SERVER, Instant::now()).is_some());
+        set(&mut state, McpServerStatus::Connected);
+        assert_eq!(shown(&state, local(), SERVER, Instant::now()), None);
     }
 
     #[test]

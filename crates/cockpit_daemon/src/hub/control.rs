@@ -26,6 +26,7 @@ impl ControlPurpose {
             | Self::McpChanged(reply)
             | Self::McpSignIn(reply)
             | Self::McpSignInFinished { reply, .. }
+            | Self::McpSignInReconnect(reply)
             | Self::ReloadSkills { reply, .. }
             | Self::ReloadPlugins { reply, .. }
             | Self::SetMode {
@@ -198,6 +199,13 @@ impl Hub {
                 Ok(_) => reconnect_after_sign_in = Some((server, reply)),
                 Err(failure) => agents::respond(reply, Err(errors::control_failed(id, failure))),
             },
+            ControlPurpose::McpSignInReconnect(reply) => {
+                if let Err(failure) = result {
+                    tracing::debug!(agent = id.get(), ?failure, "no reconnect after a sign-in");
+                }
+                refresh_mcp = true;
+                agents::respond(reply, Ok(ResponseBody::Done));
+            }
             ControlPurpose::ReloadSkills { reply, before } => {
                 let result = parse_for_client::<ReloadSkillsResponse>(id, result).map(|answer| {
                     let changes = view.reload_skills(&answer, &before);
@@ -227,7 +235,7 @@ impl Hub {
                 ControlRequest::McpReconnect {
                     server_name: server,
                 },
-                ControlPurpose::McpChanged(reply),
+                ControlPurpose::McpSignInReconnect(reply),
             );
         }
         if send_queued {

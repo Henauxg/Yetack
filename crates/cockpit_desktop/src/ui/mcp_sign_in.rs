@@ -8,9 +8,10 @@ use dioxus::dioxus_core::spawn_forever;
 use dioxus::prelude::*;
 
 use crate::connection::{Clock, Cockpit};
+use crate::state::mcp_reconnect;
 use crate::state::mcp_sign_in::{self, Finish, SignIn};
 use crate::ui::presence::use_presence;
-use crate::{browser, sign_in_tasks};
+use crate::{browser, format, sign_in_tasks};
 
 /// What the box shows.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -103,6 +104,19 @@ fn SignInBody(agent: AgentId, server: String, shown: Shown, machine: String) -> 
         Shown::Step(SignIn::SignedIn { .. }) => rsx! {
             p { class: "mcp-sign-in-text", "Signed in." }
         },
+        Shown::Step(SignIn::NotConnected { status, error }) => {
+            let text = not_connected_text(status, error.as_deref());
+            rsx! {
+                p { class: "mcp-sign-in-text", "{text}" }
+                div { class: "card-actions",
+                    button {
+                        class: "button small",
+                        onclick: move |_| cockpit.change(|state| mcp_reconnect::start(state, agent, &server)),
+                        "Reconnect"
+                    }
+                }
+            }
+        }
         Shown::Step(SignIn::Failed(reason)) => rsx! {
             p { class: "mcp-sign-in-text", "Sign-in failed: {reason}" }
             div { class: "card-actions",
@@ -112,6 +126,15 @@ fn SignInBody(agent: AgentId, server: String, shown: Shown, machine: String) -> 
                 "You can also sign in with /mcp in a terminal on {machine}, with this agent's account."
             }
         },
+    }
+}
+
+fn not_connected_text(status: Option<McpServerStatus>, error: Option<&str>) -> String {
+    let start = "Signed in, but the server did not connect";
+    match (status.map(format::mcp_status_label), error) {
+        (None, _) => format!("{start}."),
+        (Some(status), None) => format!("{start}: {status}."),
+        (Some(status), Some(error)) => format!("{start}: {status}. {error}"),
     }
 }
 

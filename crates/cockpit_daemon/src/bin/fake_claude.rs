@@ -261,6 +261,12 @@ impl<W: Write> Fake<W> {
                 }}));
             }
             "mcp_oauth_callback_url" => json!({}),
+            "mcp_reconnect" if text(message, &["request", "serverName"]) == "offline" => {
+                return self.emit(&json!({"type": "control_response", "response": {
+                    "subtype": "error", "request_id": request_id,
+                    "error": "Server status: needs-auth"
+                }}));
+            }
             "mcp_reconnect" | "mcp_toggle" | "stop_task" => json!({}),
             "interrupt" => {
                 self.emit(&json!({"type": "control_response", "response": {

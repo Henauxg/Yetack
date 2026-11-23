@@ -190,6 +190,9 @@ pub(crate) enum ControlPurpose {
         server: String,
         reply: Reply,
     },
+    /// The reconnect after a sign-in, answered by `Done` whatever its outcome: the token is kept,
+    /// and the refresh that follows says whether the server connected.
+    McpSignInReconnect(Reply),
     /// `agent.reload_skills`, answered by `SkillsReloaded`. `before` holds the commands as the
     /// request leaves: Claude Code sends the changed ones before it answers.
     ReloadSkills {
