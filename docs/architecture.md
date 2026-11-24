@@ -279,7 +279,7 @@ A client that reads too slowly is disconnected rather than buffered without boun
 
 ### Store
 
-Everything lives in `$XDG_STATE_HOME/yetack/`: the socket, `serve.lock`, `agents.json`, `settings.json` (the accounts included), and for each agent its events, its latest details and every line exchanged with `claude`. An MCP sign-in's callback address is logged without its query, which holds the authorization code.
+Everything lives in `$XDG_STATE_HOME/yetack/`: the socket, `serve.lock`, `agents.json`, `settings.json` (the accounts included), `closed-sessions.json` (the choices of the agents closed before), and for each agent its events, its latest details and every line exchanged with `claude`. An MCP sign-in's callback address is logged without its query, which holds the authorization code.
 `serve.lock` is held while a daemon runs, so a second daemon refuses to start and a leftover socket is safe to delete (see [The holder of `serve.lock`](#the-holder-of-servelock)).
 The daemon leaves the umask alone, since `claude` and the agents' commands inherit it. It creates folders with mode 700 and files with mode 600. The folder protects the socket until the socket's mode is set, right after the bind.
 
@@ -305,7 +305,11 @@ Before the stop, the app asks which agents may hold a scheduled job, which ends 
 
 ### Past sessions
 
-`sessions.list` lists the newest 100 sessions of all accounts. `sessions.resume` makes an agent that runs with the session's account. When an agent with the session was closed in the last 30 seconds, for the app's undo, the new agent gets the model, effort and permission mode chosen for it (kept in memory).
+`sessions.list` lists the newest 100 sessions of all accounts. `sessions.resume` makes an agent that runs with the session's account, with the choices of the newer of two sources (`resumed_choices` in `hub/agents.rs`):
+- The model, effort and permission mode the session's last agent had at its close. The daemon keeps them for the newest 500 closed sessions, in `closed-sessions.json` (module `hub::closed_choices`), so they outlive it. A saved session that does not read is left out. The file is written at each close, without waiting for the disk.
+- The permission mode of the session file's last prompt. It wins when no agent of the daemon closed the session, or when the prompt came more than 10 seconds after the close, as when the session went on in a terminal. The 10 seconds are the time the closed `claude` has to exit. An undo always gets the kept choices. Claude Code writes the mode in force on each user line (`permissionMode`), with its `timestamp`. Only user lines count: Claude Code also writes a `permission-mode` line, which a `claude -p` run copies again at its exit without updating it. The model and effort then stay the defaults: the file records the model a reply used, not whether the user picked it.
+
+The bypass permissions mode comes back only for the app's undo, a resume within 30 seconds of the close. A later resume gives the default mode, so that it never skips the permission checks unasked. From the file, the plan mode gives the default mode too, since the file does not record a plan's approval. An unknown mode name gives the default mode. A recorded default mode goes as `--permission-mode=default`: without the flag, the settings' default mode would apply.
 A fork names the session it forks until its `claude` reports its own, so `sessions.resume` of that session never opens the fork: it resumes the agent that has the session, or makes a new one.
 It reads the session file before the agent exists, through the same conversion as `claude`'s stdout (`PastTranscript`).
 The newest 2,000 items show, with ids up to 2,001. The agent numbers its own items from 2,002, so the ids never clash.

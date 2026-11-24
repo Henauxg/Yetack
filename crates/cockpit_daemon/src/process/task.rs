@@ -31,7 +31,7 @@ use crate::store::{Direction, RawLog};
 /// How long Claude Code has to answer one of the daemon's control requests.
 const CONTROL_TIMEOUT: Duration = Duration::from_secs(60);
 /// How long `claude` has to exit after its stdin closes, before it is killed.
-const STOP_TIMEOUT: Duration = Duration::from_secs(10);
+pub(crate) const STOP_TIMEOUT: Duration = Duration::from_secs(10);
 /// Images and long tool results make long lines; a line past this is skipped.
 const MAX_LINE_BYTES: usize = 64 * 1024 * 1024;
 const MAX_STDERR_LINE_BYTES: usize = 64 * 1024;

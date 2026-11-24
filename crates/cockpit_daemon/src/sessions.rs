@@ -16,10 +16,12 @@ use std::io::{BufRead, BufReader, Read, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
-use claude_protocol::{MessageOrigin, OutputLine, TypedCommand};
+use claude_protocol::{
+    MessageOrigin, OutputLine, PermissionMode as ClaudePermissionMode, TypedCommand,
+};
 use cockpit_protocol::{
-    AccountId, ClaudeSessionId, CostUsd, MAX_LINE_BYTES, MAX_TITLE_CHARS, PastSession, Timestamp,
-    TranscriptItem,
+    AccountId, ClaudeSessionId, CostUsd, MAX_LINE_BYTES, MAX_TITLE_CHARS, PastSession,
+    PermissionMode, Timestamp, TranscriptItem,
 };
 use serde::Deserialize;
 use serde_json::Value;
@@ -27,7 +29,7 @@ use strum::{IntoStaticStr, VariantArray};
 
 use crate::read_file;
 use crate::store::PastFile;
-use crate::transcript::PastTranscript;
+use crate::transcript::{PastTranscript, words};
 
 const PROJECTS_FOLDER: &str = "projects";
 const SESSION_EXTENSION: &str = "jsonl";
@@ -59,6 +61,8 @@ const COMPACT_SUMMARY_KEY: &str = "isCompactSummary";
 const ORIGIN_KEY: &str = "origin";
 const COST_STATE_TYPE: &str = "cost-state";
 const TOTAL_COST_KEY: &str = "totalCostUSD";
+const PERMISSION_MODE_KEY: &str = "permissionMode";
+const TIMESTAMP_KEY: &str = "timestamp";
 const TOOL_RESULT_MARK: &str = "\"tool_result\"";
 const NEWLINE: u8 = b'\n';
 
@@ -139,6 +143,10 @@ pub(crate) struct FoundSession {
 pub(crate) struct SessionPast {
     pub(crate) items: Vec<TranscriptItem>,
     pub(crate) file: PastFile,
+    /// The permission mode of the last user line that records one: the mode of the last prompt.
+    pub(crate) mode: Option<PermissionMode>,
+    /// When that line was written.
+    pub(crate) last_prompt_at: Option<Timestamp>,
 }
 
 /// The session with this id, in any project of the account's folder, and the transcript of its
@@ -185,12 +193,25 @@ fn past_within(
     let mut reader = BufReader::new(file.take(limit.unwrap_or(u64::MAX)));
     let mut transcript = PastTranscript::new(folder.to_owned());
     let mut bytes: u64 = 0;
+    let mut mode: Option<PermissionMode> = None;
+    let mut last_prompt_at: Option<Timestamp> = None;
     let mut line = Vec::new();
     loop {
         match next_line(&mut reader, &mut line, MAX_LINE_BYTES) {
             Ok(Some(SessionLine::Whole { bytes: read })) => {
                 bytes = bytes.saturating_add(read);
-                if let Some(shown) = past_line(&line) {
+                let Ok(value) = serde_json::from_slice::<Value>(&line) else {
+                    continue;
+                };
+                // A subagent's lines are not the session's: they neither show nor set its mode.
+                if value.get(SIDECHAIN_KEY) == Some(&Value::Bool(true)) {
+                    continue;
+                }
+                if let Some(word) = user_line_mode(&value) {
+                    mode = Some(mode_named(word));
+                    last_prompt_at = written_at(&value);
+                }
+                if let Some(shown) = past_line(value) {
                     transcript.add(shown);
                 }
             }
@@ -205,21 +226,43 @@ fn past_within(
             session: id.clone(),
             bytes,
         },
+        mode,
+        last_prompt_at,
     }
 }
 
-/// A line of a session file, unless it is a subagent's, which the file does not tie to the call
-/// that started the subagent.
+/// The permission mode a user line records: the one in force when the user sent it. Claude Code
+/// also writes a `permission-mode` line, which a `claude -p` run copies again at its exit without
+/// updating it, so only user lines count.
+fn user_line_mode(line: &Value) -> Option<&Value> {
+    if line.get(TYPE_KEY).and_then(Value::as_str) != Some(USER_TYPE) {
+        return None;
+    }
+    line.get(PERMISSION_MODE_KEY)
+}
+
+/// The mode `word` names. A name this version does not know gives the default mode: an earlier
+/// line's mode, or the settings' default mode, may let more through.
+fn mode_named(word: &Value) -> PermissionMode {
+    word.as_str()
+        .and_then(|word| word.parse::<ClaudePermissionMode>().ok())
+        .map_or(PermissionMode::Default, words::mode_to_cockpit)
+}
+
+/// When Claude Code wrote the line, from its `timestamp`.
+fn written_at(line: &Value) -> Option<Timestamp> {
+    let text = line.get(TIMESTAMP_KEY)?.as_str()?;
+    claude_protocol::line_time_millis(text).map(Timestamp::from_unix_millis)
+}
+
+/// A session file's line, as the transcript shows it. A subagent's lines never reach it: the file
+/// does not tie them to the call that started the subagent.
 ///
 /// A user line marked as meta, or as the summary after a compaction, is what `claude`'s stdout
 /// marks synthetic: context Claude Code adds. The transcript shows it only where a skill's
 /// instructions or a summary is due, or when another source than the user wrote it.
-fn past_line(line: &[u8]) -> Option<OutputLine> {
-    let value: Value = serde_json::from_slice(line).ok()?;
+fn past_line(value: Value) -> Option<OutputLine> {
     let flag = |key| value.get(key) == Some(&Value::Bool(true));
-    if flag(SIDECHAIN_KEY) {
-        return None;
-    }
     let synthetic = flag(META_KEY) || flag(COMPACT_SUMMARY_KEY);
     let mut line = OutputLine::try_from(value).ok()?;
     if synthetic && let OutputLine::User(message) = &mut line {
@@ -988,6 +1031,74 @@ mod tests {
 
         assert_eq!(texts(&read.items), ["user: Before"]);
         assert_eq!(read.file.bytes, limit);
+    }
+
+    /// A prompt line with the mode Claude Code records on it.
+    fn prompt_in(text: &str, mode: &str) -> Value {
+        let mut line = prompt(text);
+        line["permissionMode"] = json!(mode);
+        line
+    }
+
+    /// The session file made of `lines`, read whole.
+    fn read_lines(lines: &[Value]) -> SessionPast {
+        let file: String = lines.iter().map(|line| format!("{line}\n")).collect();
+        past_within(
+            io::Cursor::new(file.into_bytes()),
+            None,
+            Path::new("/srv/work/shop"),
+            &session(FIRST),
+        )
+    }
+
+    #[test]
+    fn the_past_keeps_the_mode_the_sessions_last_user_line_records() {
+        let mut subagents = prompt_in("A subagent's step", "plan");
+        subagents["isSidechain"] = json!(true);
+        // A `claude -p` run writes this line again at its exit, with the mode it read at its start.
+        let copied =
+            json!({"type": "permission-mode", "permissionMode": "plan", "sessionId": FIRST});
+
+        let read = read_lines(&[
+            prompt_in("Start", "default"),
+            prompt_in("Go on", "auto"),
+            subagents,
+            copied,
+            prompt("No mode"),
+        ]);
+
+        assert_eq!(read.mode, Some(PermissionMode::Auto));
+        assert_eq!(
+            texts(&read.items),
+            ["user: Start", "user: Go on", "user: No mode"]
+        );
+    }
+
+    #[test]
+    fn a_mode_this_version_does_not_know_gives_the_default_mode() {
+        let read = read_lines(&[
+            prompt_in("Go on", "auto"),
+            prompt_in("From a newer Claude Code", "someNewMode"),
+        ]);
+
+        assert_eq!(read.mode, Some(PermissionMode::Default));
+    }
+
+    #[test]
+    fn the_past_keeps_when_the_last_prompt_was_written() {
+        let mut first = prompt_in("Start", "default");
+        first["timestamp"] = json!("2026-11-20T13:49:20.000Z");
+        let mut last = prompt_in("Go on", "auto");
+        last["timestamp"] = json!("2026-11-20T13:49:29.059Z");
+        let mut copied = json!({"type": "permission-mode", "permissionMode": "plan"});
+        copied["timestamp"] = json!("2026-11-21T08:00:00.000Z");
+
+        let read = read_lines(&[first, last, copied]);
+
+        assert_eq!(
+            read.last_prompt_at,
+            Some(Timestamp::from_unix_millis(1_795_182_569_059))
+        );
     }
 
     #[test]

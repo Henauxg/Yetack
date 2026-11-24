@@ -228,6 +228,7 @@ impl Hub {
                 (agent.record.id, agent)
             })
             .collect();
+        let closed_choices = ClosedChoices::load(state.closed_sessions_file());
         Self {
             state,
             config,
@@ -244,7 +245,7 @@ impl Hub {
             sign_ins: BTreeMap::new(),
             checking_sign_ins: false,
             terminals: Terminals::default(),
-            closed_choices: ClosedChoices::default(),
+            closed_choices,
             repository_reads: BTreeSet::new(),
             new_agents: BTreeMap::new(),
             fork_copies: Vec::new(),

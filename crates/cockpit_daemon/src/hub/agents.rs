@@ -10,20 +10,21 @@ use claude_protocol::{ControlRequest, InputLine, OutputLine};
 use cockpit_protocol::{
     AccountId, AgentId, AgentStatus, AgentSummary, AnswerParams, COMMAND_PREFIX, ClaudeSessionId,
     CostUsd, EffortSource, ErrorBody, ErrorCode, Event, MAX_TITLE_CHARS, Mark, MarkParams,
-    Position, Prompt, PromptDelivery, PromptId, QueuedPromptParams, RenameParams, Repository,
-    ResponseBody, ResponseResult, SessionUse, SetEffortParams, SignInWait, StartParams,
-    TranscriptItem, WaitingState,
+    PermissionMode, Position, Prompt, PromptDelivery, PromptId, QueuedPromptParams, RenameParams,
+    Repository, ResponseBody, ResponseResult, SessionUse, SetEffortParams, SignInWait, StartParams,
+    Timestamp, TranscriptItem, WaitingState,
 };
 use tokio::runtime::Handle;
 use tokio::time;
 
 use crate::blocking::{self, BlockingError, Scope};
+use crate::hub::closed_choices::{Choices, Found};
 use crate::hub::input::{ControlPurpose, HubInput, Reply};
 use crate::hub::start::{AfterStart, FolderRequest, Opening};
 use crate::hub::state::{Agent, DetailsOut, Hub, QueuedPrompt};
 use crate::hub::{errors, start, state};
-use crate::process::{InterruptedTurn, ProcessEvent, Spawned};
-use crate::sessions::FoundSession;
+use crate::process::{InterruptedTurn, ProcessEvent, STOP_TIMEOUT, Spawned};
+use crate::sessions::{FoundSession, SessionPast};
 use crate::store::{AgentRecord, LogName, ResumeAs};
 use crate::transcript::prompts::TypedSetting;
 use crate::transcript::{AgentView, AnswerError, FollowUp, prompts, words};
@@ -634,11 +635,12 @@ impl Hub {
 
     /// Removes the agent whatever its process does, interrupting a working agent's turn first.
     /// The process handle leaves with the agent, which closes `claude`'s stdin: `claude` ends its
-    /// session file and exits, or is killed after a delay. The agent's choices stay a moment, for
-    /// an undo that resumes its session.
+    /// session file and exits, or is killed after a delay. The agent's choices stay, for a resume
+    /// of its session.
     pub(super) fn close(&mut self, id: AgentId) -> Result<ResponseBody, ErrorBody> {
         let agent = self.agents.get(&id).ok_or(errors::agent_not_found(id))?;
-        self.closed_choices.keep(&agent.record, Instant::now());
+        self.closed_choices
+            .keep(&agent.record, Instant::now(), state::now());
         if agent.process.is_some() && agent.view.is_busy() {
             self.control(id, ControlRequest::Interrupt, ControlPurpose::Closing);
         }
@@ -762,7 +764,8 @@ impl Hub {
             Ok(folder) => folder,
             Err(error) => return respond(reply, Err(error)),
         };
-        let choices = self.closed_choices.find(&session.id, account.id, asked_at);
+        let kept = self.closed_choices.find(&session.id, account.id, asked_at);
+        let choices = resumed_choices(kept, &past);
         let record = AgentRecord {
             id: self.next_agent,
             title: session.title,
@@ -793,6 +796,52 @@ impl Hub {
             .values()
             .find(|agent| has_session(&agent.record, session, account))
             .map(|agent| agent.record.id)
+    }
+}
+
+/// The choices a past session goes on with, from the newer of two sources:
+/// - the model, effort and mode its last agent had at its close, which the daemon keeps;
+/// - the mode of the session file's last prompt, when no agent of the daemon closed it since, as
+///   when the session went on in a terminal.
+///
+/// An undo always gets the kept choices. Later, the file's prompt wins only when it came after the
+/// closed `claude` had to exit, [`STOP_TIMEOUT`] after the close: until then, `claude` may still
+/// write lines of its own.
+///
+/// The bypass permissions mode comes back only for an undo, so that a later resume never skips the
+/// permission checks unasked. From the file, the plan mode gives the default mode too: the file
+/// does not record a plan's approval, after which Claude Code leaves the plan mode. A recorded
+/// mode goes as a flag even when it is the default one: without a flag, `claude` would take the
+/// settings' default mode, which may let more through.
+fn resumed_choices(kept: Option<Found>, past: &SessionPast) -> Choices {
+    let stop_millis = u64::try_from(STOP_TIMEOUT.as_millis()).unwrap_or(u64::MAX);
+    let prompted_after = |closed_at: Timestamp| {
+        let exited = closed_at.unix_millis().saturating_add(stop_millis);
+        past.last_prompt_at
+            .is_some_and(|at| at.unix_millis() > exited)
+    };
+    match kept {
+        Some(kept) if kept.undo || !prompted_after(kept.closed_at) => {
+            let mode = if kept.undo {
+                kept.choices.mode
+            } else {
+                kept.choices.mode.map(|mode| match mode {
+                    PermissionMode::BypassPermissions => PermissionMode::Default,
+                    other => other,
+                })
+            };
+            Choices {
+                mode,
+                ..kept.choices
+            }
+        }
+        _ => Choices {
+            mode: past.mode.map(|mode| match mode {
+                PermissionMode::BypassPermissions | PermissionMode::Plan => PermissionMode::Default,
+                other => other,
+            }),
+            ..Choices::default()
+        },
     }
 }
 
@@ -1061,6 +1110,8 @@ mod tests {
                     session: id,
                     bytes: 0,
                 },
+                mode: None,
+                last_prompt_at: None,
             },
         }
     }

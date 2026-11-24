@@ -1,4 +1,5 @@
-//! The state folder: the lock, `agents.json`, `settings.json`, and the event and raw logs.
+//! The state folder: the lock, `agents.json`, `settings.json`, `closed-sessions.json`, and the event
+//! and raw logs.
 
 mod agents_file;
 mod atomic_file;
@@ -11,6 +12,7 @@ mod store_error;
 pub(crate) use agents_file::{
     AgentRecord, AgentsFile, BootId, PastFile, RecordedProcess, ResumeAs,
 };
+pub(crate) use atomic_file::{read_json, write_bytes_unsynced};
 pub(crate) use daemon_settings::DaemonSettings;
 pub(crate) use event_log::{
     DetailsFrame, EventLogs, LatestDetails, LogName, ReplayRead, details_path, for_each_event,

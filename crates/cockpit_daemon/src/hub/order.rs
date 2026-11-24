@@ -67,8 +67,9 @@ mod tests {
     use tokio::sync::{mpsc, oneshot};
 
     use super::*;
-    use crate::hub::HubInput;
-    use crate::hub::closed_choices::KEPT_FOR;
+    use crate::hub::closed_choices::{Choices, UNDO_FOR};
+    use crate::hub::{HubInput, state};
+    use crate::process::STOP_TIMEOUT;
     use crate::sessions::{FoundSession, SessionPast};
     use crate::store::{AgentRecord, AgentsFile, PastFile, ResumeAs, StateDir};
     use crate::test_script;
@@ -103,16 +104,17 @@ mod tests {
         }
     }
 
-    /// Resumes the past session [`SESSION`] in `folder`, handing the hub its inputs until it
-    /// answers.
+    /// Resumes the past session [`SESSION`] in `folder`, whose file last records the mode
+    /// `recorded`, handing the hub its inputs until it answers.
     async fn resume_session(
         hub: &mut Hub,
         inputs: &mut mpsc::Receiver<HubInput>,
         folder: &Path,
         asked_at: Instant,
+        recorded: Recorded,
     ) -> Result<ResponseBody, ErrorBody> {
         let (reply, answered) = oneshot::channel();
-        let found = past_session(folder);
+        let found = past_session(folder, recorded);
         hub.resume_session(found, Ok(folder.to_owned()), asked_at, reply);
         hub.await_answer(inputs, answered).await
     }
@@ -261,8 +263,24 @@ mod tests {
 
     const SESSION: &str = "11111111-2222-3333-4444-555555555555";
 
-    /// The past session [`SESSION`] in `folder`, found on disk.
-    fn past_session(folder: &Path) -> FoundSession {
+    /// What a past session's file records of its last prompt.
+    #[derive(Debug, Clone, Copy, Default)]
+    struct Recorded {
+        mode: Option<PermissionMode>,
+        at: Option<Timestamp>,
+    }
+
+    impl Recorded {
+        fn mode(mode: PermissionMode) -> Self {
+            Self {
+                mode: Some(mode),
+                at: None,
+            }
+        }
+    }
+
+    /// The past session [`SESSION`] in `folder`, found on disk, whose file records `recorded`.
+    fn past_session(folder: &Path, recorded: Recorded) -> FoundSession {
         let id = ClaudeSessionId::new(SESSION.to_owned());
         FoundSession {
             session: PastSession {
@@ -279,33 +297,116 @@ mod tests {
                     session: id,
                     bytes: 0,
                 },
+                mode: recorded.mode,
+                last_prompt_at: recorded.at,
             },
         }
     }
 
-    /// The choices wait from the close to the resume request, not to the end of the session
-    /// file's reading.
-    #[tokio::test]
-    async fn a_resume_asked_too_late_starts_without_the_choices() {
+    /// Closes an agent on [`SESSION`] that has `choices`, then resumes the session, asked `after`
+    /// the close, from a file that records `recorded`. The new agent's choices.
+    async fn close_then_resume(choices: Choices, after: Duration, recorded: Recorded) -> Choices {
         let temp = tempfile::tempdir().unwrap();
         let (mut hub, mut inputs) = hub(temp.path());
         let first = start(&mut hub, &mut inputs, temp.path(), "First").await;
         if let Some(agent) = hub.agents.get_mut(&first) {
             agent.record.session = Some(ClaudeSessionId::new(SESSION.to_owned()));
-            agent.record.mode = Some(PermissionMode::Auto);
+            agent.record.model = choices.model;
+            agent.record.effort = choices.effort;
+            agent.record.mode = choices.mode;
         }
         hub.close(first).unwrap();
         let now = Instant::now();
-        let late = now
-            .checked_add(KEPT_FOR + Duration::from_secs(1))
-            .unwrap_or(now);
-
-        resume_session(&mut hub, &mut inputs, temp.path(), late)
+        let asked_at = now.checked_add(after).unwrap_or(now);
+        resume_session(&mut hub, &mut inputs, temp.path(), asked_at, recorded)
             .await
             .unwrap();
-        let back = hub.agents.values().next().map(|agent| agent.record.mode);
+        let back = hub.agents.values().next().map(|agent| &agent.record);
+        back.map(|record| Choices {
+            model: record.model.clone(),
+            effort: record.effort,
+            mode: record.mode,
+        })
+        .unwrap_or_default()
+    }
 
-        assert_eq!(back, Some(None));
+    /// Opus with a high effort, in `mode`.
+    fn opus_in(mode: PermissionMode) -> Choices {
+        Choices {
+            model: Some("opus[1m]".to_owned()),
+            effort: Some(Effort::High),
+            mode: Some(mode),
+        }
+    }
+
+    /// A later resume gets the closed agent's choices back, but for the bypass permissions mode,
+    /// which only an undo brings back. The undo's time counts from the close to the resume
+    /// request, not to the end of the session file's reading.
+    #[tokio::test]
+    async fn a_later_resume_gets_the_choices_back_but_not_the_bypass_mode() {
+        let late = UNDO_FOR + Duration::from_secs(1);
+        let bypass = opus_in(PermissionMode::BypassPermissions);
+
+        let later =
+            close_then_resume(opus_in(PermissionMode::Auto), late, Recorded::default()).await;
+        let bypass_later = close_then_resume(bypass.clone(), late, Recorded::default()).await;
+        let bypass_undone = close_then_resume(bypass, Duration::ZERO, Recorded::default()).await;
+
+        assert_eq!(later, opus_in(PermissionMode::Auto));
+        assert_eq!(bypass_later.mode, Some(PermissionMode::Default));
+        assert_eq!(bypass_undone.mode, Some(PermissionMode::BypassPermissions));
+    }
+
+    /// An auto mode prompt the session file records `after_close` after now, the time of the close.
+    fn auto_prompt_in(after_close: Duration) -> Recorded {
+        let at = state::now()
+            .unix_millis()
+            .saturating_add(u64::try_from(after_close.as_millis()).unwrap_or(u64::MAX));
+        Recorded {
+            mode: Some(PermissionMode::Auto),
+            at: Some(Timestamp::from_unix_millis(at)),
+        }
+    }
+
+    /// A prompt the session file records after the close, as when the session went on in a
+    /// terminal, is newer than the closed agent's choices: its mode wins, and the model and effort
+    /// go back to the defaults. A prompt the closed `claude` wrote as it exited does not count,
+    /// and an undo always gets the closed agent's choices.
+    #[tokio::test]
+    async fn a_prompt_after_the_close_wins_over_the_closed_agents_choices() {
+        let late = UNDO_FOR + Duration::from_secs(1);
+        let accept = opus_in(PermissionMode::AcceptEdits);
+        let before = Recorded {
+            mode: Some(PermissionMode::Auto),
+            at: Some(Timestamp::from_unix_millis(0)),
+        };
+
+        let went_on = close_then_resume(
+            accept.clone(),
+            late,
+            auto_prompt_in(Duration::from_secs(3_600)),
+        )
+        .await;
+        let ended_here = close_then_resume(accept.clone(), late, before).await;
+        let while_exiting =
+            close_then_resume(accept.clone(), late, auto_prompt_in(STOP_TIMEOUT / 2)).await;
+        let undone = close_then_resume(
+            accept,
+            Duration::ZERO,
+            auto_prompt_in(Duration::from_secs(3_600)),
+        )
+        .await;
+
+        assert_eq!(
+            went_on,
+            Choices {
+                mode: Some(PermissionMode::Auto),
+                ..Choices::default()
+            }
+        );
+        assert_eq!(ended_here.mode, Some(PermissionMode::AcceptEdits));
+        assert_eq!(while_exiting.mode, Some(PermissionMode::AcceptEdits));
+        assert_eq!(undone, opus_in(PermissionMode::AcceptEdits));
     }
 
     /// An agent closed a moment ago comes back from its session with its choices, even after a
@@ -324,12 +425,25 @@ mod tests {
         hub.close(first).unwrap();
         let claude = hub.config.claude_program.clone();
         hub.config.claude_program = temp.path().join("no-claude");
-        let failed = resume_session(&mut hub, &mut inputs, temp.path(), Instant::now()).await;
+        let failed = resume_session(
+            &mut hub,
+            &mut inputs,
+            temp.path(),
+            Instant::now(),
+            Recorded::default(),
+        )
+        .await;
         hub.config.claude_program = claude;
 
-        resume_session(&mut hub, &mut inputs, temp.path(), Instant::now())
-            .await
-            .unwrap();
+        resume_session(
+            &mut hub,
+            &mut inputs,
+            temp.path(),
+            Instant::now(),
+            Recorded::default(),
+        )
+        .await
+        .unwrap();
         assert!(failed.is_err(), "{failed:?}");
         let back = hub.agents.values().next().map(|agent| &agent.record);
 
@@ -343,6 +457,71 @@ mod tests {
         );
     }
 
+    /// A past session no agent of the daemon closed goes on in the mode its file last records,
+    /// but for the bypass permissions and plan modes, and a closed agent's choice wins over the
+    /// file's older one.
+    #[tokio::test]
+    async fn a_past_session_goes_on_in_the_mode_it_ended_in() {
+        let mut started = Vec::new();
+        for recorded in [
+            PermissionMode::Auto,
+            PermissionMode::Plan,
+            PermissionMode::BypassPermissions,
+            PermissionMode::Default,
+        ] {
+            let temp = tempfile::tempdir().unwrap();
+            let (mut hub, mut inputs) = hub(temp.path());
+            resume_session(
+                &mut hub,
+                &mut inputs,
+                temp.path(),
+                Instant::now(),
+                Recorded::mode(recorded),
+            )
+            .await
+            .unwrap();
+            started.push(
+                hub.agents
+                    .values()
+                    .next()
+                    .and_then(|agent| agent.record.mode),
+            );
+        }
+        let temp = tempfile::tempdir().unwrap();
+        let (mut hub, mut inputs) = hub(temp.path());
+        let first = start(&mut hub, &mut inputs, temp.path(), "First").await;
+        if let Some(agent) = hub.agents.get_mut(&first) {
+            agent.record.session = Some(ClaudeSessionId::new(SESSION.to_owned()));
+            agent.record.mode = Some(PermissionMode::AcceptEdits);
+        }
+        hub.close(first).unwrap();
+        resume_session(
+            &mut hub,
+            &mut inputs,
+            temp.path(),
+            Instant::now(),
+            Recorded::mode(PermissionMode::Auto),
+        )
+        .await
+        .unwrap();
+        let undone = hub
+            .agents
+            .values()
+            .next()
+            .and_then(|agent| agent.record.mode);
+
+        assert_eq!(
+            started,
+            [
+                Some(PermissionMode::Auto),
+                Some(PermissionMode::Default),
+                Some(PermissionMode::Default),
+                Some(PermissionMode::Default)
+            ]
+        );
+        assert_eq!(undone, Some(PermissionMode::AcceptEdits));
+    }
+
     /// A past session made into an agent is a new agent.
     #[tokio::test]
     async fn a_resumed_past_session_goes_on_top() {
@@ -350,7 +529,14 @@ mod tests {
         let (mut hub, mut inputs) = hub(temp.path());
         start(&mut hub, &mut inputs, temp.path(), "First").await;
 
-        let answer = resume_session(&mut hub, &mut inputs, temp.path(), Instant::now()).await;
+        let answer = resume_session(
+            &mut hub,
+            &mut inputs,
+            temp.path(),
+            Instant::now(),
+            Recorded::default(),
+        )
+        .await;
 
         let started = ResponseBody::AgentStarted {
             agent: AgentId::new(2),

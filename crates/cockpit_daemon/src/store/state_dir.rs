@@ -26,6 +26,7 @@ const SOCKET_FILE: &str = "yetack.sock";
 const LOCK_FILE: &str = "serve.lock";
 const AGENTS_FILE: &str = "agents.json";
 const SETTINGS_FILE: &str = "settings.json";
+const CLOSED_SESSIONS_FILE: &str = "closed-sessions.json";
 const EVENTS_FOLDER: &str = "events";
 const RAW_FOLDER: &str = "raw";
 const DETAILS_FOLDER: &str = "details";
@@ -134,6 +135,11 @@ impl StateDir {
 
     pub(crate) fn agents_file(&self) -> PathBuf {
         self.root.join(AGENTS_FILE)
+    }
+
+    /// The file that keeps the choices of closed agents, for a later resume of their session.
+    pub(crate) fn closed_sessions_file(&self) -> PathBuf {
+        self.root.join(CLOSED_SESSIONS_FILE)
     }
 
     pub(crate) fn settings_file(&self) -> PathBuf {
