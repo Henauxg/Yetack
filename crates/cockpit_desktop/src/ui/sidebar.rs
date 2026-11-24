@@ -744,6 +744,7 @@ fn ProjectGroupView(group: ProjectGroup) -> Element {
         (Some(_), false) => "project-swatch",
     };
     let swatch_style = projects_tab::swatch_style(color);
+    let tint = if color.is_some() { " tinted" } else { "" };
     let head = project_head_id(&project);
     let renaming = match &project {
         ProjectKey::Kept(id) => {
@@ -756,20 +757,20 @@ fn ProjectGroupView(group: ProjectGroup) -> Element {
     let (group_id, group_class) = match &project {
         ProjectKey::Kept(id) => (
             Some(format!("{KEPT_GROUP_ID_PREFIX}{}", id.get())),
-            format!("machine-group project-group {PROJECT_DRAG_CLASS}"),
+            format!("machine-group project-group{tint} {PROJECT_DRAG_CLASS}"),
         ),
         ProjectKey::Repository(_) | ProjectKey::None => {
-            (None, "machine-group project-group".to_owned())
+            (None, format!("machine-group project-group{tint}"))
         }
     };
     rsx! {
-        div { id: group_id, class: group_class,
+        div { id: group_id, class: group_class, style: swatch_style,
             div { class: "project-head-row",
                 if let Some(id) = renaming {
                     // A div: a button would take the field's Space and Enter. Without the header's
                     // class, which a drag starts from.
                     div { class: "project-head-field",
-                        span { class: swatch_class, style: swatch_style.clone(), aria_hidden: true }
+                        span { class: swatch_class, aria_hidden: true }
                         ProjectNameField { id, name: name.clone() }
                     }
                 } else {
@@ -793,7 +794,7 @@ fn ProjectGroupView(group: ProjectGroup) -> Element {
                             kind: if folded { IconKind::ChevronRight } else { IconKind::ChevronDown },
                             size: 13,
                         }
-                        span { class: swatch_class, style: swatch_style, aria_hidden: true }
+                        span { class: swatch_class, aria_hidden: true }
                         span { class: if temporary { "machine-name temporary" } else { "machine-name" }, "{name}" }
                         if let Some(machine) = &machine {
                             span { class: "head-machine", title: "Its agents run on {machine.name}",
@@ -1017,6 +1018,14 @@ fn AgentRowButton(row: AgentRow, class: String) -> Element {
                     }),
                     "{row.title}"
                 }
+                RowBell { level: row.notifications }
+                RowActivity { activity: row.activity.clone(), warns: row.warns }
+                if let Some(tasks) = &row.tasks {
+                    span { class: "row-tasks", title: "Tasks done", "{tasks}" }
+                }
+                if let Some(time) = row.time {
+                    RowTimeView { time }
+                }
                 // Always there, so that the style sheet can grow it in and shrink it out.
                 span {
                     class: if row.mark == Mark::ToHandleKept { "row-flag kept" } else { "row-flag" },
@@ -1026,14 +1035,6 @@ fn AgentRowButton(row: AgentRow, class: String) -> Element {
                     if row.mark.is_to_handle() {
                         span { class: "visually-hidden", {mark_label(row.mark)} }
                     }
-                }
-                RowBell { level: row.notifications }
-                RowActivity { activity: row.activity.clone(), warns: row.warns }
-                if let Some(tasks) = &row.tasks {
-                    span { class: "row-tasks", title: "Tasks done", "{tasks}" }
-                }
-                if let Some(time) = row.time {
-                    RowTimeView { time }
                 }
                 if row.pending > 0 {
                     span { class: "pending-badge", "{row.pending}" }
@@ -1048,7 +1049,7 @@ fn AgentRowButton(row: AgentRow, class: String) -> Element {
 }
 
 /// What the agent does, dimmed after its title, whole on hover. Empty, it still takes the line's
-/// free width, which keeps the time at the right edge.
+/// free width, which pushes the time and the marks after it to the right edge.
 #[component]
 fn RowActivity(activity: String, warns: bool) -> Element {
     let class = match (activity.is_empty(), warns) {

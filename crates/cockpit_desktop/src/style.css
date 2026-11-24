@@ -744,6 +744,12 @@ button:disabled {
   background: var(--project);
 }
 
+/* The tint sets a project's rows apart from the next project's. */
+.project-group.tinted {
+  background: color-mix(in srgb, var(--project) 4.5%, #171717);
+  border-color: color-mix(in srgb, var(--project) 25%, #242424);
+}
+
 .project-swatch.temporary {
   border: 1.5px dashed var(--project);
   background: transparent;
@@ -1209,7 +1215,8 @@ button:disabled {
 }
 
 .agent-row:hover {
-  background: #1c1c1c;
+  /* Translucent, so that a hovered row lightens on a tinted panel too. */
+  background: rgba(255, 255, 255, 0.022);
 }
 
 .agent-row.selected {
@@ -1261,25 +1268,29 @@ button:disabled {
   background: var(--text-bright);
 }
 
-/* An agent marked to handle: a violet flag beside the time, and a bar on the row's left edge.
-   The flag is always there, so that it grows in and shrinks out. */
+/* The flag is always in the row, so that it can grow in and shrink out. When it is hidden, its
+   -8px margin cancels the 8px gap of `.row-line`, so that the time stays at the right edge. */
 .row-flag {
   flex: none;
   display: inline-flex;
   width: 0;
+  margin-left: -8px;
   overflow: hidden;
   opacity: 0;
   color: var(--violet);
   transition:
     width var(--motion-out) var(--ease-in),
+    margin-left var(--motion-out) var(--ease-in),
     opacity var(--motion-out) var(--ease-in);
 }
 
 .agent-row.to-handle .row-flag {
   width: 12px;
+  margin-left: 0;
   opacity: 1;
   transition:
     width var(--motion-in) var(--ease-out),
+    margin-left var(--motion-in) var(--ease-out),
     opacity var(--motion-in) var(--ease-out);
 }
 
@@ -1364,10 +1375,6 @@ button:disabled {
   padding: 2px 10px 8px;
   font-size: 11.5px;
   color: var(--dim);
-}
-
-.agent-row.to-handle {
-  box-shadow: inset 3px 0 0 var(--violet);
 }
 
 .machine-to-handle {
@@ -11954,7 +11961,7 @@ label.icon-button,
 
 /* The row keeps its hover while the pointer is on its close button. */
 .row-wrap:hover > .agent-row:not(.selected) {
-  background: #1c1c1c;
+  background: rgba(255, 255, 255, 0.022);
 }
 
 .row-close:hover {
