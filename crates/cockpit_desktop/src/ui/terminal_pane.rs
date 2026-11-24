@@ -45,7 +45,18 @@ const settings = await dioxus.recv();
 const url = URL.createObjectURL(new Blob([source], { type: "text/javascript" }));
 const ghostty = await import(url);
 URL.revokeObjectURL(url);
-await ghostty.init();
+// Each terminal has a ghostty-web instance of its own: the library gives a new terminal a closed
+// one's memory without zeroing it, and the closed one's text would show in it
+// (coder/ghostty-web#141). An instance takes a few milliseconds to load, so the next one loads
+// ahead.
+let spare = await ghostty.Ghostty.load();
+let loading = false;
+// Loads that failed in a row. Past a few, the page loads no more instances.
+let loadFailures = 0;
+const MAX_LOAD_FAILURES = 3;
+// Whether `place` waits for an instance, and the terminal it then shows without the focus.
+let placeOnLoad = false;
+let unfocusedOnLoad = null;
 const send = (message) => dioxus.send(message);
 const css = getComputedStyle(document.documentElement);
 const color = (name, fallback) => css.getPropertyValue(name).trim() || fallback;
@@ -59,6 +70,8 @@ const restarts = new Map();
 const MAX_RESTARTS = 3;
 // The output the daemon keeps of each terminal, in bytes, as `terminal.attach` answers it.
 const KEPT_BYTES = 512 * 1024;
+// Bytes, not lines (coder/ghostty-web#140): about 6400 lines at 110 columns.
+const HISTORY_BYTES = 10 * 1000 * 1000;
 // The largest size the kept output replays at. Any client can give the PTY a size, and
 // ghostty-web would hold a cell for each of a 65535 by 65535 screen. A real pane is far smaller.
 const MAX_COLS = 1000;
@@ -426,18 +439,85 @@ const isShortcut = (event) => shortcut !== null
   && event.shiftKey === shortcut.shift
   && (event.key.length === 1 ? event.key.toLowerCase() : event.key) === shortcut.key;
 
+// Takes the instance loaded ahead, and loads the next one. `null` while none is ready.
+function takeInstance() {
+  const instance = spare;
+  spare = null;
+  loadSpare();
+  return instance;
+}
+
+// Loads the next instance, unless one is ready or loading, or the last loads failed. A `place`
+// that waited for it runs again once it ends.
+function loadSpare() {
+  if (spare !== null || loading || loadFailures >= MAX_LOAD_FAILURES) {
+    return;
+  }
+  loading = true;
+  ghostty.Ghostty.load().then(
+    (instance) => {
+      spare = instance;
+      loadFailures = 0;
+    },
+    (error) => {
+      loadFailures += 1;
+      send({ type: "problem", text: `loading a ghostty-web instance: ${error}` });
+    },
+  ).finally(() => {
+    loading = false;
+    if (placeOnLoad) {
+      placeOnLoad = false;
+      unfocused = unfocusedOnLoad;
+      unfocusedOnLoad = null;
+      try {
+        place();
+      } finally {
+        unfocused = null;
+      }
+    }
+  });
+}
+
+// Opens `term` in `box`, and returns the listeners ghostty-web put on the document meanwhile:
+// `dispose` leaves two of them, which would keep the closed terminal and its memory alive.
+// `open` would also focus the terminal, on a timer that fires once the box shows, even for a
+// terminal that starts again while the user types elsewhere. `place` gives the focus instead.
+function openIn(term, box) {
+  const added = [];
+  const add = document.addEventListener;
+  document.addEventListener = function (type, listener, options) {
+    added.push([type, listener, options]);
+    return add.call(this, type, listener, options);
+  };
+  const focus = term.focus;
+  term.focus = () => {};
+  try {
+    term.open(box);
+  } finally {
+    document.addEventListener = add;
+    term.focus = focus;
+  }
+  return added;
+}
+
+// The terminal's entry, made on first use. `null` while no instance is ready for a new one.
 function terminalFor(agent, terminal) {
   const found = terminals.get(key(agent, terminal));
   if (found !== undefined) {
     return found;
   }
+  const instance = takeInstance();
+  if (instance === null) {
+    return null;
+  }
   const box = document.createElement("div");
   box.className = "terminal-box";
   const term = new ghostty.Terminal({
+    ghostty: instance,
     fontSize: 13,
     fontFamily: color("--mono", "monospace"),
     cursorBlink: true,
-    scrollback: 5000,
+    scrollback: HISTORY_BYTES,
     theme: {
       background: "#121212",
       foreground: "#d8d8d8",
@@ -447,7 +527,7 @@ function terminalFor(agent, terminal) {
   });
   const fit = new ghostty.FitAddon();
   term.loadAddon(fit);
-  term.open(box);
+  const documentListeners = openIn(term, box);
   // Every paste goes through `pasteInto`.
   // ghostty-web's other paste path, on the box itself, sends it as typed keys: the shell would run
   // each line of a pasted text as it comes.
@@ -603,6 +683,7 @@ function terminalFor(agent, terminal) {
     sendInput,
     replaying,
     attach,
+    documentListeners,
     // Whether the terminal took the pane's size once, and the kept output that waits for it.
     fitted: false,
     screen: null,
@@ -642,6 +723,12 @@ function forget(entry) {
   } catch (error) {
     send({ type: "problem", text: `dispose: ${error}` });
   }
+  for (const [type, listener, options] of entry.documentListeners) {
+    document.removeEventListener(type, listener, options);
+  }
+  // A WebView2 page holds 124 instances. The closed one's memory frees, so loads may work again.
+  loadFailures = 0;
+  loadSpare();
 }
 
 // ghostty-web draws every open terminal on each frame, even one out of the page. Only `drawn`
@@ -678,6 +765,15 @@ function place() {
     return;
   }
   const entry = terminalFor(agent, terminal);
+  if (entry === null) {
+    // Another terminal left on screen meanwhile would take the keys typed.
+    screen.replaceChildren();
+    shown = null;
+    drawOnly(null);
+    placeOnLoad = true;
+    unfocusedOnLoad = unfocused ?? unfocusedOnLoad;
+    return;
+  }
   drawOnly(entry);
   // A terminal that moves to another place takes the focus, as one that shows anew does.
   const moved = entry.box.parentElement !== screen;
