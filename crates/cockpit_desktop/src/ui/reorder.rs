@@ -105,8 +105,13 @@ const follow = () => {
   drag.end = before !== null && isEnd(before) ? before.dataset.end : null;
   drag.line.style.display = drag.stays ? "none" : "block";
   drag.line.style.top = `${Math.round(edge - 1)}px`;
+  // The line ends as far from the content's right edge as it starts from its left, whatever
+  // room the list keeps on its right for its scrollbar.
+  const padding = getComputedStyle(drag.list);
+  const span = drag.list.clientWidth - parseFloat(padding.paddingRight)
+    + parseFloat(padding.paddingLeft);
   drag.line.style.left = `${Math.round(box.left + 4)}px`;
-  drag.line.style.width = `${Math.round(box.width - 8)}px`;
+  drag.line.style.width = `${Math.round(span - 8)}px`;
   if (drag.list.scrollTop !== scrolled) {
     frame = requestAnimationFrame(follow);
   }

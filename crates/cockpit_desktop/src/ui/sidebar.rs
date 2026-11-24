@@ -231,6 +231,8 @@ fn mark_label(mark: Mark) -> &'static str {
 
 const TO_HANDLE_CLASS: &str = "to-handle";
 
+const PROJECT_GROUP_CLASS: &str = "machine-group project-group";
+
 /// The bell of an agent whose level is not "All". Always there, so that the style sheet can grow
 /// it in and shrink it out, and it keeps its last bell while it shrinks.
 #[component]
@@ -744,7 +746,6 @@ fn ProjectGroupView(group: ProjectGroup) -> Element {
         (Some(_), false) => "project-swatch",
     };
     let swatch_style = projects_tab::swatch_style(color);
-    let tint = if color.is_some() { " tinted" } else { "" };
     let head = project_head_id(&project);
     let renaming = match &project {
         ProjectKey::Kept(id) => {
@@ -757,11 +758,9 @@ fn ProjectGroupView(group: ProjectGroup) -> Element {
     let (group_id, group_class) = match &project {
         ProjectKey::Kept(id) => (
             Some(format!("{KEPT_GROUP_ID_PREFIX}{}", id.get())),
-            format!("machine-group project-group{tint} {PROJECT_DRAG_CLASS}"),
+            format!("{PROJECT_GROUP_CLASS} {PROJECT_DRAG_CLASS}"),
         ),
-        ProjectKey::Repository(_) | ProjectKey::None => {
-            (None, format!("machine-group project-group{tint}"))
-        }
+        ProjectKey::Repository(_) | ProjectKey::None => (None, PROJECT_GROUP_CLASS.to_owned()),
     };
     rsx! {
         div { id: group_id, class: group_class, style: swatch_style,

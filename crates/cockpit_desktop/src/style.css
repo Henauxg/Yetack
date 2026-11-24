@@ -535,12 +535,15 @@ button:disabled {
   font-size: 12px;
 }
 
+/* The scrollbar stands 6px off the panels, and takes 4px of the sidebar's right padding. */
 .agent-list {
   flex: 1 1 auto;
   min-height: 0;
   display: flex;
   flex-direction: column;
   gap: 1px;
+  margin-right: -4px;
+  padding-right: 6px;
 }
 
 /* With several machines, each is a panel of its own: its edge, not a coloured dot, sets it
@@ -694,11 +697,33 @@ button:disabled {
   font-size: 12px;
 }
 
-/* A project's header: its color, dashed while the project is temporary, and Keep beside it. */
+/* A project's panel: a lighter strip across its top for the header, then its rows. */
+.project-group {
+  padding: 0 4px;
+  border-color: #282828;
+  background: #151515;
+}
+
+/* A project's header: its color, dashed while the project is temporary, and Keep beside it. Its
+   -2px bottom margin cancels the panel's gap above `.group-end`, so a folded panel ends at it. */
 .project-head-row {
   display: flex;
   align-items: center;
   gap: 4px;
+  margin: 0 -4px -2px;
+  padding: 2px;
+  border-radius: 9px;
+  background: #1e1e1e;
+}
+
+.project-group:has(> .row-wrap, > .machine-line) {
+  padding-bottom: 4px;
+}
+
+.project-group:has(> .row-wrap, > .machine-line) > .project-head-row {
+  margin-bottom: 2px;
+  border-bottom: 1px solid #282828;
+  border-radius: 9px 9px 0 0;
 }
 
 .project-head-row .machine-head {
@@ -742,12 +767,6 @@ button:disabled {
   height: 10px;
   border-radius: 3px;
   background: var(--project);
-}
-
-/* The tint sets a project's rows apart from the next project's. */
-.project-group.tinted {
-  background: color-mix(in srgb, var(--project) 4.5%, #171717);
-  border-color: color-mix(in srgb, var(--project) 25%, #242424);
 }
 
 .project-swatch.temporary {
@@ -1215,7 +1234,6 @@ button:disabled {
 }
 
 .agent-row:hover {
-  /* Translucent, so that a hovered row lightens on a tinted panel too. */
   background: rgba(255, 255, 255, 0.022);
 }
 
@@ -1691,6 +1709,7 @@ button:disabled {
   position: fixed;
   z-index: 50;
   height: auto !important;
+  padding-bottom: 0;
   overflow: hidden;
   transform: translateX(24px) scale(1.02);
   border-radius: 6px;
@@ -1703,6 +1722,12 @@ button:disabled {
 
 .project-group.drag-ghost .agent-row {
   display: none;
+}
+
+.project-group.drag-ghost > .project-head-row {
+  margin-bottom: 0;
+  border-bottom: 0;
+  background: transparent;
 }
 
 /* The end of a project group, which a dragged row can land above. */
@@ -11742,6 +11767,7 @@ label.icon-button,
 .palette-item:focus-visible,
 .mcp-row:focus-visible,
 .block-head:focus-visible,
+.machine-head:focus-visible,
 .message-link:focus-visible,
 .folder-option:focus-visible,
 .session-row:focus-visible,
