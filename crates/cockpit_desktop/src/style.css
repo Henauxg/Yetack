@@ -711,7 +711,7 @@ button:disabled {
   align-items: center;
   gap: 4px;
   margin: 0 -4px -2px;
-  padding: 2px;
+  padding: 1px 2px;
   border-radius: 9px;
   background: #1e1e1e;
 }
@@ -729,6 +729,7 @@ button:disabled {
 .project-head-row .machine-head {
   flex: 1 1 auto;
   min-width: 0;
+  padding-block: 5px;
 }
 
 /* A project in a menu: its color, dashed while it is temporary. */
@@ -1560,7 +1561,7 @@ button:disabled {
   min-width: 0;
   align-items: center;
   gap: 7px;
-  padding: 6px 8px;
+  padding: 5px 8px;
 }
 
 .project-name-field {
