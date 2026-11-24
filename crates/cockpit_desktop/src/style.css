@@ -6245,6 +6245,38 @@ html[data-blocks-settling] :is(.chat-scroll, .composer-wrap, .jump-latest) {
   font-size: 12.5px;
 }
 
+/* Why the download failed, in two lines at most: the whole reason shows on hover. */
+.model-failed {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  text-align: right;
+  animation: model-failed-in var(--motion-in) var(--ease-out);
+}
+
+.model-failed-title {
+  color: var(--red);
+  font-size: 12.5px;
+}
+
+.model-failed-why {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+  color: var(--dim);
+  font-size: 11.5px;
+  line-height: 1.35;
+}
+
+@keyframes model-failed-in {
+  from {
+    opacity: 0;
+  }
+}
+
 /* Settings' microphone: a menu button, and its menu under it. */
 .mic-choice-anchor {
   position: relative;

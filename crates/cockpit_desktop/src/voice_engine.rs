@@ -161,6 +161,7 @@ impl Desk {
             // this model's.
             VoiceCommand::LanguageChanged => {
                 self.news = None;
+                self.state.write().language_changed();
                 self.look_at_disk();
                 WorkerOrder::Nothing
             }

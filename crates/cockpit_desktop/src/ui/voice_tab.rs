@@ -8,7 +8,7 @@ use crate::connection::Cockpit;
 use crate::format;
 use crate::keymap::Command;
 use crate::prefs::{AfterDictation, DictationLanguage, LiveTextRefresh, VoicePrefs};
-use crate::state::voice::{DownloadFrom, MicrophoneList, ModelStatus};
+use crate::state::voice::{DownloadFrom, MicrophoneList, ModelRowState, ModelStatus};
 use crate::state::{RefusedChord, settings};
 use crate::ui::icons::{Icon, IconKind};
 use crate::ui::presence::Presence;
@@ -41,9 +41,14 @@ fn model_help(language: DictationLanguage) -> &'static str {
 }
 
 /// A language in the list, with its model and the model's state. A click on the language chooses
-/// it. Only the language chosen offers its model's download.
+/// it. Only the language chosen offers its model's download, and says why its last one failed.
 #[component]
-fn ModelRow(language: DictationLanguage, chosen: bool, status: ModelStatus) -> Element {
+fn ModelRow(
+    language: DictationLanguage,
+    chosen: bool,
+    status: ModelStatus,
+    failed: Option<String>,
+) -> Element {
     let cockpit: Cockpit = use_context();
     let voice: VoiceDesk = use_context();
     let remove = if chosen {
@@ -88,7 +93,14 @@ fn ModelRow(language: DictationLanguage, chosen: bool, status: ModelStatus) -> E
                         }
                     },
                     ModelStatus::Missing => rsx! {
-                        span { class: "model-missing", "Not downloaded" }
+                        if let Some(why) = failed {
+                            span { class: "model-failed", title: "{why}",
+                                span { class: "model-failed-title", "Download failed" }
+                                span { class: "model-failed-why", "{why}" }
+                            }
+                        } else {
+                            span { class: "model-missing", "Not downloaded" }
+                        }
                         if chosen {
                             button {
                                 class: "button small primary",
@@ -237,11 +249,15 @@ pub fn VoiceTab(recording: Option<Command>, refused: Option<RefusedChord>) -> El
         let state = cockpit.state.read();
         (state.prefs.voice.clone(), state.prefs.keys.clone())
     };
-    let (model, other_model, microphones) = {
-        let state = voice.state.read();
-        (state.model, state.other_model, state.microphones.clone())
-    };
     let language = prefs.language;
+    let (rows, microphones) = {
+        let state = voice.state.read();
+        let rows: Vec<(DictationLanguage, ModelRowState)> = DictationLanguage::VARIANTS
+            .iter()
+            .map(|&choice| (choice, state.model_row(choice == language)))
+            .collect();
+        (rows, state.microphones.clone())
+    };
     // Listed at each opening of the tab, so a microphone plugged in since then shows.
     use_hook(move || voice.send(VoiceCommand::ListMicrophones));
     let mut menu = use_signal(|| false);
@@ -319,16 +335,13 @@ pub fn VoiceTab(recording: Option<Command>, refused: Option<RefusedChord>) -> El
                 "Dictate in English, or in one of 25 languages. Each has its own model, which runs on this computer: your voice never leaves it."
             }
             div { class: "model-list", role: "radiogroup", aria_label: "Language",
-                for &choice in DictationLanguage::VARIANTS {
+                for (choice, ModelRowState { status, failed }) in rows {
                     ModelRow {
                         key: "{language_label(choice)}",
                         language: choice,
                         chosen: choice == language,
-                        status: match (choice == language, other_model) {
-                            (true, _) => model,
-                            (false, true) => ModelStatus::Ready,
-                            (false, false) => ModelStatus::Missing,
-                        },
+                        status,
+                        failed,
                     }
                 }
             }

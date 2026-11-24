@@ -21,6 +21,9 @@ pub struct VoiceState {
     pub model: ModelStatus,
     /// The model of the other language is on this computer too.
     pub other_model: bool,
+    /// Why the last download of `model` failed. Its row in Settings says so until the next
+    /// download or a change of language.
+    pub download_failed: Option<String>,
     /// The card above the mic button.
     pub card: Option<VoiceCard>,
     /// The microphones Settings lists, once listed.
@@ -129,6 +132,14 @@ pub enum ModelStatus {
         from: DownloadFrom,
     },
     Ready,
+}
+
+/// What the row of a language in Settings shows of its model.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ModelRowState {
+    pub status: ModelStatus,
+    /// Why the last download of the model failed.
+    pub failed: Option<String>,
 }
 
 /// Where the user started the model's download.
@@ -352,6 +363,7 @@ impl VoiceState {
             total,
             from,
         };
+        self.download_failed = None;
         self.card = Some(VoiceCard::Model);
     }
 
@@ -377,8 +389,33 @@ impl VoiceState {
             }
             Err(why) => {
                 self.model = ModelStatus::Missing;
+                self.download_failed = Some(why.clone());
                 self.card = Some(VoiceCard::Failed(why));
             }
+        }
+    }
+
+    /// The language changed in Settings: the download that failed was the other model's.
+    pub fn language_changed(&mut self) {
+        self.download_failed = None;
+    }
+
+    /// Only the language chosen downloads its model, so only its row says why a download failed.
+    pub fn model_row(&self, chosen: bool) -> ModelRowState {
+        if chosen {
+            return ModelRowState {
+                status: self.model,
+                failed: self.download_failed.clone(),
+            };
+        }
+        let status = if self.other_model {
+            ModelStatus::Ready
+        } else {
+            ModelStatus::Missing
+        };
+        ModelRowState {
+            status,
+            failed: None,
         }
     }
 
@@ -750,6 +787,67 @@ mod tests {
         // A recording that runs still stops from there.
         voice.click(running, now);
         assert_eq!(voice.press(exited, now), WorkerOrder::Stop);
+    }
+
+    #[test]
+    fn a_failed_download_says_why_in_settings_until_the_next_one() {
+        let mut voice = VoiceState::default();
+        voice.download_started(DownloadFrom::Settings, 10);
+        voice.download_ended(Err("no network".to_owned()));
+        let failed = (voice.model, voice.download_failed.clone());
+        voice.download_started(DownloadFrom::Settings, 10);
+        let again = voice.download_failed.clone();
+        voice.download_ended(Ok(()));
+
+        assert_eq!(
+            failed,
+            (ModelStatus::Missing, Some("no network".to_owned()))
+        );
+        assert_eq!(again, None);
+        assert_eq!(
+            (voice.model, voice.download_failed),
+            (ModelStatus::Ready, None)
+        );
+    }
+
+    #[test]
+    fn only_the_chosen_languages_row_says_why_its_download_failed() {
+        let mut voice = VoiceState::default();
+        voice.download_started(DownloadFrom::Settings, 10);
+        voice.download_ended(Err("no network".to_owned()));
+        let (chosen, other) = (true, false);
+
+        assert_eq!(
+            voice.model_row(chosen),
+            ModelRowState {
+                status: ModelStatus::Missing,
+                failed: Some("no network".to_owned()),
+            }
+        );
+        assert_eq!(
+            voice.model_row(other),
+            ModelRowState {
+                status: ModelStatus::Missing,
+                failed: None,
+            }
+        );
+    }
+
+    #[test]
+    fn a_change_of_language_takes_the_failed_download_out_of_settings_but_not_the_card() {
+        let mut voice = VoiceState::default();
+        voice.download_started(DownloadFrom::Settings, 10);
+        voice.download_ended(Err("no network".to_owned()));
+        voice.language_changed();
+
+        assert_eq!(
+            voice.model_row(/* chosen */ true),
+            ModelRowState {
+                status: ModelStatus::Missing,
+                failed: None,
+            }
+        );
+        assert_eq!(voice.card, Some(VoiceCard::Failed("no network".to_owned())));
     }
 
     #[test]
