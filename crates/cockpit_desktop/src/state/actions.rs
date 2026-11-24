@@ -30,7 +30,7 @@ use super::requests::{Outgoing, Purpose, Shift, history_request};
 use super::transcript::HistoryState;
 use super::ui_state::{
     Block, Dialog, FileView, NewAgentForm, NewAgentTab, PaletteOrigin, Popover, Reopening,
-    TitleEdit, TitlePlace, ViewMode, is_markdown,
+    TitleEdit, TitlePlace, Travel, ViewMode, is_markdown,
 };
 use super::utf16_offset::Utf16Offset;
 use super::{
@@ -1560,8 +1560,80 @@ pub fn send_queued(agent: AgentId, prompt: PromptId) -> Vec<Outgoing> {
 
 /// Opens the file view on `path`, at `line` when a link names one, in its tab, in the mode
 /// `opening_mode` picks. The text is read again, since it may have changed, and the text of the
-/// file shown before is dropped: files can be large.
+/// file shown before is dropped: files can be large. The place shown before goes into the
+/// history that Back goes through.
 pub fn open_file(state: &mut AppState, agent: AgentId, path: PathBuf, line: Option<u32>) {
+    open_place(state, agent, path, line, Arrival::Opened);
+}
+
+/// Goes back to the place the file view showed before, or forward again after a Back, in the
+/// mode it had, with the commit it showed. A file whose tab was closed opens again. The terminal
+/// is no place: Back over it shows the file under it.
+pub fn travel_files(state: &mut AppState, agent: AgentId, travel: Travel) {
+    if travel == Travel::Back && terminals::file_view_shows_terminal(state, agent) {
+        state.ui.terminal_tab_shown.remove(&agent);
+        return;
+    }
+    let Some(view) = state.ui.file_views.get_mut(&agent) else {
+        return;
+    };
+    let here = view.to_place();
+    let (from, to) = match travel {
+        Travel::Back => (&mut view.back, &mut view.forward),
+        Travel::Forward => (&mut view.forward, &mut view.back),
+    };
+    let Some(place) = from.pop() else {
+        return;
+    };
+    to.push(here);
+    // The same place at another commit or mode shows at once: its text is the one shown.
+    if place.path == view.path && place.line == view.line {
+        if let Some(mode) = place.mode {
+            view.mode = mode;
+            view.mode_settled = true;
+        }
+        view.take_place_commit(place.commit);
+        state.ui.terminal_tab_shown.remove(&agent);
+        state.ui.popover = None;
+        state.ui.badge = None;
+        return;
+    }
+    open_place(
+        state,
+        agent,
+        place.path,
+        place.line,
+        Arrival::Travelled(place.mode),
+    );
+    if let Some(view) = state.ui.file_views.get_mut(&agent) {
+        view.take_place_commit(place.commit);
+    }
+}
+
+/// Back or Forward in the selected agent's file view.
+pub fn travel_selected(state: &mut AppState, travel: Travel) {
+    if let Some(agent) = state.ui.selected {
+        travel_files(state, agent, travel);
+    }
+}
+
+/// How a place comes to show in the file view.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Arrival {
+    /// A file opened: the place shown before becomes a step of the history.
+    Opened,
+    /// Back or Forward, which set the history themselves, with the place's settled mode.
+    Travelled(Option<ViewMode>),
+}
+
+/// As [`open_file`], for a place that comes as `arrival` says.
+fn open_place(
+    state: &mut AppState,
+    agent: AgentId,
+    path: PathBuf,
+    line: Option<u32>,
+    arrival: Arrival,
+) {
     let Some(entry) = state.agents.get_mut(&agent) else {
         return;
     };
@@ -1572,15 +1644,24 @@ pub fn open_file(state: &mut AppState, agent: AgentId, path: PathBuf, line: Opti
     let changed = entry.has_changed(&path)
         || !file_edits::edits_for(&entry.transcript, &entry.summary.folder, &path).is_empty();
     let shown_mode = state.ui.file_views.get(&agent).map(|view| view.mode);
-    let mode = opening_mode(&path, line, changed, shown_mode);
+    let mode = match arrival {
+        Arrival::Travelled(Some(mode)) => mode,
+        Arrival::Travelled(None) | Arrival::Opened => {
+            opening_mode(&path, line, changed, shown_mode)
+        }
+    };
     entry.files.clear();
     entry.files.insert(path.clone(), Loadable::NotRequested);
     entry.file_freshness = FileFreshness::default();
+    let shown = state.ui.file_views.contains_key(&agent);
     let view = state
         .ui
         .file_views
         .entry(agent)
         .or_insert_with(|| FileView::new(path.clone(), line, mode));
+    if shown && arrival == Arrival::Opened && (view.path != path || view.line != line) {
+        view.remember_place();
+    }
     view.closed.remove(&path);
     if !changed_paths.contains(&path) && !view.opened.contains(&path) {
         view.opened.push(path.clone());
@@ -1588,6 +1669,7 @@ pub fn open_file(state: &mut AppState, agent: AgentId, path: PathBuf, line: Opti
     view.path = path;
     view.line = line;
     view.mode = mode;
+    view.mode_settled = matches!(arrival, Arrival::Travelled(Some(_)));
     state.ui.terminal_tab_shown.remove(&agent);
     state.ui.popover = None;
     state.ui.badge = None;
@@ -1648,6 +1730,12 @@ pub fn pick_file(
         view.opened.retain(|opened| opened != name);
     }
     open_file(state, agent, choice, line);
+    // The list of choices is no place to go back to.
+    if let Some(view) = state.ui.file_views.get_mut(&agent)
+        && view.back.last().is_some_and(|place| place.path == name)
+    {
+        view.back.pop();
+    }
 }
 
 /// Closes a tab. When it is the shown one, the tab after it shows, or the one before it for the
@@ -1706,10 +1794,11 @@ pub fn show_read_file(
     if let Some(view) = state.ui.file_views.get_mut(&agent)
         && view.path == requested
     {
-        // A read again keeps the mode the user may have chosen since the first.
+        // A read again keeps the mode the user may have chosen since the first, and so does a
+        // place whose mode settled.
         let first = old.loaded().is_none();
         let changed = matches!(&read, FileRead::Text { edits, .. } if !edits.is_empty());
-        if first && view.line.is_none() && changed {
+        if first && view.line.is_none() && changed && !view.mode_settled {
             view.mode = opening_mode(&found, None, changed, Some(view.mode));
         }
         // The found file takes the tab of the name asked for.
@@ -1721,6 +1810,12 @@ pub fn show_read_file(
         let mut seen: BTreeSet<PathBuf> = BTreeSet::new();
         view.opened.retain(|opened| seen.insert(opened.clone()));
         view.path = found.clone();
+        view.mode_settled = true;
+        // A link by name opened again added the place it now shows. Drop that step, or Back
+        // would stay on the same place.
+        if view.repeats_last_step() {
+            view.back.pop();
+        }
     }
     entry.files.insert(found, Loadable::Loaded(read));
 }
@@ -1752,8 +1847,14 @@ pub fn close_file_panel(state: &mut AppState, agent: AgentId) {
 
 pub fn set_view_mode(state: &mut AppState, agent: AgentId, mode: ViewMode) {
     if let Some(view) = state.ui.file_views.get_mut(&agent) {
+        let left_commit = view.shown_commit().is_some();
         view.mode = mode;
+        view.mode_settled = true;
         view.commit = None;
+        // As the commit bar's Back: the step the commit added would lead here again.
+        if left_commit && view.repeats_last_step() {
+            view.back.pop();
+        }
     }
 }
 
@@ -2679,10 +2780,10 @@ mod tests {
 
     use cockpit_client::RequestError;
     use cockpit_protocol::{
-        Account, AgentDetails, AskedQuestion, Base64, ChangedFile, CommandKind, CredentialSource,
-        EditTexts, ErrorBody, ErrorCode, FileEdit, HistoryPage, ImageMediaType, Method, NoticeKind,
-        OlderItems, Position, QuestionOption, Repository, ResponseBody, SessionUse, Timestamp,
-        ToolCall, ToolCallStatus, TranscriptItem, UserMessage,
+        Account, AgentDetails, AskedQuestion, Base64, ChangedFile, CommandKind, CommitHash,
+        CredentialSource, EditTexts, ErrorBody, ErrorCode, FileEdit, HistoryPage, ImageMediaType,
+        Method, NoticeKind, OlderItems, Position, QuestionOption, Repository, ResponseBody,
+        SessionUse, Timestamp, ToolCall, ToolCallStatus, TranscriptItem, UserMessage,
     };
 
     use super::*;
@@ -2690,10 +2791,11 @@ mod tests {
     use crate::prefs::{CommentPlacement, ProjectSplit};
     use crate::state::app_state::ConnectionState;
     use crate::state::app_state::tests::{ids, placed, state_with, summary};
+    use crate::state::git;
     use crate::state::grouping::GroupKey;
     use crate::state::requests::{apply_response, needed_requests};
     use crate::state::transcript::KEPT_ITEMS_AWAY;
-    use crate::state::ui_state::{ClosedAgent, NoteKind};
+    use crate::state::ui_state::{ClosedAgent, MAX_FILE_HISTORY, NoteKind};
 
     const AGENT: u32 = 1;
 
@@ -5108,6 +5210,392 @@ mod tests {
         close_tab(&mut state, agent(), Path::new("b.rs"));
         assert_eq!(state.ui.file_view(agent()), None);
         assert!(state.agents[&agent()].files.is_empty());
+    }
+
+    #[test]
+    fn back_and_forward_go_through_the_files_shown_and_a_new_file_ends_the_way_forward() {
+        let mut state = state(AgentStatus::Idle);
+        let shown = |state: &AppState| -> Option<(String, Option<u32>, ViewMode)> {
+            state
+                .ui
+                .file_view(agent())
+                .map(|view| (view.path.display().to_string(), view.line, view.mode))
+        };
+        let path = PathBuf::from;
+        open_file(&mut state, agent(), path("a.md"), None);
+        set_view_mode(&mut state, agent(), ViewMode::WholeFile);
+        open_file(&mut state, agent(), path("b.rs"), Some(7));
+        // A tab switch is a step too, and a jump to another line of the same file.
+        show_file(&mut state, agent(), path("c.rs"));
+        open_file(&mut state, agent(), path("c.rs"), Some(3));
+
+        travel_files(&mut state, agent(), Travel::Back);
+        let back_once = shown(&state);
+        travel_files(&mut state, agent(), Travel::Back);
+        travel_files(&mut state, agent(), Travel::Back);
+        let back_thrice = shown(&state);
+        travel_files(&mut state, agent(), Travel::Back);
+        let at_the_start = shown(&state);
+        travel_files(&mut state, agent(), Travel::Forward);
+        let forward = shown(&state);
+        open_file(&mut state, agent(), path("d.rs"), None);
+        travel_files(&mut state, agent(), Travel::Forward);
+        let forward_after_a_new_file = shown(&state);
+
+        let place = |path: &str, line, mode| Some((path.to_owned(), line, mode));
+        assert_eq!(back_once, place("c.rs", None, ViewMode::WholeFile));
+        // The mode the user chose comes back with the file.
+        assert_eq!(back_thrice, place("a.md", None, ViewMode::WholeFile));
+        assert_eq!(at_the_start, back_thrice);
+        assert_eq!(forward, place("b.rs", Some(7), ViewMode::WholeFile));
+        assert_eq!(
+            forward_after_a_new_file,
+            place("d.rs", None, ViewMode::WholeFile)
+        );
+    }
+
+    #[test]
+    fn back_opens_again_a_file_whose_tab_closed_and_keeps_the_latest_places_only() {
+        let mut state = state(AgentStatus::Idle);
+        let path = PathBuf::from;
+        open_file(&mut state, agent(), path("a.rs"), None);
+        open_file(&mut state, agent(), path("b.rs"), None);
+        close_tab(&mut state, agent(), Path::new("a.rs"));
+
+        travel_files(&mut state, agent(), Travel::Back);
+        let view = state.ui.file_view(agent());
+        let reopened = view.map(|view| (view.path.clone(), view.opened.clone()));
+        for index in 0..=MAX_FILE_HISTORY {
+            open_file(
+                &mut state,
+                agent(),
+                PathBuf::from(format!("{index}.rs")),
+                None,
+            );
+        }
+        let kept = state.ui.file_view(agent()).map(|view| view.back.len());
+
+        assert_eq!(
+            reopened,
+            Some((path("a.rs"), vec![path("b.rs"), path("a.rs")]))
+        );
+        assert_eq!(kept, Some(MAX_FILE_HISTORY));
+    }
+
+    /// The agent edited cart.rs, which opens in its diff: the whole file the user chose comes
+    /// back with Back, though the read again finds the edits.
+    #[test]
+    fn back_keeps_the_mode_chosen_for_an_edited_file() {
+        let mut state = state(AgentStatus::Idle);
+        let full = PathBuf::from("/work/project-1/src/cart.rs");
+        let edited = |state: &mut AppState| {
+            read_answer(
+                state,
+                "src/cart.rs",
+                Ok(ResponseBody::File {
+                    path: Some(full.clone()),
+                    text: "let total = 2;\n".to_owned(),
+                    edits: Some(vec![FileEdit {
+                        path: full.clone(),
+                        old_text: "let total = 1;".to_owned(),
+                        new_text: "let total = 2;".to_owned(),
+                        texts: EditTexts::Kept,
+                    }]),
+                }),
+            );
+        };
+        open_file(&mut state, agent(), full.clone(), None);
+        edited(&mut state);
+        set_view_mode(&mut state, agent(), ViewMode::WholeFile);
+        open_file(&mut state, agent(), PathBuf::from("src/main.rs"), None);
+
+        travel_files(&mut state, agent(), Travel::Back);
+        edited(&mut state);
+
+        let mode = state.ui.file_view(agent()).map(|view| view.mode);
+        assert_eq!(mode, Some(ViewMode::WholeFile));
+    }
+
+    /// `lexer.rs:4` names a file the daemon finds in src/: the link clicked again shows the
+    /// same place, and adds no step.
+    #[test]
+    fn a_link_by_name_clicked_twice_adds_one_step() {
+        let mut state = state(AgentStatus::Idle);
+        let found = |state: &mut AppState| {
+            read_answer(
+                state,
+                "lexer.rs",
+                Ok(ResponseBody::File {
+                    path: Some(PathBuf::from("/work/project-1/src/lexer.rs")),
+                    text: "pub fn lex() {}\n".to_owned(),
+                    edits: Some(Vec::new()),
+                }),
+            );
+        };
+        open_file(&mut state, agent(), PathBuf::from("x.rs"), None);
+        open_file(&mut state, agent(), PathBuf::from("lexer.rs"), Some(4));
+        found(&mut state);
+        open_file(&mut state, agent(), PathBuf::from("lexer.rs"), Some(4));
+        found(&mut state);
+
+        let back = state.ui.file_view(agent()).map(|view| {
+            let paths: Vec<PathBuf> = view.back.iter().map(|place| place.path.clone()).collect();
+            paths
+        });
+        assert_eq!(back, Some(vec![PathBuf::from("x.rs")]));
+    }
+
+    #[test]
+    fn a_commit_shown_is_a_step_back_and_forward_bring_back() {
+        let mut state = state(AgentStatus::Idle);
+        let hash = CommitHash::new(&"a1".repeat(20)).unwrap();
+        open_file(&mut state, agent(), PathBuf::from("a.rs"), None);
+        git::show_commit(&mut state, agent(), Some(hash.clone()));
+        let commit = |state: &AppState| {
+            state
+                .ui
+                .file_view(agent())
+                .map(|view| view.shown_commit().cloned())
+        };
+
+        travel_files(&mut state, agent(), Travel::Back);
+        let back = commit(&state);
+        travel_files(&mut state, agent(), Travel::Forward);
+        let forward = commit(&state);
+
+        assert_eq!(back, Some(None));
+        assert_eq!(forward, Some(Some(hash)));
+    }
+
+    /// The commit bar's own "Back" button leaves the commit: Back then goes to the file before.
+    #[test]
+    fn leaving_a_commit_by_its_bar_undoes_its_step() {
+        let mut state = state(AgentStatus::Idle);
+        let hash = CommitHash::new(&"a1".repeat(20)).unwrap();
+        open_file(&mut state, agent(), PathBuf::from("x.rs"), None);
+        open_file(&mut state, agent(), PathBuf::from("a.rs"), None);
+        git::show_commit(&mut state, agent(), Some(hash));
+        git::show_commit(&mut state, agent(), None);
+
+        travel_files(&mut state, agent(), Travel::Back);
+
+        let shown = state.ui.file_view(agent()).map(|view| view.path.clone());
+        assert_eq!(shown, Some(PathBuf::from("x.rs")));
+    }
+
+    /// a.rs shows a commit, b.rs shows; Back then Forward leave a.rs's commit for its tab.
+    #[test]
+    fn a_travel_keeps_the_commit_of_another_file() {
+        let mut state = state(AgentStatus::Idle);
+        let hash = CommitHash::new(&"a1".repeat(20)).unwrap();
+        open_file(&mut state, agent(), PathBuf::from("a.rs"), None);
+        git::show_commit(&mut state, agent(), Some(hash.clone()));
+        show_file(&mut state, agent(), PathBuf::from("b.rs"));
+        travel_files(&mut state, agent(), Travel::Back);
+        travel_files(&mut state, agent(), Travel::Forward);
+
+        show_file(&mut state, agent(), PathBuf::from("a.rs"));
+
+        let shown = state
+            .ui
+            .file_view(agent())
+            .and_then(|view| view.shown_commit().cloned());
+        assert_eq!(shown, Some(hash));
+    }
+
+    /// cart.rs, left before its read came, comes back in the mode its read picks: its diff.
+    #[test]
+    fn a_place_left_before_its_read_picks_its_mode_again() {
+        let mut state = state(AgentStatus::Idle);
+        let full = PathBuf::from("/work/project-1/src/cart.rs");
+        open_file(&mut state, agent(), full.clone(), None);
+        open_file(&mut state, agent(), PathBuf::from("src/main.rs"), None);
+
+        travel_files(&mut state, agent(), Travel::Back);
+        read_answer(
+            &mut state,
+            "src/cart.rs",
+            Ok(ResponseBody::File {
+                path: Some(full.clone()),
+                text: "let total = 2;\n".to_owned(),
+                edits: Some(vec![FileEdit {
+                    path: full,
+                    old_text: "let total = 1;".to_owned(),
+                    new_text: "let total = 2;".to_owned(),
+                    texts: EditTexts::Kept,
+                }]),
+            }),
+        );
+
+        let mode = state.ui.file_view(agent()).map(|view| view.mode);
+        assert_eq!(mode, Some(ViewMode::Diff));
+    }
+
+    /// Back from a commit to its own file shows the text read already, with no read again.
+    #[test]
+    fn back_within_one_file_reads_it_no_more() {
+        let mut state = state(AgentStatus::Idle);
+        let hash = CommitHash::new(&"a1".repeat(20)).unwrap();
+        open_file(&mut state, agent(), PathBuf::from("a.rs"), None);
+        read_answer(
+            &mut state,
+            "a.rs",
+            Ok(ResponseBody::File {
+                path: Some(PathBuf::from("/work/project-1/a.rs")),
+                text: "fn a() {}\n".to_owned(),
+                edits: Some(Vec::new()),
+            }),
+        );
+        git::show_commit(&mut state, agent(), Some(hash));
+
+        travel_files(&mut state, agent(), Travel::Back);
+
+        let text = state.agents[&agent()].files.get(Path::new("a.rs"));
+        assert!(matches!(text, Some(Loadable::Loaded(_))));
+    }
+
+    fn cart_read(state: &mut AppState, edited: bool) {
+        let full = PathBuf::from("/work/project-1/src/cart.rs");
+        let edits = edited.then(|| FileEdit {
+            path: full.clone(),
+            old_text: "let total = 1;".to_owned(),
+            new_text: "let total = 2;".to_owned(),
+            texts: EditTexts::Kept,
+        });
+        read_answer(
+            state,
+            "src/cart.rs",
+            Ok(ResponseBody::File {
+                path: Some(full),
+                text: "let total = 2;\n".to_owned(),
+                edits: Some(edits.into_iter().collect()),
+            }),
+        );
+    }
+
+    /// Leaving a commit by a mode button, as by the commit bar's Back, undoes its step.
+    #[test]
+    fn leaving_a_commit_by_a_mode_button_undoes_its_step() {
+        let mut state = state(AgentStatus::Idle);
+        let hash = CommitHash::new(&"a1".repeat(20)).unwrap();
+        open_file(&mut state, agent(), PathBuf::from("x.rs"), None);
+        open_file(&mut state, agent(), PathBuf::from("src/cart.rs"), None);
+        cart_read(&mut state, true);
+        git::show_commit(&mut state, agent(), Some(hash));
+        set_view_mode(&mut state, agent(), ViewMode::Diff);
+
+        travel_files(&mut state, agent(), Travel::Back);
+
+        let shown = state.ui.file_view(agent()).map(|view| view.path.clone());
+        assert_eq!(shown, Some(PathBuf::from("x.rs")));
+    }
+
+    /// The whole file chosen comes back within the file, though the file opened again since
+    /// and its read, on its way, finds the edits.
+    #[test]
+    fn a_mode_brought_back_within_the_file_holds_against_the_read_on_its_way() {
+        let mut state = state(AgentStatus::Idle);
+        let hash = CommitHash::new(&"a1".repeat(20)).unwrap();
+        open_file(&mut state, agent(), PathBuf::from("src/cart.rs"), None);
+        cart_read(&mut state, true);
+        set_view_mode(&mut state, agent(), ViewMode::WholeFile);
+        git::show_commit(&mut state, agent(), Some(hash));
+        open_file(&mut state, agent(), PathBuf::from("src/cart.rs"), None);
+
+        travel_files(&mut state, agent(), Travel::Back);
+        cart_read(&mut state, true);
+
+        let mode = state.ui.file_view(agent()).map(|view| view.mode);
+        assert_eq!(mode, Some(ViewMode::WholeFile));
+    }
+
+    /// cart.rs read with no edits shows the whole file; edited since, it comes back with Back in
+    /// the mode its read settled.
+    #[test]
+    fn a_mode_its_read_settled_comes_back() {
+        let mut state = state(AgentStatus::Idle);
+        open_file(&mut state, agent(), PathBuf::from("src/cart.rs"), None);
+        cart_read(&mut state, false);
+        open_file(&mut state, agent(), PathBuf::from("src/main.rs"), None);
+
+        travel_files(&mut state, agent(), Travel::Back);
+        cart_read(&mut state, true);
+
+        let mode = state.ui.file_view(agent()).map(|view| view.mode);
+        assert_eq!(mode, Some(ViewMode::WholeFile));
+    }
+
+    #[test]
+    fn back_to_another_file_brings_its_commit() {
+        let mut state = state(AgentStatus::Idle);
+        let hash = CommitHash::new(&"a1".repeat(20)).unwrap();
+        open_file(&mut state, agent(), PathBuf::from("a.rs"), None);
+        git::show_commit(&mut state, agent(), Some(hash.clone()));
+        open_file(&mut state, agent(), PathBuf::from("b.rs"), None);
+        if let Some(view) = state.ui.file_views.get_mut(&agent()) {
+            view.commit = None;
+        }
+
+        travel_files(&mut state, agent(), Travel::Back);
+
+        let shown = state
+            .ui
+            .file_view(agent())
+            .map(|view| (view.path.clone(), view.shown_commit().cloned()));
+        assert_eq!(shown, Some((PathBuf::from("a.rs"), Some(hash))));
+    }
+
+    #[test]
+    fn the_same_place_or_commit_shown_again_adds_no_step() {
+        let mut state = state(AgentStatus::Idle);
+        let hash = CommitHash::new(&"a1".repeat(20)).unwrap();
+        open_file(&mut state, agent(), PathBuf::from("a.rs"), Some(3));
+        open_file(&mut state, agent(), PathBuf::from("a.rs"), Some(3));
+        git::show_commit(&mut state, agent(), Some(hash.clone()));
+        git::show_commit(&mut state, agent(), Some(hash.clone()));
+        open_file(&mut state, agent(), PathBuf::from("b.rs"), None);
+        open_file(&mut state, agent(), PathBuf::from("c.rs"), None);
+
+        let back = state.ui.file_view(agent()).map(|view| {
+            let steps: Vec<(PathBuf, Option<CommitHash>)> = view
+                .back
+                .iter()
+                .map(|place| (place.path.clone(), place.commit.clone()))
+                .collect();
+            steps
+        });
+
+        // a.rs once without the commit, once with it; b.rs carries none of a.rs's.
+        assert_eq!(
+            back,
+            Some(vec![
+                (PathBuf::from("a.rs"), None),
+                (PathBuf::from("a.rs"), Some(hash)),
+                (PathBuf::from("b.rs"), None),
+            ])
+        );
+    }
+
+    /// A link to mod.rs, which several folders hold, lists them; the pick takes the name's tab,
+    /// and Back goes to the file before the link, without the list or the name's tab.
+    #[test]
+    fn back_after_a_pick_skips_the_list_of_choices() {
+        let mut state = state(AgentStatus::Idle);
+        open_file(&mut state, agent(), PathBuf::from("x.rs"), None);
+        open_file(&mut state, agent(), PathBuf::from("mod.rs"), None);
+        pick_file(
+            &mut state,
+            agent(),
+            Path::new("mod.rs"),
+            PathBuf::from("src/a/mod.rs"),
+            None,
+        );
+
+        travel_files(&mut state, agent(), Travel::Back);
+
+        let view = state.ui.file_view(agent());
+        let shown = view.map(|view| (view.path.clone(), view.opened.contains(&"mod.rs".into())));
+        assert_eq!(shown, Some((PathBuf::from("x.rs"), false)));
     }
 
     /// The loaded messages may not reach back to the edits: the daemon's answer brings them.

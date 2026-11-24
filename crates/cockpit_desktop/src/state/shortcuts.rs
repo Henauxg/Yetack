@@ -10,7 +10,7 @@ use super::drafts::Drafts;
 use super::find::{self, FindPane};
 use super::requests::Outgoing;
 use super::transcript::WaitingKind;
-use super::ui_state::{Dialog, PaletteOrigin, Popover};
+use super::ui_state::{Dialog, PaletteOrigin, Popover, Travel};
 use super::utf16_offset::Utf16Offset;
 use super::{
     accounts, agent_map, blocks_view, file_reread, file_tree, open_file, quotes, terminals,
@@ -119,6 +119,12 @@ fn run(
                 }
             }
         }
+        Command::FileBack if no_dialog && target == KeyTarget::Page => {
+            actions::travel_selected(state, Travel::Back)
+        }
+        Command::FileForward if no_dialog && target == KeyTarget::Page => {
+            actions::travel_selected(state, Travel::Forward)
+        }
         // From anywhere but a text field other than the composer.
         Command::MoveUp if no_dialog && target != KeyTarget::Field => {
             return actions::move_selected(state, Direction::Up);
@@ -130,7 +136,9 @@ fn run(
         | Command::MarkToHandle
         | Command::Rename
         | Command::MoveUp
-        | Command::MoveDown => {}
+        | Command::MoveDown
+        | Command::FileBack
+        | Command::FileForward => {}
     }
     Vec::new()
 }
@@ -524,6 +532,29 @@ mod tests {
         ));
         handle_key(&mut state, &mut drafts, &ctrl("m"));
         assert_eq!(state.ui.dialog, None);
+    }
+
+    /// Option+Left moves by word in the message on macOS: there, Alt+Left goes nowhere.
+    #[test]
+    fn alt_left_goes_back_in_the_file_view_from_the_page_only() {
+        let mut state = state(AgentStatus::Idle, None);
+        let mut drafts = Drafts::default();
+        let agent = AgentId::new(1);
+        actions::open_file(&mut state, agent, "a.rs".into(), None);
+        actions::open_file(&mut state, agent, "b.rs".into(), None);
+        let alt_left = |target| KeyPress {
+            alt: true,
+            ..press("ArrowLeft", target)
+        };
+        let shown = |state: &AppState| state.ui.file_view(agent).map(|view| view.path.clone());
+
+        handle_key(&mut state, &mut drafts, &alt_left(KeyTarget::Composer));
+        let from_the_message = shown(&state);
+        handle_key(&mut state, &mut drafts, &alt_left(KeyTarget::Page));
+        let from_the_page = shown(&state);
+
+        assert_eq!(from_the_message, Some("b.rs".into()));
+        assert_eq!(from_the_page, Some("a.rs".into()));
     }
 
     #[test]

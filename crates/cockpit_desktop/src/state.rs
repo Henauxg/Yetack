@@ -77,7 +77,7 @@ pub use ui_state::{
     Block, BranchCard, ChatReveal, Dialog, FileSearch, FolderAction, FolderList, FormMenu,
     ImageView, MachineEdit, MachineMenu, MachinesView, McpView, MenuSide, NewAgentForm,
     NewAgentTab, NoteKind, OpenFileView, PaletteOrigin, Popover, RefusedChord, RevealPlace,
-    SettingsTab, SettingsView, TabMenuOrigin, TitleEdit, TitlePlace, ToolFilter, ViewMode,
+    SettingsTab, SettingsView, TabMenuOrigin, TitleEdit, TitlePlace, ToolFilter, Travel, ViewMode,
     WorkingFolderForm, is_markdown,
 };
 pub use utf16_offset::Utf16Offset;

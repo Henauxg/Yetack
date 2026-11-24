@@ -9,7 +9,7 @@ use cockpit_protocol::{
     AccountId, AgentId, AgentSummary, ClaudeSessionId, CommitHash, DirListing, Effort, Image,
     ItemId, PermissionMode,
 };
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use strum::{EnumString, IntoStaticStr, VariantArray};
 
 use super::accounts::{AccountsView, AddAccountForm};
@@ -528,6 +528,35 @@ pub struct FileView {
     /// The commit whose change to a file shows, picked from its history, in place of `mode`
     /// while that file shows.
     pub commit: Option<ShownCommit>,
+    /// The places shown before, the latest last, which Back goes to.
+    pub back: Vec<FilePlace>,
+    /// The places Back left, the latest last, which Forward goes to again.
+    pub forward: Vec<FilePlace>,
+    /// The mode is settled: the user chose it, the file's first read came, or Back or Forward
+    /// brought it back. Until then, the first read may turn the view to the diff.
+    pub mode_settled: bool,
+}
+
+/// A place the file view showed: the file, the line a link marked, the mode once settled, and
+/// the commit whose change showed in place of the mode.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FilePlace {
+    pub path: PathBuf,
+    pub line: Option<u32>,
+    /// `None` for a place left before its mode settled: the mode is picked again.
+    pub mode: Option<ViewMode>,
+    pub commit: Option<CommitHash>,
+}
+
+/// The most places the file view's Back goes through, the oldest dropped first.
+pub const MAX_FILE_HISTORY: usize = 50;
+
+/// A step through the file view's history. The page script names it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Travel {
+    Back,
+    Forward,
 }
 
 /// A commit's change to one file, which the file view shows.
@@ -549,6 +578,64 @@ impl FileView {
             menu: None,
             find: false,
             commit: None,
+            back: Vec::new(),
+            forward: Vec::new(),
+            mode_settled: false,
+        }
+    }
+
+    /// The commit whose change the shown file shows, if any. A commit of another file waits for
+    /// that file.
+    pub fn shown_commit(&self) -> Option<&CommitHash> {
+        self.commit
+            .as_ref()
+            .filter(|shown| shown.path == self.path)
+            .map(|shown| &shown.hash)
+    }
+
+    /// The place it shows now, as the history keeps it.
+    pub fn to_place(&self) -> FilePlace {
+        FilePlace {
+            path: self.path.clone(),
+            line: self.line,
+            mode: self.mode_settled.then_some(self.mode),
+            commit: self.shown_commit().cloned(),
+        }
+    }
+
+    /// Puts the place it shows into the history Back goes through, before it shows another, and
+    /// ends the way forward.
+    pub fn remember_place(&mut self) {
+        self.back.push(self.to_place());
+        let past = self.back.len().saturating_sub(MAX_FILE_HISTORY);
+        self.back.drain(..past);
+        self.forward.clear();
+    }
+
+    /// Whether the latest step of the history is the place it shows: such a step would go
+    /// nowhere.
+    pub fn repeats_last_step(&self) -> bool {
+        let here = self.to_place();
+        // A step taken before the mode settled is the same place in any mode.
+        self.back.last().is_some_and(|last| {
+            (&last.path, last.line, &last.commit) == (&here.path, here.line, &here.commit)
+                && (last.mode.is_none() || last.mode == here.mode)
+        })
+    }
+
+    /// Takes the commit of a place Back or Forward brought. A commit kept for another file
+    /// stays, for when that file shows again.
+    pub fn take_place_commit(&mut self, commit: Option<CommitHash>) {
+        match commit {
+            Some(hash) => {
+                self.commit = Some(ShownCommit {
+                    path: self.path.clone(),
+                    hash,
+                });
+            }
+            None => {
+                self.commit.take_if(|shown| shown.path == self.path);
+            }
         }
     }
 

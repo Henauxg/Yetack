@@ -614,15 +614,15 @@ mod tests {
     use std::time::Instant;
 
     use cockpit_client::RequestError;
-    use cockpit_protocol::{AgentStatus, Catchup, Method, ResponseBody};
+    use cockpit_protocol::{AgentStatus, Catchup, CommitHash, Method, ResponseBody};
 
     use super::*;
     use crate::prefs::BlocksForm;
     use crate::state::find::{self, FindPane};
     use crate::state::tab_menu::{self, TabGroup};
     use crate::state::{
-        Block, Drafts, TabMenuOrigin, actions, apply_response,
-        apply_update as apply_session_update, connected_update, state_with, summary,
+        Block, Drafts, TabMenuOrigin, Travel, actions, apply_response,
+        apply_update as apply_session_update, connected_update, git, state_with, summary,
     };
 
     fn agent() -> AgentId {
@@ -1125,6 +1125,49 @@ mod tests {
 
     fn shows_terminal(state: &AppState) -> bool {
         file_view_shows_terminal(state, agent())
+    }
+
+    fn shown_path(state: &AppState) -> Option<PathBuf> {
+        shown_file(state, agent()).map(Path::to_path_buf)
+    }
+
+    #[test]
+    fn back_over_the_terminal_shows_the_file_under_it_first() {
+        let mut state = in_file_view_with_two_files();
+        toggle_pane(&mut state);
+
+        actions::travel_files(&mut state, agent(), Travel::Back);
+        let first = shown_path(&state);
+        actions::travel_files(&mut state, agent(), Travel::Back);
+        let second = shown_path(&state);
+
+        assert_eq!(first, Some(PathBuf::from("b.rs")));
+        assert_eq!(second, Some(PathBuf::from("a.rs")));
+    }
+
+    #[test]
+    fn back_after_the_terminal_left_the_file_view_goes_to_the_file_before() {
+        let mut state = in_file_view_with_two_files();
+        toggle_pane(&mut state);
+        move_to(&mut state, TerminalPlace::Bottom);
+
+        actions::travel_files(&mut state, agent(), Travel::Back);
+
+        assert_eq!(shown_path(&state), Some(PathBuf::from("a.rs")));
+    }
+
+    /// Forward to a commit of the file under the terminal shows that file, at the commit.
+    #[test]
+    fn forward_within_the_file_under_the_terminal_shows_the_file() {
+        let mut state = in_file_view_with_two_files();
+        let hash = CommitHash::new(&"a1".repeat(20)).unwrap();
+        git::show_commit(&mut state, agent(), Some(hash));
+        actions::travel_files(&mut state, agent(), Travel::Back);
+        toggle_pane(&mut state);
+
+        actions::travel_files(&mut state, agent(), Travel::Forward);
+
+        assert_eq!(shown_path(&state), Some(PathBuf::from("b.rs")));
     }
 
     #[test]

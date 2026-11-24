@@ -12,8 +12,8 @@ use crate::keymap::{Command, Reach};
 use crate::state::sidebar_keys::SidebarItem;
 use crate::state::voice::{Field, VoiceState, dictation_target};
 use crate::state::{
-    ANSWER_KEYS, AppState, Dialog, KeyPress, PAGE_RELOAD_KEY, PaletteOrigin, Popover, Utf16Offset,
-    WaitingKind, accounts, actions, agent_map, find, handle_key, sidebar_keys,
+    ANSWER_KEYS, AppState, Dialog, KeyPress, PAGE_RELOAD_KEY, PaletteOrigin, Popover, Travel,
+    Utf16Offset, WaitingKind, accounts, actions, agent_map, find, handle_key, sidebar_keys,
 };
 use crate::ui::{
     COMMENT_FIELD_ID, FILE_VIEW_ID, FILES_PANE_ID, FIND_FIELD_IDS, focus_after_find,
@@ -108,6 +108,29 @@ window.addEventListener("blur", () => {
   if (talking !== null) {
     talking = null;
     send({ type: "talk", action: "blur" });
+  }
+});
+// The mouse's back (3) and forward (4) buttons go through the file view's history over the file
+// view and the files pane. Nowhere do they leave the page, as the web view would.
+const BACK_BUTTON = 3;
+const FORWARD_BUTTON = 4;
+const sideButton = (event) => event.button === BACK_BUTTON || event.button === FORWARD_BUTTON;
+for (const name of ["mousedown", "auxclick"]) {
+  document.addEventListener(name, (event) => {
+    if (sideButton(event)) {
+      event.preventDefault();
+    }
+  });
+}
+document.addEventListener("mouseup", (event) => {
+  if (!sideButton(event)) {
+    return;
+  }
+  event.preventDefault();
+  const over = event.target instanceof Element
+    && event.target.closest(`#${settings.file_view_id}, #${settings.files_pane_id}`) !== null;
+  if (over) {
+    send({ type: "file_history", travel: event.button === FORWARD_BUTTON ? "forward" : "back" });
   }
 });
 // A window that opens behind another gets no blur.
@@ -300,7 +323,8 @@ document.addEventListener("keydown", (event) => {
   if (bound !== undefined) {
     take = bound.reach === "everywhere"
       || (bound.reach === "page_or_title" && !mode.dialog && (where === "page" || titleField))
-      || (bound.reach === "outside_fields" && where !== "field" && !mode.dialog);
+      || (bound.reach === "outside_fields" && where !== "field" && !mode.dialog)
+      || (bound.reach === "page" && where === "page" && !mode.dialog);
     // Where its command does not reach, F5 runs nothing, and still never reloads the page.
     if (!take && key === settings.page_reload_key) {
       event.preventDefault();
@@ -629,6 +653,9 @@ struct Settings {
     menu_focus_key: &'static str,
     /// Keys pressed in the file view open and close its find.
     file_view_id: &'static str,
+    /// Over it and over the file view, the mouse's back and forward buttons move through the
+    /// file view's history.
+    files_pane_id: &'static str,
     /// The most UTF-16 units of the selection a shortcut takes with it.
     max_selection: usize,
     /// The finds' fields, where Esc closes the find.
@@ -768,6 +795,10 @@ enum BridgeMessage {
     Focus {
         focused: bool,
     },
+    /// The mouse's back or forward button, over the file view or the files pane.
+    FileHistory {
+        travel: Travel,
+    },
     Image {
         media_type: String,
         data: String,
@@ -814,6 +845,7 @@ pub fn use_bridge(cockpit: Cockpit, voice: VoiceDesk) {
             takes_escape_attribute: TAKES_ESCAPE_ATTRIBUTE,
             menu_focus_key: MENU_FOCUS_KEY,
             file_view_id: FILE_VIEW_ID,
+            files_pane_id: FILES_PANE_ID,
             max_selection: MAX_SELECTION,
             find_field_ids: FIND_FIELD_IDS,
         }) {
@@ -883,6 +915,9 @@ fn receive(cockpit: Cockpit, voice: VoiceDesk, message: BridgeMessage) {
         }
         BridgeMessage::Focus { focused } => {
             cockpit.set_window_focused(focused);
+        }
+        BridgeMessage::FileHistory { travel } => {
+            cockpit.update(|state| actions::travel_selected(state, travel));
         }
         BridgeMessage::Image { media_type, data } => {
             let Some(media_type) = image_media_type(&media_type) else {
@@ -1303,6 +1338,28 @@ mod tests {
     }
 
     #[test]
+    fn a_mouse_side_button_message_parses_from_the_script() {
+        let back = r#"{"type":"file_history","travel":"back"}"#;
+        let forward = r#"{"type":"file_history","travel":"forward"}"#;
+
+        let back: BridgeMessage = serde_json::from_str(back).unwrap();
+        let forward: BridgeMessage = serde_json::from_str(forward).unwrap();
+
+        assert!(matches!(
+            back,
+            BridgeMessage::FileHistory {
+                travel: Travel::Back
+            }
+        ));
+        assert!(matches!(
+            forward,
+            BridgeMessage::FileHistory {
+                travel: Travel::Forward
+            }
+        ));
+    }
+
+    #[test]
     fn focus_and_image_messages_parse_from_the_script() {
         let focus = r#"{"type":"focus","focused":false}"#;
         let image = r#"{"type":"image","media_type":"image/png","data":"iVBORw0KGgo="}"#;
@@ -1339,6 +1396,7 @@ mod tests {
             takes_escape_attribute: TAKES_ESCAPE_ATTRIBUTE,
             menu_focus_key: MENU_FOCUS_KEY,
             file_view_id: FILE_VIEW_ID,
+            files_pane_id: FILES_PANE_ID,
             max_selection: 1_000,
             find_field_ids: FIND_FIELD_IDS,
         };
@@ -1393,6 +1451,7 @@ mod tests {
                 "takes_escape_attribute": "data-takes-escape",
                 "menu_focus_key": "cockpitFocusBeforeMenu",
                 "file_view_id": "file-view",
+                "files_pane_id": "files-pane",
                 "max_selection": 1000,
                 "find_field_ids": ["chat-find-field", "file-find-field"],
             })

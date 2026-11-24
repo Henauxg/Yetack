@@ -99,6 +99,10 @@ pub enum Command {
     MoveUp,
     MoveDown,
     ReloadFile,
+    /// Shows the file shown before in the file view.
+    FileBack,
+    /// Shows again the file Back left.
+    FileForward,
     /// Dictates into the message: held, while held; tapped, until tapped again.
     Talk,
 }
@@ -113,6 +117,9 @@ pub enum Reach {
     PageOrTitle,
     /// Outside dialogs and text fields other than the message.
     OutsideFields,
+    /// Outside text fields and dialogs: a key such as Option+Left keeps its meaning in the
+    /// message.
+    Page,
 }
 
 /// The groups the Settings dialog lists shortcuts in.
@@ -154,6 +161,8 @@ impl Command {
             Self::MoveUp => "Move up in the sidebar",
             Self::MoveDown => "Move down in the sidebar",
             Self::ReloadFile => "Read the file again",
+            Self::FileBack => "Go back to the file shown before",
+            Self::FileForward => "Go forward to the file Back left",
             Self::Talk => "Dictate: hold to talk, or tap to start and stop",
         }
     }
@@ -173,7 +182,7 @@ impl Command {
             | Self::CloseAgent
             | Self::MoveUp
             | Self::MoveDown => Group::SelectedAgent,
-            Self::ReloadFile => Group::FileView,
+            Self::ReloadFile | Self::FileBack | Self::FileForward => Group::FileView,
             Self::Talk => Group::Message,
         }
     }
@@ -182,6 +191,7 @@ impl Command {
         match self {
             Self::Rename => Reach::PageOrTitle,
             Self::MoveUp | Self::MoveDown => Reach::OutsideFields,
+            Self::FileBack | Self::FileForward => Reach::Page,
             Self::Switcher
             | Self::NewAgent
             | Self::OpenFile
@@ -213,6 +223,8 @@ impl Command {
             Self::MoveUp => Chord::alt("ArrowUp"),
             Self::MoveDown => Chord::alt("ArrowDown"),
             Self::ReloadFile => Chord::plain("F5"),
+            Self::FileBack => Chord::alt("ArrowLeft"),
+            Self::FileForward => Chord::alt("ArrowRight"),
             Self::Talk => Chord::ctrl(SPACE),
         }
     }
@@ -235,6 +247,8 @@ impl Command {
             | Self::MoveUp
             | Self::MoveDown
             | Self::ReloadFile
+            | Self::FileBack
+            | Self::FileForward
             | Self::Talk => Vec::new(),
         }
     }
@@ -514,9 +528,6 @@ fn reserved(chord: &Chord) -> Option<&'static str> {
     }
     if chord.ctrl && EDITING_KEYS.contains(&key) {
         return Some("moves or deletes in a text field");
-    }
-    if chord.alt && matches!(key, "ArrowLeft" | "ArrowRight") {
-        return Some("goes back or forward a page");
     }
     if chord.ctrl && ZOOM_KEYS.contains(&key) {
         return Some("zooms");
@@ -801,7 +812,6 @@ mod tests {
             "Ctrl+Home",
             "Ctrl+Shift+End",
             "Ctrl+PageDown",
-            "Alt+ArrowLeft",
             "Ctrl+-",
             "Ctrl+=",
             "Ctrl+Shift++",
@@ -821,6 +831,27 @@ mod tests {
             Ok(())
         );
         assert_eq!(keymap.check(Command::Switcher, &chord("Alt+j")), Ok(()));
+    }
+
+    /// The page script matches these words.
+    #[test]
+    fn the_reach_words_are_pinned() {
+        let reaches = [
+            Reach::Everywhere,
+            Reach::PageOrTitle,
+            Reach::OutsideFields,
+            Reach::Page,
+        ];
+
+        let words: Vec<serde_json::Value> = reaches
+            .iter()
+            .map(|reach| serde_json::to_value(reach).unwrap())
+            .collect();
+
+        assert_eq!(
+            words,
+            ["everywhere", "page_or_title", "outside_fields", "page"]
+        );
     }
 
     #[test]
@@ -847,6 +878,8 @@ mod tests {
                 "move_up",
                 "move_down",
                 "reload_file",
+                "file_back",
+                "file_forward",
                 "talk",
             ]
         );

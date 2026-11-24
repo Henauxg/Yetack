@@ -295,15 +295,23 @@ pub fn toggle_history(state: &mut AppState, agent: AgentId, x: i32, y: i32) {
 }
 
 /// Shows `hash`'s change to the shown file, in place of its mode. `None` goes back to the mode.
+/// Another commit shown is a step that Back goes back from; going back to the mode undoes the
+/// step that would lead there again.
 pub fn show_commit(state: &mut AppState, agent: AgentId, hash: Option<CommitHash>) {
     if matches!(state.ui.popover, Some(Popover::FileHistory { .. })) {
         state.ui.popover = None;
     }
     if let Some(view) = state.ui.file_views.get_mut(&agent) {
+        if hash.is_some() && hash.as_ref() != view.shown_commit() {
+            view.remember_place();
+        }
         view.commit = hash.map(|hash| ShownCommit {
             path: view.path.clone(),
             hash,
         });
+        if view.commit.is_none() && view.repeats_last_step() {
+            view.back.pop();
+        }
     }
 }
 
