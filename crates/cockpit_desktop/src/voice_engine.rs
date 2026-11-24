@@ -321,7 +321,13 @@ impl Desk {
             DownloadNews::Progress(done) => self.state.write().download_progress(done),
             DownloadNews::Done(result) => {
                 self.news = None;
-                self.state.write().download_ended(result);
+                let chosen = self.chosen();
+                download_finished(
+                    &mut self.state.write(),
+                    self.folder.as_deref(),
+                    chosen,
+                    result,
+                );
             }
         }
     }
@@ -346,6 +352,19 @@ impl Desk {
             Err(error) => state.card = Some(VoiceCard::Failed(error.to_string())),
         }
     }
+}
+
+/// The download of `chosen`, the model of the language chosen, ended. The Silero it brought in
+/// may complete the other model.
+fn download_finished(
+    state: &mut VoiceState,
+    folder: Option<&Path>,
+    chosen: SpeechModel,
+    result: Result<(), String>,
+) {
+    state.download_ended(result);
+    let (_, other_model) = on_disk(folder, chosen);
+    state.other_model = other_model;
 }
 
 fn remove_when_free(folder: &Path, model: SpeechModel) -> io::Result<()> {
@@ -488,6 +507,27 @@ mod tests {
             Some("Count from 1 in the lexer.")
         );
         assert_eq!(drafts.draft(agent), None);
+    }
+
+    #[test]
+    fn a_download_that_brings_silero_in_shows_the_other_model_whole() {
+        use crate::state::voice::DownloadFrom;
+
+        let folder = tempfile::tempdir().unwrap();
+        let mut state = VoiceState::default();
+        state.download_started(DownloadFrom::Settings, 10);
+        // Parakeet Ultra lacks only Silero, which the English download brings in.
+        voice_models::tests::whole_files(folder.path(), SpeechModel::Ultra);
+        voice_models::tests::whole_files(folder.path(), SpeechModel::UnifiedEn);
+
+        download_finished(
+            &mut state,
+            Some(folder.path()),
+            SpeechModel::UnifiedEn,
+            Ok(()),
+        );
+
+        assert_eq!((state.model, state.other_model), (ModelStatus::Ready, true));
     }
 
     #[test]

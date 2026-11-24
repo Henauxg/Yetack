@@ -223,10 +223,20 @@ pub fn remove(folder: &Path, model: SpeechModel) -> io::Result<()> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     const ENGLISH: SpeechModel = SpeechModel::UnifiedEn;
+
+    /// Every file of `model` in `folder`, whole, so that a download has nothing to fetch.
+    pub(crate) fn whole_files(folder: &Path, model: SpeechModel) {
+        for file in &model.files() {
+            fs::File::create(folder.join(file.name))
+                .and_then(|created| created.set_len(file.size))
+                .unwrap();
+            fs::write(marker(folder, file), file.sha256).unwrap();
+        }
+    }
 
     #[test]
     fn a_file_without_its_marker_is_not_whole() {
@@ -244,16 +254,6 @@ mod tests {
         assert!(!present(folder.path(), SpeechModel::Ultra));
         assert!(remove(folder.path(), ENGLISH).is_ok());
         assert!(!present(folder.path(), ENGLISH));
-    }
-
-    /// Every file of `model` in `folder`, whole, so that a download has nothing to fetch.
-    fn whole_files(folder: &Path, model: SpeechModel) {
-        for file in &model.files() {
-            fs::File::create(folder.join(file.name))
-                .and_then(|created| created.set_len(file.size))
-                .unwrap();
-            fs::write(marker(folder, file), file.sha256).unwrap();
-        }
     }
 
     #[test]

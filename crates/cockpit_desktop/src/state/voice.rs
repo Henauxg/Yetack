@@ -898,23 +898,55 @@ mod tests {
 
     #[test]
     fn closing_the_agent_dictated_to_cancels_the_dictation() {
-        use crate::state::{state_with, summary};
+        use crate::state::{actions, state_with, summary};
 
         let mut state = state_with(vec![
             summary(3, AgentStatus::Idle),
             summary(4, AgentStatus::Idle),
         ]);
+        let mut drafts = Drafts::default();
         let mut voice = ready();
         voice.press(target(), Instant::now());
-        state.agents.remove(&AgentId::new(4));
+        actions::close_agent(&mut state, &mut drafts, AgentId::new(4));
         let other_closed = voice.agents_changed(&state);
-        state.agents.remove(&agent());
+        actions::close_agent(&mut state, &mut drafts, agent());
         let closed = voice.agents_changed(&state);
 
         assert_eq!(other_closed, WorkerOrder::Nothing);
         assert_eq!(closed, WorkerOrder::Cancel);
         assert_eq!(voice.phase, VoicePhase::Idle);
         assert_eq!(voice.agents_changed(&state), WorkerOrder::Nothing);
+    }
+
+    #[test]
+    fn the_daemon_removing_the_agent_cancels_a_dictation_still_finishing() {
+        use cockpit_client::SessionUpdate;
+        use cockpit_protocol::{Event, EventRecord, Seq};
+
+        use crate::machine::MachineId;
+        use crate::state::{apply_update, state_with, summary};
+
+        let mut state = state_with(vec![summary(3, AgentStatus::Idle)]);
+        let (mut drafts, opening) = comment_open(agent());
+        let mut voice = ready();
+        let to = Destination::Comment { opening };
+        voice.click(Some(Dictation { agent: agent(), to }), Instant::now());
+        voice.stop();
+        let removed = EventRecord {
+            seq: Seq::new(1),
+            event: Event::AgentRemoved { agent: agent() },
+        };
+        apply_update(
+            &mut state,
+            &mut drafts,
+            SessionUpdate::Event(removed),
+            Instant::now(),
+            MachineId::THIS,
+        );
+
+        assert_eq!(voice.agents_changed(&state), WorkerOrder::Cancel);
+        assert_eq!(voice.phase, VoicePhase::Idle);
+        assert_eq!(voice.done(), None);
     }
 
     #[test]

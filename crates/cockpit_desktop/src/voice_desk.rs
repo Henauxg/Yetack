@@ -76,7 +76,7 @@ pub fn use_voice(cockpit: Cockpit) -> VoiceDesk {
         comment();
         commands.send(VoiceCommand::CommentChanged);
     });
-    // A dictation into an agent that closes, or that its daemon removes, stops with its text.
+    // A dictation into an agent that closes, or that its daemon removes, stops and drops its text.
     let gone = use_memo(move || {
         let dictating = state.read().dictating()?;
         (!cockpit.state.read().agents.contains_key(&dictating)).then_some(dictating)
