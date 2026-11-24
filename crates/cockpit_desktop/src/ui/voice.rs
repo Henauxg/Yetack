@@ -1,25 +1,27 @@
 //! Dictation in the composer: the mic button, the strip that shows the recording and its text,
 //! and the card for the model's download, a failure, or a microphone that gave way to the system
-//! default. A dictation into another agent shows a strip that leads back to it. A quote's comment
-//! field has a mic and a row of words of its own.
+//! default. A dictation into another agent shows a strip that leads back to it. A quote's
+//! comment, a question's "Other" answer and the new agent's first message have a mic and a row of
+//! words of their own.
 
 use std::time::Instant;
 
 use cockpit_protocol::{AgentId, AgentStatus};
 use dioxus::prelude::*;
 
+use crate::bridge::{self, NEW_AGENT_PROMPT_ID};
 use crate::connection::{Clock, Cockpit};
 use crate::format;
 use crate::keymap::Command;
 use crate::prefs::{AfterDictation, DictationLanguage};
 use crate::state::actions;
-use crate::state::quotes::Opening;
 use crate::state::voice::{
-    Destination, DownloadFrom, Field, LiveWords, MicMissing, ModelStatus, VoiceCard, VoicePhase,
+    self, Destination, DownloadFrom, Field, LiveWords, MicMissing, ModelStatus, VoiceCard,
+    VoicePhase, VoiceState,
 };
-use crate::ui::dialog_height;
 use crate::ui::icons::{Icon, IconKind};
 use crate::ui::presence::{use_agent_presence, use_presence};
+use crate::ui::{COMMENT_FIELD_ID, answer_field_id, dialog_height};
 use crate::voice_desk::{VoiceCommand, VoiceDesk};
 
 /// How the level meter's bars stand against each other, so that one level reads as a voice.
@@ -31,17 +33,19 @@ const BARS: [f32; 12] = [
 const STRIP_CLIP_ID: &str = "voice-strip-clip";
 
 /// The mic, before Send: a click starts a dictation, which runs until the next click. It is off
-/// for an exited agent, as the message field is.
+/// for an exited agent, as the message field is. The card shows above it, except while the new
+/// agent dialog shows its first message: the dialog's mic then shows the card.
 #[component]
 pub fn MicButton(agent: AgentId, exited: bool) -> Element {
     let cockpit: Cockpit = use_context();
     let voice: VoiceDesk = use_context();
-    let (enabled, after, keys) = {
+    let (enabled, after, keys, card) = {
         let state = cockpit.state.read();
         (
             state.prefs.voice.enabled,
             state.prefs.voice.after,
             state.prefs.keys.shown(Command::Talk),
+            !voice::new_agent_prompt_shown(&state),
         )
     };
     let (available, phase, missing) = {
@@ -56,14 +60,9 @@ pub fn MicButton(agent: AgentId, exited: bool) -> Element {
     if !available || !enabled {
         return rsx! {};
     }
-    let recording = matches!(
-        phase,
-        VoicePhase::Recording { agent: on, to: Destination::Message, .. } if on == agent
-    );
-    let finishing = matches!(
-        phase,
-        VoicePhase::Finishing { agent: on, to: Destination::Message } if on == agent
-    );
+    let here = Destination::Message { agent };
+    let recording = matches!(phase, VoicePhase::Recording { to, .. } if to == here);
+    let finishing = matches!(phase, VoicePhase::Finishing { to, .. } if to == here);
     // A recording into the agent still stops from here.
     let off = exited && !recording;
     let class = match (recording, finishing) {
@@ -97,7 +96,9 @@ pub fn MicButton(agent: AgentId, exited: bool) -> Element {
                     }
                 }
             }
-            VoiceCardPopover {}
+            if card {
+                VoiceCardPopover {}
+            }
         }
     }
 }
@@ -269,8 +270,8 @@ pub fn VoiceStrip(agent: AgentId) -> Element {
         (state.phase, state.live.clone(), state.writing())
     };
     let open = writing
-        .filter(|dictation| dictation.agent == agent && dictation.to == Destination::Message)
-        .map(|dictation| dictation.agent);
+        .filter(|&to| to == Destination::Message { agent })
+        .and_then(Destination::agent);
     let Some(shown) = use_agent_presence(Some(agent), open) else {
         return rsx! {};
     };
@@ -429,20 +430,26 @@ fn LiveText(live: LiveWords, finishing: bool) -> Element {
     }
 }
 
-/// The mic in a comment field's head: a click starts a dictation into the comment, which runs
-/// until the next click. It is off for an exited agent, as the message's mic is.
+/// The mic of a field besides the message: a quote's comment, a question's "Other" answer, or the
+/// new agent's first message. A click starts a dictation into the field, which runs until the
+/// next click, and gives the field the focus, so that Enter and Esc reach it. It is off for an
+/// exited agent, as the message's mic is. The new agent dialog's mic has the card above it, since
+/// the dialog covers the message's.
 #[component]
-pub fn CommentMic(agent: AgentId, opening: Opening) -> Element {
+pub fn FieldMic(to: Destination) -> Element {
     let cockpit: Cockpit = use_context();
     let voice: VoiceDesk = use_context();
     let (enabled, exited, keys) = {
         let state = cockpit.state.read();
-        (
-            state.prefs.voice.enabled,
+        let exited = to.agent().is_some_and(|agent| {
             state
                 .agents
                 .get(&agent)
-                .is_some_and(|entry| entry.summary.status == AgentStatus::Exited),
+                .is_some_and(|entry| entry.summary.status == AgentStatus::Exited)
+        });
+        (
+            state.prefs.voice.enabled,
+            exited,
             state.prefs.keys.shown(Command::Talk),
         )
     };
@@ -453,75 +460,161 @@ pub fn CommentMic(agent: AgentId, opening: Opening) -> Element {
     if !available || !enabled {
         return rsx! {};
     }
-    let here = Destination::Comment { opening };
-    let recording = matches!(phase, VoicePhase::Recording { to, .. } if to == here);
-    let finishing = matches!(phase, VoicePhase::Finishing { to, .. } if to == here);
+    let recording = matches!(phase, VoicePhase::Recording { to: into, .. } if into == to);
+    let finishing = matches!(phase, VoicePhase::Finishing { to: into, .. } if into == to);
     let off = exited && !recording;
-    let class = match (recording, finishing) {
-        (true, _) => "icon-button tiny mic-button recording",
-        (_, true) => "icon-button tiny mic-button finishing",
-        _ => "icon-button tiny mic-button",
+    let (size, icon) = match to {
+        Destination::NewAgent => ("small", 16),
+        Destination::Message { .. } | Destination::Comment { .. } | Destination::Answer { .. } => {
+            ("tiny", 13)
+        }
     };
+    let class = match (recording, finishing) {
+        (true, _) => format!("icon-button {size} mic-button recording"),
+        (_, true) => format!("icon-button {size} mic-button finishing"),
+        _ => format!("icon-button {size} mic-button"),
+    };
+    let what = field_name(to);
     let title = if recording {
-        "Stop: the text goes in the comment".to_owned()
+        format!("Stop: the text goes in {what}")
     } else if off {
         "Resume the agent to dictate".to_owned()
     } else {
-        format!("Dictate the comment: hold {keys}, or click")
+        format!("Dictate {what}: hold {keys}, or click")
     };
-    rsx! {
+    let field = to.field();
+    let field_id = field_id(to);
+    let button = rsx! {
         button {
             class,
-            aria_label: if recording { "Stop dictating" } else { "Dictate the comment" },
+            aria_label: if recording { "Stop dictating".to_owned() } else { format!("Dictate {what}") },
             aria_pressed: recording,
             disabled: off,
             title,
-            // The comment keeps the focus and its caret, where the text goes.
+            // The field keeps its caret, where the text goes.
             onmousedown: move |event| event.prevent_default(),
-            onclick: move |_| voice.send(VoiceCommand::Click(Field::Comment)),
-            Icon { kind: IconKind::Mic, size: 13 }
+            onclick: move |_| {
+                bridge::focus_keeping_caret(&field_id);
+                voice.send(VoiceCommand::Click(field));
+            },
+            Icon { kind: IconKind::Mic, size: icon }
+        }
+    };
+    match to {
+        Destination::NewAgent => rsx! {
+            span { class: "mic-anchor",
+                {button}
+                VoiceCardPopover {}
+            }
+        },
+        Destination::Message { .. } | Destination::Comment { .. } | Destination::Answer { .. } => {
+            button
         }
     }
 }
 
-/// Under a comment field while a dictation runs into it, in the place of the key hints: the
-/// level, the words, and the keys that stop and cancel. It plays its exit with the last words.
+/// Returns true when a dictation runs or finishes into a field that `writes_into` accepts, and
+/// stops it as Enter does. The button that would send the field's text then sends nothing: its
+/// next press sends the text with the words in.
+pub fn stop_dictation_first(voice: VoiceDesk, writes_into: impl Fn(Destination) -> bool) -> bool {
+    let writing = voice.state.peek().writing();
+    if !writing.is_some_and(writes_into) {
+        return false;
+    }
+    voice.send(VoiceCommand::Stop);
+    true
+}
+
+/// The field `to` names, as the mic's title says it.
+fn field_name(to: Destination) -> &'static str {
+    match to {
+        Destination::Message { .. } => "the message",
+        Destination::Comment { .. } => "the comment",
+        Destination::Answer { .. } => "the answer",
+        Destination::NewAgent => "the first message",
+    }
+}
+
+/// The id of the field `to` names.
+fn field_id(to: Destination) -> String {
+    match to {
+        Destination::Message { .. } => bridge::COMPOSER_ID.to_owned(),
+        Destination::Comment { .. } => COMMENT_FIELD_ID.to_owned(),
+        Destination::Answer { agent, item, asked } => answer_field_id(agent, item, asked),
+        Destination::NewAgent => NEW_AGENT_PROMPT_ID.to_owned(),
+    }
+}
+
+/// The words of the dictation that runs or finishes into `to`, and whether it finishes.
+fn words_into(state: &VoiceState, to: Destination) -> Option<(LiveWords, bool)> {
+    match state.phase {
+        VoicePhase::Recording { to: into, .. } if into == to => Some((state.live.clone(), false)),
+        VoicePhase::Finishing { to: into, .. } if into == to => Some((state.live.clone(), true)),
+        VoicePhase::Idle | VoicePhase::Recording { .. } | VoicePhase::Finishing { .. } => None,
+    }
+}
+
+/// Under a field besides the message while a dictation runs into it: the level, the words, and
+/// the keys that stop and cancel. It plays its exit with the last words.
 #[component]
-pub fn CommentWords(opening: Opening) -> Element {
+pub fn FieldWords(to: Destination) -> Element {
     let voice: VoiceDesk = use_context();
-    let shown = {
-        let state = voice.state.read();
-        let here = Destination::Comment { opening };
-        match state.phase {
-            VoicePhase::Recording { to, .. } if to == here => Some((state.live.clone(), false)),
-            VoicePhase::Finishing { to, .. } if to == here => Some((state.live.clone(), true)),
-            VoicePhase::Idle | VoicePhase::Recording { .. } | VoicePhase::Finishing { .. } => None,
-        }
-    };
+    let shown = words_into(&voice.state.read(), to);
     let Some(shown) = use_presence(shown) else {
         return rsx! {};
     };
     let (live, finishing) = shown.value;
     rsx! {
         div {
-            class: if shown.leaving { "quote-voice leaving" } else { "quote-voice" },
+            class: if shown.leaving { "field-voice leaving" } else { "field-voice" },
             role: "status",
-            aria_label: "Dictation into the comment",
+            aria_label: "Dictation into {field_name(to)}",
             if finishing {
                 span { class: "spinner", aria_hidden: true }
             } else {
                 LevelMeter {}
             }
-            span { class: "quote-voice-words",
+            span { class: "field-voice-words",
                 span { LiveText { live, finishing } }
             }
-            span { class: "quote-hint quote-voice-keys",
+            span { class: "field-voice-keys",
                 if !finishing {
                     kbd { "Enter" }
                     " stops · "
                 }
                 kbd { "Esc" }
                 " cancels"
+            }
+        }
+    }
+}
+
+/// [`FieldWords`] in a row of their own, under a field with no key hints to give way to: the row
+/// opens and closes with the dictation, and its height follows the words. A row open as it
+/// mounts, as when its agent comes on screen, draws at once.
+#[component]
+pub fn FieldWordsRow(to: Destination, clip_id: String) -> Element {
+    let voice: VoiceDesk = use_context();
+    let open = words_into(&voice.state.read(), to).is_some();
+    let open_at_mount = use_hook(|| open);
+    let Some(shown) = use_presence(open.then_some(())) else {
+        return rsx! {};
+    };
+    let class = match (shown.leaving, open_at_mount && shown.opening == 1) {
+        (true, _) => "field-voice-row leaving",
+        (false, true) => "field-voice-row instant",
+        (false, false) => "field-voice-row",
+    };
+    let follow = clip_id.clone();
+    rsx! {
+        div { class,
+            div {
+                id: "{clip_id}",
+                class: "field-voice-clip",
+                onmounted: move |_| dialog_height::follow_content(&follow),
+                div { class: "field-voice-body",
+                    FieldWords { to }
+                }
             }
         }
     }
@@ -589,15 +682,16 @@ mod tests {
 
     #[test]
     fn the_strip_says_whether_the_stop_sends() {
-        let held = VoicePhase::Recording {
+        let to = Destination::Message {
             agent: AgentId::new(1),
-            to: Destination::Message,
+        };
+        let held = VoicePhase::Recording {
+            to,
             since: Instant::now(),
             latched: false,
         };
         let tapped = VoicePhase::Recording {
-            agent: AgentId::new(1),
-            to: Destination::Message,
+            to,
             since: Instant::now(),
             latched: true,
         };
@@ -616,10 +710,7 @@ mod tests {
         );
         assert_eq!(
             stop_hint(
-                VoicePhase::Finishing {
-                    agent: AgentId::new(1),
-                    to: Destination::Message,
-                },
+                VoicePhase::Finishing { to, covered: false },
                 AfterDictation::Insert,
                 "Ctrl+Space"
             ),
@@ -629,15 +720,16 @@ mod tests {
 
     #[test]
     fn the_strip_of_another_agent_stops_with_the_talk_key_alone() {
-        let tapped = VoicePhase::Recording {
+        let to = Destination::Message {
             agent: AgentId::new(1),
-            to: Destination::Message,
+        };
+        let tapped = VoicePhase::Recording {
+            to,
             since: Instant::now(),
             latched: true,
         };
         let held = VoicePhase::Recording {
-            agent: AgentId::new(1),
-            to: Destination::Message,
+            to,
             since: Instant::now(),
             latched: false,
         };

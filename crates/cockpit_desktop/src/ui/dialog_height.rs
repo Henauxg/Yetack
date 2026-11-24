@@ -253,7 +253,7 @@ if (body) {
 
 /// Animates the height of the element `id` names, which is on the page, as its content changes.
 /// Run it when the element mounts.
-pub fn follow_content(id: &'static str) {
+pub fn follow_content(id: &str) {
     let script = document::eval(FOLLOW_SCRIPT);
     let sent = script
         .send(id)

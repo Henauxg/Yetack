@@ -10,13 +10,16 @@ use dioxus::prelude::*;
 
 use crate::bridge;
 use crate::connection::Cockpit;
+use crate::state::voice::Destination;
 use crate::state::{QuestionDraft, actions};
 use crate::ui::cards::{WaitingPill, use_answer_sent};
 use crate::ui::icons::{Icon, IconKind};
 use crate::ui::presence::use_presence;
+use crate::ui::voice::{FieldMic, FieldWordsRow, stop_dictation_first};
+use crate::voice_desk::VoiceDesk;
 
 /// Where a question card shows. The agent map takes the arrows and Enter for itself, so its
-/// cards show no key hints.
+/// cards show no key hints. Only the chat's cards take dictation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CardPlace {
     Chat,
@@ -30,6 +33,21 @@ impl CardPlace {
             Self::Map => "map",
         }
     }
+}
+
+/// The id of a waiting question's card.
+fn card_id(place: CardPlace, agent: AgentId, item: ItemId) -> String {
+    format!(
+        "{}-question-{}-{}",
+        place.id_prefix(),
+        agent.get(),
+        item.get()
+    )
+}
+
+/// The id of the "Other" field of question `asked`, on the chat's card of the question `item`.
+pub fn answer_field_id(agent: AgentId, item: ItemId, asked: usize) -> String {
+    format!("{}-other-{asked}", card_id(CardPlace::Chat, agent, item))
 }
 
 /// The waiting card folds shut as the answered line folds open in its place.
@@ -78,12 +96,8 @@ fn WaitingQuestion(
     leaving: bool,
 ) -> Element {
     let cockpit: Cockpit = use_context();
-    let card_id = format!(
-        "{}-question-{}-{}",
-        place.id_prefix(),
-        agent.get(),
-        item.get()
-    );
+    let voice: VoiceDesk = use_context();
+    let card_id = card_id(place, agent, item);
     // Only this question's draft: typing in the composer leaves the card alone.
     let live_draft = use_memo(use_reactive((&question.pending,), move |(pending,)| {
         let drafts = cockpit.drafts.read();
@@ -151,7 +165,12 @@ fn WaitingQuestion(
     };
     let next_question = question.clone();
     rsx! {
-        div { id: card_id, class: "card question-card waiting", tabindex: -1,
+        div {
+            id: card_id,
+            class: "card question-card waiting",
+            tabindex: -1,
+            // Enter anywhere on the card stops a dictation into one of its answers.
+            "data-question-item": (place == CardPlace::Chat).then(|| item.get().to_string()),
             div { class: "question-head",
                 Icon { kind: IconKind::Question, size: 16 }
                 span { class: "question-title", "{title}" }
@@ -205,6 +224,17 @@ fn WaitingQuestion(
                     }
                 }
             }
+            // The words of a dictation into an "Other" field show under the questions, so that
+            // they stay on screen when another question shows.
+            if place == CardPlace::Chat {
+                for asked in 0..count {
+                    FieldWordsRow {
+                        key: "{asked}",
+                        to: Destination::Answer { agent, item, asked },
+                        clip_id: format!("{card_id}-voice-{asked}"),
+                    }
+                }
+            }
             div { class: "card-actions",
                 if let Some(next) = next {
                     button {
@@ -219,7 +249,12 @@ fn WaitingQuestion(
                 button {
                     class: if ready { "button primary" } else { "button disabled" },
                     disabled: !ready || sent,
-                    onclick: move |_| cockpit.change_with_drafts(|state, drafts| actions::submit_question(state, drafts, agent, item)),
+                    onclick: move |_| {
+                        let into_card = |to| matches!(to, Destination::Answer { agent: of, item: on, .. } if of == agent && on == item);
+                        if !stop_dictation_first(voice, into_card) {
+                            cockpit.change_with_drafts(|state, drafts| actions::submit_question(state, drafts, agent, item));
+                        }
+                    },
                     span { class: "send-labels",
                         span { class: if sent { "off" }, aria_hidden: sent, "{send_label}" }
                         span { class: if !sent { "off" }, aria_hidden: !sent, "Sending…" }
@@ -289,6 +324,7 @@ fn QuestionPanel(
     };
     let role = if multiple { "checkbox" } else { "radio" };
     let other_question = question.clone();
+    let dictates = place == CardPlace::Chat;
     rsx! {
         div {
             class: if current { "question-panel current" } else { "question-panel" },
@@ -333,9 +369,13 @@ fn QuestionPanel(
                 label { class: if other_on { "option-row other picked" } else { "option-row other" },
                     span { class: mark }
                     input {
+                        id: dictates.then(|| answer_field_id(agent, item, asked_index)),
                         class: "other-field",
                         r#type: "text",
                         aria_label: "Other answer",
+                        // The talk key dictates here, and the script names the field by them.
+                        "data-answer-item": dictates.then(|| item.get().to_string()),
+                        "data-answer-asked": dictates.then(|| asked_index.to_string()),
                         placeholder: "Other: type your own…",
                         initial_value: "{other_seed}",
                         oninput: {
@@ -353,6 +393,9 @@ fn QuestionPanel(
                                 });
                             }
                         },
+                    }
+                    if dictates {
+                        FieldMic { to: Destination::Answer { agent, item, asked: asked_index } }
                     }
                 }
             }

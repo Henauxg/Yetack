@@ -16,6 +16,7 @@ use crate::bridge::{self, COMPOSER_ID};
 use crate::connection::Cockpit;
 use crate::prefs::CommentPlacement;
 use crate::state::quotes::{self, EditorTarget, Passage, Quote, QuoteAnchor, QuoteEditor, QuoteId};
+use crate::state::voice::Destination;
 use crate::state::{AppState, Drafts, blocks_view};
 use crate::ui::blocks::{BLOCK_CARD_CLASS, BLOCKS_CLASS};
 use crate::ui::chat_scroll::{CHAT_SCROLL_ID, ENTRY_CLASS, REVEALED_CLASS};
@@ -24,7 +25,7 @@ use crate::ui::icons::{Icon, IconKind};
 use crate::ui::markdown::MARKDOWN_CLASS;
 use crate::ui::presence::{LEAVING, Shown, use_presence};
 use crate::ui::transcript::USER_BUBBLE_CLASS;
-use crate::ui::voice::{CommentMic, CommentWords};
+use crate::ui::voice::{FieldMic, FieldWords};
 use crate::voice_desk::VoiceDesk;
 
 /// The field where a comment is written.
@@ -1527,7 +1528,7 @@ fn CommentField(
                 }
                 span { class: "quote-note-state", "{state}" }
                 span { class: "spacer" }
-                CommentMic { agent, opening }
+                FieldMic { to: Destination::Comment { agent, opening } }
                 button {
                     class: "icon-button tiny",
                     title: "Cancel (Esc)",
@@ -1572,7 +1573,7 @@ fn CommentField(
                             " cancels"
                         }
                     }
-                    CommentWords { opening }
+                    FieldWords { to: Destination::Comment { agent, opening } }
                 }
             }
         }

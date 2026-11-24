@@ -1,5 +1,6 @@
-//! Dictation in the window: the talk key and the mic button start and stop recordings, the
-//! worker's events update [`VoiceState`], and the final text goes into the message or a comment.
+//! Dictation in the window: the talk key and the mic buttons start and stop recordings, the
+//! worker's events update [`VoiceState`], and the final text goes into the message, a comment, a
+//! question's "Other" answer or the new agent's first message.
 //!
 //! The state and the level are signals of their own: the level changes 30 times a second, and
 //! only the meter reads it.
@@ -8,7 +9,7 @@ use dioxus::prelude::*;
 
 use crate::connection::Cockpit;
 use crate::prefs::DictationLanguage;
-use crate::state::voice::{DownloadFrom, Field, VoiceState};
+use crate::state::voice::{self, DownloadFrom, Field, FieldState, VoiceState};
 
 /// What the window asks of dictation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -19,16 +20,15 @@ pub enum VoiceCommand {
     Release,
     /// The window lost the focus with the talk key down.
     Blur,
-    /// The mic button of the message or of the comment field.
+    /// The mic button of the message or of another field.
     Click(Field),
     /// Esc, or dictation turned off.
     Cancel,
     /// Enter in the field the dictation goes to.
     Stop,
-    /// The comment field closed, or another one opened.
-    CommentChanged,
-    /// The agent dictated to is gone.
-    AgentGone,
+    /// A dialog covered the field dictated into, or the field closed, gave way to another, or went
+    /// with its agent or its dialog.
+    FieldChanged,
     Download(DownloadFrom),
     CancelDownload,
     /// Removes the model of the language chosen.
@@ -63,27 +63,19 @@ pub fn use_voice(cockpit: Cockpit) -> VoiceDesk {
     let commands = use_coroutine(move |commands: UnboundedReceiver<VoiceCommand>| {
         run(cockpit, state, level, commands)
     });
-    // A comment that closes, or gives way to another, stops the recording into it.
-    let comment = use_memo(move || {
-        cockpit
-            .drafts
-            .read()
-            .quote_editor
-            .as_ref()
-            .map(|editor| editor.opening)
+    // A field that closes, or that a dialog covers, stops the recording into it. A field gone with
+    // its agent or its dialog cancels the recording and drops its text.
+    let field = use_memo(move || {
+        let to = state.read().writing()?;
+        Some(voice::field_state(
+            to,
+            &cockpit.state.read(),
+            &cockpit.drafts.read(),
+        ))
     });
     use_effect(move || {
-        comment();
-        commands.send(VoiceCommand::CommentChanged);
-    });
-    // A dictation into an agent that closes, or that its daemon removes, stops and drops its text.
-    let gone = use_memo(move || {
-        let dictating = state.read().dictating()?;
-        (!cockpit.state.read().agents.contains_key(&dictating)).then_some(dictating)
-    });
-    use_effect(move || {
-        if gone().is_some() {
-            commands.send(VoiceCommand::AgentGone);
+        if field().is_some_and(|field| field != FieldState::Open) {
+            commands.send(VoiceCommand::FieldChanged);
         }
     });
     use_context_provider(|| VoiceDesk {

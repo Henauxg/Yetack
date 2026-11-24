@@ -1442,7 +1442,8 @@ pub fn question_answers(
     Some(answers)
 }
 
-fn waiting_question(entry: &AgentEntry, item: ItemId) -> Option<&Question> {
+/// The agent's question `item`, while it waits for its answer.
+pub fn waiting_question(entry: &AgentEntry, item: ItemId) -> Option<&Question> {
     match &entry.transcript.get(item)?.body {
         ItemBody::Question(question) if question.answer == AnswerState::Waiting => Some(question),
         _ => None,

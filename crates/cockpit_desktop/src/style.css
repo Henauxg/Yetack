@@ -4576,6 +4576,11 @@ html.reordering * {
   color: var(--dim);
 }
 
+/* The "Other" answer's mic keeps the row as tall as the options' rows. */
+.option-row.other > .mic-button {
+  margin: -3px -4px -3px 0;
+}
+
 .question-keys {
   display: inline-flex;
   flex-wrap: wrap;
@@ -6318,6 +6323,11 @@ html[data-blocks-settling] :is(.chat-scroll, .composer-wrap, .jump-latest) {
   transform-origin: bottom right;
 }
 
+/* In the new agent dialog, the card ends level with the first message's box. */
+.prompt-tools .voice-card {
+  right: -10px;
+}
+
 .voice-card.leaving {
   pointer-events: none;
   animation: popover-out var(--motion-out) var(--ease-in) forwards;
@@ -7184,12 +7194,14 @@ html[data-blocks-settling] :is(.chat-scroll, .composer-wrap, .jump-latest) {
   outline: none;
 }
 
-.quote-hint {
+.quote-hint,
+.field-voice-keys {
   font-size: 11.5px;
   color: var(--dim);
 }
 
-.quote-hint kbd {
+.quote-hint kbd,
+.field-voice-keys kbd {
   padding: 0 4px;
   border-radius: 4px;
   background: rgba(255, 255, 255, 0.07);
@@ -7214,17 +7226,18 @@ html[data-blocks-settling] :is(.chat-scroll, .composer-wrap, .jump-latest) {
 }
 
 .quote-hint.returning,
-.quote-voice {
+.field-voice {
   animation: fade-in var(--motion-in) var(--ease-out) backwards;
 }
 
 .quote-hint.leaving,
-.quote-voice.leaving {
+.field-voice.leaving {
   animation: fade-out var(--motion-out) var(--ease-in) forwards;
 }
 
-/* In a narrow field, the keys go under the words. */
-.quote-voice {
+/* A dictation's words under a field besides the message. In a narrow field, the keys go under
+   the words. */
+.field-voice {
   display: flex;
   flex-wrap: wrap;
   align-items: flex-start;
@@ -7233,17 +7246,17 @@ html[data-blocks-settling] :is(.chat-scroll, .composer-wrap, .jump-latest) {
   line-height: 17px;
 }
 
-.quote-voice > .voice-meter {
+.field-voice > .voice-meter {
   flex: none;
   margin-top: 1.5px;
 }
 
-.quote-voice > .spinner {
+.field-voice > .spinner {
   margin-top: 2.5px;
 }
 
 /* The last three lines of the words: the older ones go out at the top. */
-.quote-voice-words {
+.field-voice-words {
   flex: 1 1 120px;
   min-width: 0;
   display: flex;
@@ -7254,9 +7267,59 @@ html[data-blocks-settling] :is(.chat-scroll, .composer-wrap, .jump-latest) {
   overflow-wrap: anywhere;
 }
 
-.quote-voice-keys {
+.field-voice-keys {
   flex: none;
   margin-left: auto;
+}
+
+/* The words in a row of their own, under a question's "Other" answer or the new agent's first
+   message. The row opens to the words' height from the gap above it, and its clip follows the
+   words as they wrap. */
+.field-voice-row {
+  --row-gap: 0px;
+  display: grid;
+  grid-template-rows: 1fr;
+  animation: field-voice-row-in var(--motion-in) var(--ease-out) backwards;
+}
+
+.question-card .field-voice-row {
+  --row-gap: 10px;
+}
+
+.prompt-box .field-voice-row {
+  --row-gap: 4px;
+}
+
+.field-voice-row.instant {
+  animation: none;
+}
+
+.field-voice-row.leaving {
+  pointer-events: none;
+  animation: field-voice-row-out var(--motion-out) var(--ease-in) forwards;
+}
+
+@keyframes field-voice-row-in {
+  from {
+    grid-template-rows: 0fr;
+    margin-top: calc(-1 * var(--row-gap));
+  }
+}
+
+@keyframes field-voice-row-out {
+  to {
+    grid-template-rows: 0fr;
+    margin-top: calc(-1 * var(--row-gap));
+  }
+}
+
+.field-voice-clip {
+  min-height: 0;
+  overflow: hidden;
+}
+
+.prompt-box .field-voice-body {
+  padding: 0 6px;
 }
 
 /* The composer's list: one line per quote. At most four show; more scroll inside the list. */

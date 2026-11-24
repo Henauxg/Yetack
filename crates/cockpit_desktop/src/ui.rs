@@ -63,6 +63,7 @@ mod zoom;
 
 pub use app::App;
 pub use find::{FIND_FIELD_IDS, focus_after_find};
+pub use question_card::answer_field_id;
 pub use quotes::COMMENT_FIELD_ID;
 pub use sidebar::item_id as sidebar_item_id;
 pub use splitter::{FILE_VIEW_ID, FILES_PANE_ID};

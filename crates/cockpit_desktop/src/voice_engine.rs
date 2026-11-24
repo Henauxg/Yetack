@@ -6,22 +6,22 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use cockpit_protocol::{AgentId, PromptDelivery};
+use cockpit_protocol::{AgentId, ItemId, PromptDelivery};
 use cockpit_voice::{
     Event, LiveRefresh, Microphones, Missing, RecordingOptions, SpeechModel, Voice, VoiceError,
 };
 use dioxus::prelude::*;
 use tokio::sync::mpsc::{self, UnboundedReceiver as Receiver};
 
-use crate::bridge::{self, COMPOSER_ID};
+use crate::bridge::{self, COMPOSER_ID, Focus, NEW_AGENT_PROMPT_ID};
 use crate::connection::Cockpit;
 use crate::prefs::{DictationLanguage, LiveTextRefresh};
 use crate::state::voice::{
-    self, Dictation, DownloadFrom, Field, Landing, LiveWords, MicMissing, MicrophoneList,
-    ModelStatus, VoiceCard, VoiceState, WorkerOrder, dictation_target,
+    self, Destination, DownloadFrom, Field, Finished, Landing, LiveWords, MicMissing,
+    MicrophoneList, ModelStatus, VoiceCard, VoiceState, WorkerOrder,
 };
-use crate::state::{Drafts, actions};
-use crate::ui::COMMENT_FIELD_ID;
+use crate::state::{AppState, Drafts, actions};
+use crate::ui::{COMMENT_FIELD_ID, answer_field_id};
 use crate::voice_desk::VoiceCommand;
 use crate::voice_models::{self, DownloadNews};
 
@@ -130,14 +130,10 @@ impl Desk {
             VoiceCommand::Blur => self.state.write().blur(),
             VoiceCommand::Cancel => self.state.write().cancel(),
             VoiceCommand::Stop => self.state.write().stop(),
-            VoiceCommand::AgentGone => self
+            VoiceCommand::FieldChanged => self
                 .state
                 .write()
-                .agents_changed(&self.cockpit.state.peek()),
-            VoiceCommand::CommentChanged => self
-                .state
-                .write()
-                .comment_changed(&self.cockpit.drafts.peek()),
+                .fields_changed(&self.cockpit.state.peek(), &self.cockpit.drafts.peek()),
             VoiceCommand::Download(from) => {
                 self.start_download(from);
                 WorkerOrder::Nothing
@@ -187,11 +183,13 @@ impl Desk {
         }
     }
 
-    /// The dictation a press or a click in `field` would start.
-    fn target(&self, field: Field) -> Option<Dictation> {
-        let agent = dictation_target(&self.cockpit.state.peek())?;
-        let to = voice::destination(field, agent, &self.cockpit.drafts.peek());
-        Some(Dictation { agent, to })
+    /// Where a press or a click in `field` would write.
+    fn target(&self, field: Field) -> Option<Destination> {
+        voice::target(
+            field,
+            &self.cockpit.state.peek(),
+            &self.cockpit.drafts.peek(),
+        )
     }
 
     fn order(&mut self, order: WorkerOrder) -> Result<(), VoiceError> {
@@ -257,9 +255,9 @@ impl Desk {
             }
             Event::Finishing | Event::Cancelled => {}
             Event::Done(text) => {
-                let dictation = self.state.write().done();
-                if let Some(dictation) = dictation {
-                    insert(self.cockpit, dictation, &text);
+                let finished = self.state.write().done();
+                if let Some(finished) = finished {
+                    insert(self.cockpit, finished, &text);
                 }
             }
             Event::Failed(error) => {
@@ -381,54 +379,92 @@ fn remove_when_free(folder: &Path, model: SpeechModel) -> io::Result<()> {
     }
 }
 
-/// The text goes in the message or the comment of the agent it was dictated to, as
-/// [`voice::landing`] decides: at the cursor when that field shows, at its end otherwise, or at
-/// the message's end and sent.
-fn insert(cockpit: Cockpit, dictation: Dictation, text: &str) {
+/// The text goes in the field it was dictated into, as [`voice::landing`] decides: at the cursor
+/// when that field shows, at its end otherwise, or at the message's end and sent. A field gone
+/// with its agent or its dialog drops it.
+fn insert(cockpit: Cockpit, finished: Finished, text: &str) {
     let text = text.trim();
     if text.is_empty() {
         return;
     }
-    let agent = dictation.agent;
-    let landing = {
-        let state = cockpit.state.peek();
-        let shown = state.ui.selected == Some(agent);
-        voice::landing(
-            dictation,
-            shown,
-            state.prefs.voice.after,
-            &cockpit.drafts.peek(),
-        )
+    let Some(landing) = voice::landing(finished, &cockpit.state.peek(), &cockpit.drafts.peek())
+    else {
+        return;
+    };
+    // A field under a dialog takes the text and leaves the dialog the focus.
+    let focus = if cockpit.state.peek().ui.dialog.is_none() {
+        Focus::Take
+    } else {
+        Focus::Leave
     };
     match landing {
-        Landing::MessageCaret => bridge::insert_at_caret(COMPOSER_ID, text),
-        Landing::CommentCaret => bridge::insert_at_caret(COMMENT_FIELD_ID, text),
-        Landing::MessageEnd => cockpit.with_drafts(|_, drafts| append(drafts, agent, text)),
+        Landing::MessageCaret => bridge::insert_at_caret(COMPOSER_ID, text, focus),
+        Landing::CommentCaret => bridge::insert_at_caret(COMMENT_FIELD_ID, text, focus),
+        Landing::AnswerCaret { agent, item, asked } => {
+            bridge::insert_at_caret(&answer_field_id(agent, item, asked), text, focus);
+        }
+        Landing::NewAgentCaret => bridge::insert_at_caret(NEW_AGENT_PROMPT_ID, text, Focus::Take),
+        Landing::MessageEnd(agent) => cockpit.with_drafts(|_, drafts| append(drafts, agent, text)),
         Landing::CommentEnd => cockpit.with_drafts(|_, drafts| append_to_comment(drafts, text)),
-        Landing::MessageEndAndSend => cockpit.change_with_drafts(|state, drafts| {
+        Landing::AnswerEnd { agent, item, asked } => cockpit.with_drafts(|state, drafts| {
+            append_to_answer(state, drafts, agent, item, asked, text);
+        }),
+        Landing::NewAgentEnd => cockpit.with_drafts(|_, drafts| {
+            append_to(&mut drafts.new_agent.prompt, text);
+        }),
+        Landing::MessageEndAndSend(agent) => cockpit.change_with_drafts(|state, drafts| {
             append(drafts, agent, text);
             actions::send_prompt(state, drafts, agent, None, PromptDelivery::Steer)
         }),
     }
 }
 
-fn append(drafts: &mut Drafts, agent: AgentId, text: &str) {
-    let draft = drafts.draft_mut(agent);
-    if !draft.text.is_empty() && !draft.text.ends_with(char::is_whitespace) {
-        draft.text.push(' ');
+/// Adds `text` at the end of `field`, a space apart from a word.
+fn append_to(field: &mut String, text: &str) {
+    if !field.is_empty() && !field.ends_with(char::is_whitespace) {
+        field.push(' ');
     }
-    draft.text.push_str(text);
+    field.push_str(text);
+}
+
+fn append(drafts: &mut Drafts, agent: AgentId, text: &str) {
+    append_to(&mut drafts.draft_mut(agent).text, text);
     drafts.draft_written(agent);
 }
 
 /// Adds `text` at the end of the open comment, whose field shows it when it opens again.
 fn append_to_comment(drafts: &mut Drafts, text: &str) {
     if let Some(editor) = &mut drafts.quote_editor {
-        if !editor.text.is_empty() && !editor.text.ends_with(char::is_whitespace) {
-            editor.text.push(' ');
-        }
-        editor.text.push_str(text);
+        append_to(&mut editor.text, text);
     }
+}
+
+/// Adds `text` at the end of the "Other" answer to question `asked` of the agent's question
+/// `item`, as typing does: on a single-choice question it replaces the pick. The card shows it
+/// when the agent comes on screen.
+fn append_to_answer(
+    state: &AppState,
+    drafts: &mut Drafts,
+    agent: AgentId,
+    item: ItemId,
+    asked: usize,
+    text: &str,
+) {
+    let Some(question) = state
+        .agents
+        .get(&agent)
+        .and_then(|entry| actions::waiting_question(entry, item))
+    else {
+        return;
+    };
+    let mut other = drafts
+        .questions
+        .get(&question.pending)
+        .and_then(|draft| draft.other.get(asked))
+        .cloned()
+        .unwrap_or_default();
+    append_to(&mut other, text);
+    actions::set_other_answer(drafts, question, asked, other);
 }
 
 /// The error as the card shows it: a sentence.
@@ -508,6 +544,62 @@ mod tests {
             Some("Count from 1 in the lexer.")
         );
         assert_eq!(drafts.draft(agent), None);
+    }
+
+    #[test]
+    fn an_answer_out_of_sight_takes_the_text_at_its_end_in_place_of_the_pick() {
+        use cockpit_protocol::{
+            AgentStatus, AnswerState, AskedQuestion, ItemBody, PendingId, Question, QuestionOption,
+            Selection, TranscriptItem,
+        };
+
+        use crate::state::{state_with, summary};
+
+        let agent = AgentId::new(2);
+        let item = ItemId::new(9);
+        let mut state = state_with(vec![summary(2, AgentStatus::NeedsYou)]);
+        let question = Question {
+            pending: PendingId::new("request-9".to_owned()),
+            questions: vec![AskedQuestion {
+                header: String::new(),
+                text: "The fixtures?".to_owned(),
+                options: vec![QuestionOption {
+                    label: "Keep".to_owned(),
+                    description: String::new(),
+                }],
+                selection: Selection::Single,
+            }],
+            answer: AnswerState::Waiting,
+        };
+        if let Some(entry) = state.agents.get_mut(&agent) {
+            entry.transcript.append(TranscriptItem {
+                id: item,
+                parent: None,
+                body: ItemBody::Question(question.clone()),
+            });
+        }
+        let mut drafts = Drafts::default();
+        actions::pick_option(&mut drafts, &question, 0, 0);
+
+        append_to_answer(&state, &mut drafts, agent, item, 0, "Move them");
+        append_to_answer(&state, &mut drafts, agent, item, 0, "to tests/data.");
+        // A question that does not wait takes nothing.
+        append_to_answer(&state, &mut drafts, agent, ItemId::new(8), 0, "Lost");
+
+        let draft = drafts.questions.get(&question.pending);
+        assert_eq!(
+            draft
+                .and_then(|draft| draft.other.first())
+                .map(String::as_str),
+            Some("Move them to tests/data.")
+        );
+        assert_eq!(
+            draft
+                .and_then(|draft| draft.picks.first())
+                .map(|picks| picks.len()),
+            Some(0),
+            "the text replaces the pick of a single-choice question"
+        );
     }
 
     #[test]

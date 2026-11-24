@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use crate::connection::Cockpit;
 use crate::keymap::{Command, Reach};
 use crate::state::sidebar_keys::SidebarItem;
-use crate::state::voice::{Field, VoiceState, dictation_target};
+use crate::state::voice::{self, Destination, Field, VoicePhase, VoiceState, dictation_target};
 use crate::state::{
     ANSWER_KEYS, AppState, Dialog, KeyPress, PAGE_RELOAD_KEY, PaletteOrigin, Popover, Travel,
     Utf16Offset, WaitingKind, accounts, actions, agent_map, find, handle_key, sidebar_keys,
@@ -92,6 +92,24 @@ const sidebarItem = (element) => {
   }
   if (data?.headProject !== undefined) {
     return { kind: "project", id: data.headProject };
+  }
+  return null;
+};
+// The field besides the message that has the focus and takes dictation, as the app names it: a
+// quote's comment, the new agent's first message, or a question's "Other" answer.
+const dictationField = (element) => {
+  if (element === null) {
+    return null;
+  }
+  if (element.id === settings.comment_field_id) {
+    return "comment";
+  }
+  if (element.id === settings.new_agent_prompt_id) {
+    return "new_agent";
+  }
+  const data = element.dataset;
+  if (data?.answerItem !== undefined) {
+    return { answer: { item: Number(data.answerItem), asked: Number(data.answerAsked) } };
   }
   return null;
 };
@@ -249,23 +267,41 @@ document.addEventListener("keydown", (event) => {
     && (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.tagName === "SELECT" || target.isContentEditable);
   const where = composer ? "composer" : field ? "field" : "page";
   const key = event.key;
-  // Esc first stops a dictation, and drops its text.
+  // Esc first cancels a dictation, and drops its text. Nothing else sees it, such as a palette or
+  // a dialog it would close.
   if (key === "Escape" && mode.dictating && !event.repeat) {
     event.preventDefault();
+    event.stopPropagation();
     talking = null;
     send({ type: "talk", action: "cancel" });
     return;
   }
   const command = event.ctrlKey || event.metaKey;
   const plain = !command && !event.altKey;
-  const comment = target !== null && target.id === settings.comment_field_id;
-  // Enter stops the dictation, as the talk key does, and the next one sends the message or adds
-  // the quote. A button keeps its Enter.
+  const into = dictationField(target);
+  const button = target !== null && target.matches('button, [role="button"]');
+  const answer = mode.enter_stops?.answer;
+  // Enter stops the dictation, as the talk key does, and the next one sends the message, adds the
+  // quote, answers or starts the agent. On the page, a button keeps its Enter. Ctrl+Enter stops a
+  // dictation into the first message too, since it would start the agent. A dictation into an
+  // answer stops with any Enter on its card, and with Enter in the composer or on the page.
   const stops = mode.enter_stops === "message"
-    ? composer || (where === "page" && !(target !== null && target.matches('button, [role="button"]')))
-    : mode.enter_stops === "comment" && comment;
-  if (key === "Enter" && stops && plain && !event.shiftKey && !mode.dialog) {
+    ? !mode.dialog && plain && !event.shiftKey && (composer || (where === "page" && !button))
+    : mode.enter_stops === "comment"
+      ? plain && !event.shiftKey && into === "comment"
+      : mode.enter_stops === "new_agent"
+        ? !event.altKey && !event.shiftKey && into === "new_agent"
+        : answer !== undefined && !mode.dialog && target !== null
+          && (target.closest(`[data-question-item="${answer.item}"]`) !== null
+            || (plain && !event.shiftKey && (composer || (where === "page" && !button))));
+  // The handlers of a field or a card, which would answer or start the agent, see no Enter that
+  // stops.
+  const own = mode.enter_stops !== "message";
+  if (key === "Enter" && stops) {
     event.preventDefault();
+    if (own) {
+      event.stopPropagation();
+    }
     if (!event.repeat) {
       enterStopped = true;
       send({ type: "talk", action: "stop" });
@@ -274,6 +310,9 @@ document.addEventListener("keydown", (event) => {
   }
   if (key === "Enter" && event.repeat && enterStopped) {
     event.preventDefault();
+    if (own) {
+      event.stopPropagation();
+    }
     return;
   }
   const letter = key.length === 1 ? key.toLowerCase() : "";
@@ -303,11 +342,11 @@ document.addEventListener("keydown", (event) => {
   // The talk key dictates: its press and its release go to the app, and its repeats nowhere.
   const talk = mode.talk;
   if (talk != null && pressed === talk.key && talk.ctrl === command && talk.alt === event.altKey
-    && talk.shift === event.shiftKey && (where !== "field" || comment) && !mode.dialog) {
+    && talk.shift === event.shiftKey && ((where !== "field" && !mode.dialog) || into !== null)) {
     event.preventDefault();
     if (!event.repeat && talking === null) {
       talking = talk;
-      send({ type: "talk", action: "press", field: comment ? "comment" : "message" });
+      send({ type: "talk", action: "press", field: into ?? "message" });
     }
     return;
   }
@@ -509,6 +548,17 @@ if (field !== null) {
 }
 "#;
 
+/// Gives the focus to the field whose id it receives, the caret at the end of its text. A field
+/// that has the focus keeps its caret.
+const FOCUS_KEEPING_CARET_SCRIPT: &str = r#"
+const field_id = await dioxus.recv();
+const field = document.getElementById(field_id);
+if (field !== null && document.activeElement !== field) {
+  field.focus();
+  field.setSelectionRange(field.value.length, field.value.length);
+}
+"#;
+
 /// Focuses the field whose id it receives, and types the text it receives next at its end, as a
 /// key press would: its `input` event reaches the app as typing does, so keys typed after it come
 /// after it.
@@ -527,14 +577,18 @@ if (field !== null) {
 "#;
 
 /// Types the text it receives at the caret of the field whose id it receives, as one step of its
-/// undo history, with a space on each side where a word touches it.
+/// undo history, with a space on each side where a word touches it. It gives the field the focus
+/// when told to.
 #[cfg(feature = "voice")]
 const INSERT_AT_CARET_SCRIPT: &str = r#"
 const field_id = await dioxus.recv();
 const text = await dioxus.recv();
+const focus = await dioxus.recv();
 const field = document.getElementById(field_id);
 if (field !== null) {
-  field.focus();
+  if (focus) {
+    field.focus();
+  }
   const start = field.selectionStart;
   const end = field.selectionEnd;
   const before = field.value.slice(0, start);
@@ -629,7 +683,8 @@ struct Settings {
     composer_id: &'static str,
     /// A quote's comment field, where the talk key dictates too.
     comment_field_id: &'static str,
-    /// Its text goes to the app with the caret, as the composer's does, for its "/" palette.
+    /// Its text goes to the app with the caret, as the composer's does, for its "/" palette. The
+    /// talk key dictates there too.
     new_agent_prompt_id: &'static str,
     /// The fields where Backspace at the end of the text goes up a folder.
     path_field_ids: [&'static str; 2],
@@ -722,10 +777,16 @@ impl KeyMode {
                     })
             });
         let waiting = waiting.map(|waiting| waiting.kind);
-        let dictating = voice.dictating().is_some();
+        let writing = voice.writing().is_some();
+        // The last words of a dictation a dialog stopped land whatever Esc does: Esc goes to the
+        // dialog.
+        let dictating =
+            writing && !matches!(voice.phase, VoicePhase::Finishing { covered: true, .. });
         let talks = voice.available
             && state.prefs.voice.enabled
-            && (dictating || dictation_target(state).is_some());
+            && (writing
+                || dictation_target(state).is_some()
+                || voice::new_agent_prompt_shown(state));
         Self {
             answer_letters: matches!(waiting, Some(WaitingKind::Approval | WaitingKind::Plan)),
             answer_numbers: !map && waiting == Some(WaitingKind::Question),
@@ -742,8 +803,11 @@ impl KeyMode {
             dictating,
             enter_stops: voice
                 .writing()
-                .filter(|dictation| state.ui.selected == Some(dictation.agent))
-                .map(|dictation| dictation.to.field()),
+                .filter(|to| {
+                    to.agent()
+                        .is_none_or(|agent| state.ui.selected == Some(agent))
+                })
+                .map(Destination::field),
         }
     }
 }
@@ -1024,6 +1088,15 @@ pub fn focus_field_at_end(field_id: &'static str) {
     }
 }
 
+/// Gives the focus to a field with the caret at its end, unless it has the focus already: then
+/// its caret stays.
+pub fn focus_keeping_caret(field_id: &str) {
+    let script = document::eval(FOCUS_KEEPING_CARET_SCRIPT);
+    if let Err(error) = script.send(field_id) {
+        tracing::warn!("cannot focus the field {field_id}: {error}");
+    }
+}
+
 /// Focuses a field and types `text` at its end, as the user would.
 pub fn type_at_end(field_id: &'static str, text: String) {
     let script = document::eval(TYPE_AT_END_SCRIPT);
@@ -1032,11 +1105,24 @@ pub fn type_at_end(field_id: &'static str, text: String) {
     }
 }
 
-/// Focuses a field and types `text` at its caret, as dictation does.
+/// Whether typing into a field gives it the focus.
 #[cfg(feature = "voice")]
-pub fn insert_at_caret(field_id: &'static str, text: &str) {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Focus {
+    Take,
+    /// A dialog has the focus: the field behind it takes the text, and the dialog keeps the keys.
+    Leave,
+}
+
+/// Types `text` at the caret of a field, as dictation does.
+#[cfg(feature = "voice")]
+pub fn insert_at_caret(field_id: &str, text: &str, focus: Focus) {
     let script = document::eval(INSERT_AT_CARET_SCRIPT);
-    if let Err(error) = script.send(field_id).and_then(|()| script.send(text)) {
+    let sent = script
+        .send(field_id)
+        .and_then(|()| script.send(text))
+        .and_then(|()| script.send(focus == Focus::Take));
+    if let Err(error) = sent {
         tracing::warn!("cannot type into the field {field_id}: {error}");
     }
 }
@@ -1139,8 +1225,8 @@ mod tests {
     use crate::state::find::FindPane;
     use crate::state::projects::ProjectKey;
     use crate::state::quotes::Opening;
-    use crate::state::voice::{Destination, VoicePhase};
-    use crate::state::{state_with, summary};
+    use crate::state::voice::VoicePhase;
+    use crate::state::{NewAgentForm, state_with, summary};
 
     #[test]
     fn the_files_pane_scrolls_its_own_highlighted_row() {
@@ -1204,8 +1290,9 @@ mod tests {
         };
         let recording = VoiceState {
             phase: VoicePhase::Recording {
-                agent: AgentId::new(1),
-                to: Destination::Message,
+                to: Destination::Message {
+                    agent: AgentId::new(1),
+                },
                 since: Instant::now(),
                 latched: true,
             },
@@ -1218,6 +1305,10 @@ mod tests {
         let exited = KeyMode::new(&state, &ready);
         // A recording that runs still stops from an exited agent.
         let exited_recording = KeyMode::new(&state, &recording);
+        // The new agent dialog's first message takes dictation with no agent to write for.
+        state.ui.selected = None;
+        state.ui.dialog = Some(Dialog::NewAgent(NewAgentForm::default()));
+        let new_agent = KeyMode::new(&state, &ready);
         state.prefs.voice.enabled = false;
         let off = KeyMode::new(&state, &recording);
 
@@ -1229,6 +1320,7 @@ mod tests {
         assert_eq!(unavailable.talk, None);
         assert_eq!(exited.talk, None);
         assert!(exited_recording.talk.is_some());
+        assert!(new_agent.talk.is_some());
         assert_eq!(off.talk, None);
         assert!(!on.dictating);
         assert!(exited_recording.dictating);
@@ -1247,7 +1339,6 @@ mod tests {
         };
         let recording = |to| VoiceState {
             phase: VoicePhase::Recording {
-                agent: AgentId::new(1),
                 to,
                 since: Instant::now(),
                 latched: true,
@@ -1255,30 +1346,40 @@ mod tests {
             ..ready.clone()
         };
         let finishing = |to| VoiceState {
-            phase: VoicePhase::Finishing {
-                agent: AgentId::new(1),
-                to,
-            },
+            phase: VoicePhase::Finishing { to, covered: false },
             ..ready.clone()
         };
+        let agent = AgentId::new(1);
+        let message = Destination::Message { agent };
         let comment = Destination::Comment {
+            agent,
             opening: Opening::default(),
+        };
+        let item = ItemId::new(9);
+        let answer = Destination::Answer {
+            agent,
+            item,
+            asked: 1,
         };
         let enter_stops =
             |state: &AppState, voice: &VoiceState| KeyMode::new(state, voice).enter_stops;
 
         assert_eq!(enter_stops(&state, &ready), None);
         assert_eq!(
-            enter_stops(&state, &recording(Destination::Message)),
+            enter_stops(&state, &recording(message)),
             Some(Field::Message)
         );
         assert_eq!(
             enter_stops(&state, &recording(comment)),
             Some(Field::Comment)
         );
+        assert_eq!(
+            enter_stops(&state, &recording(answer)),
+            Some(Field::Answer { item, asked: 1 })
+        );
         // The last words are not in yet: Enter sends nothing, and adds no quote.
         assert_eq!(
-            enter_stops(&state, &finishing(Destination::Message)),
+            enter_stops(&state, &finishing(message)),
             Some(Field::Message)
         );
         assert_eq!(
@@ -1287,6 +1388,23 @@ mod tests {
         );
         state.ui.selected = Some(AgentId::new(2));
         assert_eq!(enter_stops(&state, &recording(comment)), None);
+        assert_eq!(enter_stops(&state, &recording(answer)), None);
+        assert_eq!(
+            enter_stops(&state, &recording(Destination::NewAgent)),
+            Some(Field::NewAgent)
+        );
+        // Esc cancels a dictation for no agent too, rather than close the dialog.
+        assert!(KeyMode::new(&state, &recording(Destination::NewAgent)).dictating);
+        // The last words of a dictation a dialog stopped land anyway: Esc goes to the dialog.
+        let covered = VoiceState {
+            phase: VoicePhase::Finishing {
+                to: message,
+                covered: true,
+            },
+            ..ready.clone()
+        };
+        assert!(!KeyMode::new(&state, &covered).dictating);
+        assert!(KeyMode::new(&state, &finishing(message)).dictating);
     }
 
     #[test]
@@ -1497,12 +1615,28 @@ mod tests {
                 BridgeMessage::Talk { action, field: Field::Message } if action == expected
             ));
         }
-        for (field, expected) in [("message", Field::Message), ("comment", Field::Comment)] {
-            let message = format!(r#"{{"type":"talk","action":"press","field":"{field}"}}"#);
+        for (field, expected) in [
+            (r#""message""#, Field::Message),
+            (r#""comment""#, Field::Comment),
+            (r#""new_agent""#, Field::NewAgent),
+            (
+                r#"{"answer":{"item":9,"asked":1}}"#,
+                Field::Answer {
+                    item: ItemId::new(9),
+                    asked: 1,
+                },
+            ),
+        ] {
+            let message = format!(r#"{{"type":"talk","action":"press","field":{field}}}"#);
             assert!(matches!(
                 serde_json::from_str(&message).unwrap(),
                 BridgeMessage::Talk { action: TalkAction::Press, field } if field == expected
             ));
+            assert_eq!(
+                serde_json::to_string(&expected).unwrap(),
+                field,
+                "the script reads the field Enter stops in as serde writes it"
+            );
         }
         assert_eq!(
             serde_json::to_value(field_text).unwrap(),

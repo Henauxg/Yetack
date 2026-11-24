@@ -28,6 +28,7 @@ use crate::state::actions::{Direction, StartField};
 use crate::state::folder_field::{self, FolderRow};
 use crate::state::new_agent_palette::{KeyResult, PaletteKey, Written};
 use crate::state::projects::ProjectKey;
+use crate::state::voice::Destination;
 use crate::state::{
     AppState, Dialog, FolderAction, FolderList, FormMenu, ImageView, Loadable, NewAgentForm,
     NewAgentTab, Utf16Offset, WorkingFolderForm, accounts, actions, new_agent_palette, projects,
@@ -45,8 +46,10 @@ use crate::ui::open_file::{self as open_file_view, OpenFileDialog, UP_ROW};
 use crate::ui::palette::NewAgentPalette;
 use crate::ui::presence::{Presence, Shown, use_presence};
 use crate::ui::settings::SettingsDialog;
+use crate::ui::voice::{FieldMic, FieldWordsRow, stop_dictation_first};
 use crate::ui::zoom::ZoomImage;
 use crate::ui::{dialog_height, projects_tab};
+use crate::voice_desk::VoiceDesk;
 
 /// The class of the box over the window that holds the open dialog. `dialog_height` finds the
 /// dialogs in it.
@@ -54,6 +57,9 @@ pub const OVERLAY_CLASS: &str = "overlay";
 
 /// Recent folders the new agent dialog offers.
 const RECENT_FOLDERS: usize = 6;
+
+/// The clip of a dictation's words under the first message.
+const NEW_AGENT_VOICE_ID: &str = "new-agent-voice";
 
 /// The widths of the rows that stand for folders and sessions on their way.
 const PLACEHOLDER_WIDTHS: [&str; RECENT_FOLDERS] = ["72%", "58%", "66%", "50%", "62%", "54%"];
@@ -728,12 +734,24 @@ fn StartForm(form: NewAgentForm) -> Element {
     };
     let now = now();
     let can_start = !typed_folder.trim().is_empty() && !form.starting;
-    let start =
-        move || cockpit.change_with_drafts(|state, drafts| actions::start_agent(state, drafts));
+    let voice: VoiceDesk = use_context();
+    let start = move || {
+        if stop_dictation_first(voice, |to| to == Destination::NewAgent) {
+            return;
+        }
+        cockpit.change_with_drafts(|state, drafts| actions::start_agent(state, drafts));
+    };
+    // A held Enter's repeats start nothing: the press may have stopped a dictation, whose words
+    // come in while the key is still down.
+    let start_by_key = move |event: &KeyboardEvent| {
+        if !event.is_auto_repeating() {
+            start();
+        }
+    };
     let start_on_command_enter = move |event: KeyboardEvent| {
         let command = event.modifiers().ctrl() || event.modifiers().meta();
         if command && event.key() == Key::Enter {
-            start();
+            start_by_key(&event);
         }
     };
     // As in the composer: Enter starts, and Shift+Enter adds a line.
@@ -742,7 +760,7 @@ fn StartForm(form: NewAgentForm) -> Element {
         let plain_enter = event.key() == Key::Enter && !modifiers.shift() && !modifiers.alt();
         if plain_enter && !event.is_composing() {
             event.prevent_default();
-            start();
+            start_by_key(&event);
         }
     };
     // While the "/" palette is open, the keys move in it, Enter and Tab insert its command, and Esc
@@ -830,7 +848,7 @@ fn StartForm(form: NewAgentForm) -> Element {
                             if event.modifiers().ctrl() || event.modifiers().meta() {
                                 start_on_command_enter(event);
                             } else {
-                                folder_key(cockpit, &event);
+                                folder_key(cockpit, &event, || start_by_key(&event));
                             }
                         },
                     }
@@ -978,6 +996,7 @@ fn StartForm(form: NewAgentForm) -> Element {
                 if palette_open {
                     NewAgentPalette {}
                 }
+                FieldWordsRow { to: Destination::NewAgent, clip_id: NEW_AGENT_VOICE_ID.to_owned() }
                 div { class: "prompt-tools",
                     div { class: "menu-anchor",
                         button {
@@ -1012,6 +1031,7 @@ fn StartForm(form: NewAgentForm) -> Element {
                             FormModeMenu { mode: form.mode }
                         }
                     }
+                    FieldMic { to: Destination::NewAgent }
                 }
             }
             div { class: "dialog-actions",
@@ -1096,7 +1116,11 @@ fn WorkingFolderDialog(form: WorkingFolderForm) -> Element {
                             initial_value: "{seed}",
                             onmounted: move |_| bridge::focus_field_at_end(FOLDER_FIELD_ID),
                             oninput: move |event: FormEvent| type_folder(cockpit, event.value()),
-                            onkeydown: move |event: KeyboardEvent| folder_key(cockpit, &event),
+                            onkeydown: move |event: KeyboardEvent| {
+                                folder_key(cockpit, &event, || {
+                                    cockpit.change_with_drafts(|state, drafts| working_folder::submit(state, drafts));
+                                });
+                            },
                         }
                     }
                     if let Some(error) = &form.error {
@@ -1241,9 +1265,9 @@ fn type_folder(cockpit: Cockpit, text: String) {
 }
 
 /// The folder field's keys, as the "Open file" dialog's path field has them. Enter takes the
-/// highlighted folder, or with none highlighted, starts the agent, or forks or moves it in the
-/// working folder dialog.
-fn folder_key(cockpit: Cockpit, event: &KeyboardEvent) {
+/// highlighted folder, or with none highlighted, runs `submit`: it starts the agent, or forks or
+/// moves it in the working folder dialog.
+fn folder_key(cockpit: Cockpit, event: &KeyboardEvent, submit: impl FnOnce()) {
     if event.modifiers().alt() || event.is_composing() {
         return;
     }
@@ -1260,10 +1284,7 @@ fn folder_key(cockpit: Cockpit, event: &KeyboardEvent) {
         Key::Enter => {
             event.prevent_default();
             if !take_folder(cockpit, None) {
-                cockpit.change_with_drafts(|state, drafts| match state.ui.dialog {
-                    Some(Dialog::WorkingFolder(_)) => working_folder::submit(state, drafts),
-                    _ => actions::start_agent(state, drafts),
-                });
+                submit();
             }
             return;
         }
