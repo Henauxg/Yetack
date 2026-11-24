@@ -70,8 +70,8 @@ const restarts = new Map();
 const MAX_RESTARTS = 3;
 // The output the daemon keeps of each terminal, in bytes, as `terminal.attach` answers it.
 const KEPT_BYTES = 512 * 1024;
-// Bytes, not lines (coder/ghostty-web#140): about 6400 lines at 110 columns.
-const HISTORY_BYTES = 10 * 1000 * 1000;
+// A new terminal's history: bytes, not lines (coder/ghostty-web#140).
+let scrollbackBytes = settings.scrollback_bytes;
 // The largest size the kept output replays at. Any client can give the PTY a size, and
 // ghostty-web would hold a cell for each of a 65535 by 65535 screen. A real pane is far smaller.
 const MAX_COLS = 1000;
@@ -517,7 +517,7 @@ function terminalFor(agent, terminal) {
     fontSize: 13,
     fontFamily: color("--mono", "monospace"),
     cursorBlink: true,
-    scrollback: HISTORY_BYTES,
+    scrollback: scrollbackBytes,
     theme: {
       background: "#121212",
       foreground: "#d8d8d8",
@@ -849,6 +849,8 @@ function receive(message) {
     entry.term.focus();
   } else if (message.type === "shortcut") {
     shortcut = message;
+  } else if (message.type === "scrollback") {
+    scrollbackBytes = message.bytes;
   } else if (message.type === "focus" && entry !== undefined) {
     entry.term.focus();
   } else if (message.type === "live") {
@@ -893,6 +895,9 @@ struct Settings {
     settle_ms: u32,
     min: u16,
     max: u16,
+    /// [`crate::prefs::Scrollback::bytes`] as the script starts: the pane may open a terminal
+    /// before the script reads its first message.
+    scrollback_bytes: u32,
 }
 
 /// What the page's script says.
@@ -974,6 +979,8 @@ enum ToPage {
         shift: bool,
         key: String,
     },
+    /// The history the terminals opened from now on keep: [`crate::prefs::Scrollback::bytes`].
+    Scrollback { bytes: u32 },
     Output {
         agent: AgentId,
         terminal: TerminalId,
@@ -1105,6 +1112,7 @@ pub fn use_terminal_script(cockpit: Cockpit) {
             settle_ms: FIT_SETTLE_MS,
             min: MIN_TERMINAL_SIZE,
             max: MAX_TERMINAL_SIZE,
+            scrollback_bytes: cockpit.state.peek().prefs.terminal.scrollback.bytes(),
         };
         if let Err(error) = script
             .send(GHOSTTY_WEB)
@@ -1166,6 +1174,13 @@ pub fn use_terminal_script(cockpit: Cockpit) {
         };
         if let Err(error) = script.send(message) {
             tracing::warn!("cannot give the terminal script its shortcut: {error}");
+        }
+    });
+    let scrollback = use_memo(move || cockpit.state.read().prefs.terminal.scrollback);
+    use_effect(move || {
+        let bytes = scrollback().bytes();
+        if let Err(error) = script.send(ToPage::Scrollback { bytes }) {
+            tracing::warn!("cannot give the terminal script its scrollback: {error}");
         }
     });
     // The output a terminal kept goes to the page once, as it comes.
@@ -1502,6 +1517,7 @@ mod tests {
             settle_ms: FIT_SETTLE_MS,
             min: 120,
             max: 2000,
+            scrollback_bytes: 10_000_000,
         };
         let agent = AgentId::new(3);
         let terminal = TerminalId::new(2);
@@ -1540,6 +1556,7 @@ mod tests {
                 terminal,
                 action: PageAction::SelectAll,
             },
+            ToPage::Scrollback { bytes: 25_000_000 },
         ];
         let from_page = [
             r#"{"type":"input","agent":3,"terminal":2,"data":"ls\r"}"#,
@@ -1565,7 +1582,10 @@ mod tests {
 
         assert_eq!(
             serde_json::to_value(settings).unwrap(),
-            json!({ "screen_id": "terminal-screen", "settle_ms": 180, "min": 120, "max": 2000 })
+            json!({
+                "screen_id": "terminal-screen", "settle_ms": 180, "min": 120, "max": 2000,
+                "scrollback_bytes": 10_000_000,
+            })
         );
         assert_eq!(
             serde_json::to_value(to_page).unwrap(),
@@ -1579,6 +1599,7 @@ mod tests {
                 { "type": "live", "terminals": [{ "agent": 3, "terminal": 2 }] },
                 { "type": "links", "id": 5, "links": [{ "start": 0, "end": 6, "path": "a.rs", "line": 2 }] },
                 { "type": "act", "agent": 3, "terminal": 2, "action": "select_all" },
+                { "type": "scrollback", "bytes": 25_000_000 },
             ])
         );
         assert!(

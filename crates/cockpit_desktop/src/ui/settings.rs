@@ -1,10 +1,10 @@
 //! The Settings dialog, from the gear in the sidebar's foot. Its General tab holds the app's
 //! notifications, as the sidebar's bell sets them, where comments on quotes show, how long a
 //! message sent to a working agent can still be cancelled, whether a new agent's files pane shows,
-//! and where Local's agents run from the next start. Its last section, About, gives the app's
-//! version with a button that copies it, a newer release, and whether the app looks for one. Its
-//! Keyboard tab lists every shortcut and records new ones for the commands. Its Projects tab edits
-//! the projects the sidebar can group agents by.
+//! how much scrollback a new terminal keeps, and where Local's agents run from the next start.
+//! Its last section, About, gives the app's version with a button that copies it, a newer
+//! release, and whether the app looks for one. Its Keyboard tab lists every shortcut and records
+//! new ones for the commands. Its Projects tab edits the projects the sidebar can group agents by.
 
 use std::sync::LazyLock;
 
@@ -17,7 +17,7 @@ use crate::format;
 use crate::keymap::{self, Chord, Command, FixedShortcut, Group, Keymap, Refusal};
 use crate::prefs::{
     CommentPlacement, EscStop, FirstMark, GroupBy, NotificationLevel, PaneState, ProjectSplit,
-    SteerHold, ToolCallDetail,
+    Scrollback, SteerHold, ToolCallDetail,
 };
 use crate::state::machines::THIS_COMPUTER;
 use crate::state::settings::{LocalStart, StartDaemon};
@@ -46,6 +46,7 @@ const STEER_HOLD_LABEL_ID: &str = "setting-steer-hold";
 const ESC_STOP_LABEL_ID: &str = "setting-esc-stop";
 const TOOL_CALLS_LABEL_ID: &str = "setting-tool-calls";
 const FILES_PANE_LABEL_ID: &str = "setting-files-pane";
+const SCROLLBACK_LABEL_ID: &str = "setting-scrollback";
 const GROUP_BY_LABEL_ID: &str = "setting-group-by";
 const PROJECT_SPLIT_LABEL_ID: &str = "setting-project-split";
 const FIRST_MARK_LABEL_ID: &str = "setting-first-mark";
@@ -58,6 +59,15 @@ fn start_label(choice: StartDaemon) -> &'static str {
         StartDaemon::InApp => "In this app",
         StartDaemon::Service => "Background service",
         StartDaemon::Ask => "Ask",
+    }
+}
+
+fn scrollback_label(scrollback: Scrollback) -> &'static str {
+    match scrollback {
+        Scrollback::Short => "3,000",
+        Scrollback::Medium => "6,000",
+        Scrollback::Long => "15,000",
+        Scrollback::Longest => "30,000",
     }
 }
 
@@ -176,6 +186,7 @@ fn GeneralTab(start_error: Option<String>) -> Element {
         esc_stop,
         new_pane,
         pane_keys,
+        scrollback,
     ) = {
         let state = cockpit.state.read();
         (
@@ -188,6 +199,7 @@ fn GeneralTab(start_error: Option<String>) -> Element {
             state.prefs.chat.esc_stop,
             state.prefs.files_pane.new_agents,
             state.prefs.keys.shown(Command::FilesPane),
+            state.prefs.terminal.scrollback,
         )
     };
     let (first_mark, mark_keys) = {
@@ -368,6 +380,26 @@ fn GeneralTab(start_error: Option<String>) -> Element {
                             aria_pressed: pane == new_pane,
                             onclick: move |_| cockpit.update(|state| settings::set_new_agents_pane(state, pane)),
                             "{pane_label(pane)}"
+                        }
+                    }
+                }
+            }
+            h3 { class: "settings-title", "Terminal" }
+            div { class: "setting-row",
+                div { class: "setting-text",
+                    span { id: SCROLLBACK_LABEL_ID, class: "setting-label", "Scrollback" }
+                    span { class: "setting-help",
+                        "Lines kept per terminal, at 120 columns. Wider terminals keep fewer. 30,000 lines can take about 65 MB of memory per terminal. Applies to terminals opened after the change."
+                    }
+                }
+                div { class: "segmented", role: "group", aria_labelledby: SCROLLBACK_LABEL_ID,
+                    for &choice in Scrollback::VARIANTS {
+                        button {
+                            key: "{scrollback_label(choice)}",
+                            class: if choice == scrollback { "segment chosen" } else { "segment" },
+                            aria_pressed: choice == scrollback,
+                            onclick: move |_| cockpit.update(|state| settings::set_scrollback(state, choice)),
+                            "{scrollback_label(choice)}"
                         }
                     }
                 }

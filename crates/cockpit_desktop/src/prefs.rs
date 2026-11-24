@@ -913,6 +913,9 @@ pub struct TerminalPrefs {
     /// The right pane's width in pixels. `None` keeps the default.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub width: Option<u16>,
+    /// The history a terminal keeps, from the Settings dialog. A terminal keeps the one it opened
+    /// with.
+    pub scrollback: Scrollback,
 }
 
 impl TerminalPrefs {
@@ -976,6 +979,50 @@ pub enum TerminalPlace {
     Right,
     /// A tab of the file view, before the files' tabs.
     FileView,
+}
+
+/// The history each terminal keeps. Ghostty counts it in bytes, so a wider terminal keeps fewer
+/// lines: each choice names about how many it keeps at 120 columns.
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, Default, EnumString, IntoStaticStr, VariantArray,
+)]
+#[strum(serialize_all = "snake_case")]
+pub enum Scrollback {
+    /// About 3,000 lines.
+    Short,
+    /// About 6,000 lines.
+    #[default]
+    Medium,
+    /// About 15,000 lines.
+    Long,
+    /// About 30,000 lines.
+    Longest,
+}
+
+impl Scrollback {
+    /// The size ghostty-web gives Ghostty as its `scrollback`, which Ghostty counts in bytes.
+    pub fn bytes(self) -> u32 {
+        match self {
+            Self::Short => 5_000_000,
+            Self::Medium => 10_000_000,
+            Self::Long => 25_000_000,
+            Self::Longest => 50_000_000,
+        }
+    }
+}
+
+impl Serialize for Scrollback {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(self.into())
+    }
+}
+
+/// A word this version does not know, from another version of the app, reads as the default.
+impl<'de> Deserialize<'de> for Scrollback {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let word = String::deserialize(deserializer)?;
+        Ok(word.parse().unwrap_or_default())
+    }
 }
 
 /// The terminal pane's default and allowed sizes, in pixels.
@@ -2031,6 +2078,7 @@ mod tests {
             serde_json::json!({
                 "place": "file_view",
                 "agents": {"build-box": {"4": "right"}, "laptop": {"2": "file_view"}},
+                "scrollback": "medium",
             })
         );
         assert_eq!(
@@ -2050,6 +2098,36 @@ mod tests {
             TerminalPlace::FileView
         );
         assert!(!prefs.agents.contains_key("build-box"));
+    }
+
+    #[test]
+    fn the_scrollback_words_and_sizes_are_pinned_and_an_unknown_word_reads_as_the_default() {
+        let words: Vec<&str> = Scrollback::VARIANTS
+            .iter()
+            .map(|&scrollback| scrollback.into())
+            .collect();
+        let bytes: Vec<u32> = Scrollback::VARIANTS
+            .iter()
+            .map(|scrollback| scrollback.bytes())
+            .collect();
+        let chosen: Prefs =
+            serde_json::from_str(r#"{"terminal": {"scrollback": "longest"}}"#).unwrap();
+        let unknown: Prefs =
+            serde_json::from_str(r#"{"terminal": {"scrollback": "endless"}}"#).unwrap();
+        let older: Prefs = serde_json::from_str(r#"{"terminal": {"place": "right"}}"#).unwrap();
+
+        assert_eq!(words, ["short", "medium", "long", "longest"]);
+        assert_eq!(bytes, [5_000_000, 10_000_000, 25_000_000, 50_000_000]);
+        assert_eq!(chosen.terminal.scrollback, Scrollback::Longest);
+        assert_eq!(unknown.terminal.scrollback, Scrollback::Medium);
+        assert_eq!(older.terminal.scrollback, Scrollback::Medium);
+        assert!(
+            !serde_json::to_value(Prefs::default())
+                .unwrap()
+                .as_object()
+                .unwrap()
+                .contains_key("terminal")
+        );
     }
 
     #[test]

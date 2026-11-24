@@ -14,7 +14,7 @@ use crate::config::{DAEMON_SECTION, DaemonConfig};
 use crate::keymap::{Chord, Command, Refusal};
 use crate::prefs::{
     AfterDictation, CommentPlacement, DictationLanguage, EscStop, LiveTextRefresh, PaneState,
-    ProjectId, SteerHold, ToolCallDetail,
+    ProjectId, Scrollback, SteerHold, ToolCallDetail,
 };
 
 /// What the Local section says where the background service does not run.
@@ -161,6 +161,12 @@ pub fn set_tool_calls(state: &mut AppState, detail: ToolCallDetail) {
 /// their hold.
 pub fn set_steer_hold(state: &mut AppState, hold: SteerHold) {
     state.prefs.chat.steer_hold = hold;
+}
+
+/// The history the terminals opened from now on keep. The open ones keep theirs: ghostty-web
+/// cannot change it.
+pub fn set_scrollback(state: &mut AppState, scrollback: Scrollback) {
+    state.prefs.terminal.scrollback = scrollback;
 }
 
 /// Off hides the mic button and frees the talk key.
