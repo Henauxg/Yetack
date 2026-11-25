@@ -23,6 +23,7 @@ use super::app_state::{
     self, AgentEntry, AppState, FileFreshness, FileRead, Loadable, MachineState,
 };
 use super::apply::forget_agent;
+use super::docks::{Dock, TabKey};
 use super::drafts::{Drafts, NewAgentDraft, Palette, QuestionDraft, SlashWord, SwitcherDraft};
 use super::projects::ProjectKey;
 use super::reload::{self, Reload};
@@ -34,8 +35,8 @@ use super::ui_state::{
 };
 use super::utf16_offset::Utf16Offset;
 use super::{
-    accounts, blocks_view, export, file_edits, file_reread, file_tree, folder_field, grouping,
-    open_file, projects, quotes, sending, terminals, title_emoji,
+    accounts, blocks_view, docks, export, file_edits, file_reread, file_tree, folder_field,
+    grouping, open_file, projects, quotes, sending, terminals, title_emoji,
 };
 use crate::format::{self, MODE_CHOICES, MODEL_CHOICES};
 use crate::machine::MachineId;
@@ -1571,8 +1572,8 @@ pub fn open_file(state: &mut AppState, agent: AgentId, path: PathBuf, line: Opti
 /// mode it had, with the commit it showed. A file whose tab was closed opens again. The terminal
 /// is no place: Back over it shows the file under it.
 pub fn travel_files(state: &mut AppState, agent: AgentId, travel: Travel) {
-    if travel == Travel::Back && terminals::file_view_shows_terminal(state, agent) {
-        state.ui.terminal_tab_shown.remove(&agent);
+    if travel == Travel::Back && terminals::side_terminal(state, agent).is_some() {
+        state.ui.side_terminal.remove(&agent);
         return;
     }
     let Some(view) = state.ui.file_views.get_mut(&agent) else {
@@ -1594,7 +1595,7 @@ pub fn travel_files(state: &mut AppState, agent: AgentId, travel: Travel) {
             view.mode_settled = true;
         }
         view.take_place_commit(place.commit);
-        state.ui.terminal_tab_shown.remove(&agent);
+        state.ui.side_terminal.remove(&agent);
         state.ui.popover = None;
         state.ui.badge = None;
         return;
@@ -1655,11 +1656,11 @@ fn open_place(
     entry.files.insert(path.clone(), Loadable::NotRequested);
     entry.file_freshness = FileFreshness::default();
     let shown = state.ui.file_views.contains_key(&agent);
-    let view = state
-        .ui
-        .file_views
-        .entry(agent)
-        .or_insert_with(|| FileView::new(path.clone(), line, mode));
+    let view = state.ui.file_views.entry(agent).or_insert_with(|| {
+        let mut view = FileView::new(path.clone(), line, mode);
+        view.closed = state.ui.closed_files.remove(&agent).unwrap_or_default();
+        view
+    });
     if shown && arrival == Arrival::Opened && (view.path != path || view.line != line) {
         view.remember_place();
     }
@@ -1671,7 +1672,7 @@ fn open_place(
     view.line = line;
     view.mode = mode;
     view.mode_settled = matches!(arrival, Arrival::Travelled(Some(_)));
-    state.ui.terminal_tab_shown.remove(&agent);
+    state.ui.side_terminal.remove(&agent);
     state.ui.popover = None;
     state.ui.badge = None;
     // A link in the agent map opens the file view, which the map would cover.
@@ -1689,7 +1690,7 @@ pub fn show_file(state: &mut AppState, agent: AgentId, path: PathBuf) {
         .file_view(agent)
         .is_some_and(|view| view.path == path)
     {
-        state.ui.terminal_tab_shown.remove(&agent);
+        state.ui.side_terminal.remove(&agent);
         state.ui.popover = None;
     } else {
         open_file(state, agent, path, None);
@@ -1746,11 +1747,12 @@ pub fn close_tab(state: &mut AppState, agent: AgentId, path: &Path) {
         return;
     };
     let changed = entry.changed_paths();
-    let Some(view) = state.ui.file_views.get_mut(&agent) else {
+    let tabs = docks::file_tabs(state, agent);
+    let Some(index) = tabs.iter().position(|tab| tab == path) else {
         return;
     };
-    let tabs = view.tabs(&changed);
-    let Some(index) = tabs.iter().position(|tab| tab == path) else {
+    docks::forget_tab(state, agent, &TabKey::File(path.to_owned()));
+    let Some(view) = state.ui.file_views.get_mut(&agent) else {
         return;
     };
     view.opened.retain(|opened| opened != path);
@@ -1762,14 +1764,14 @@ pub fn close_tab(state: &mut AppState, agent: AgentId, path: &Path) {
     }
     let after = tabs.get(index + 1);
     let before = index.checked_sub(1).and_then(|before| tabs.get(before));
-    let terminal_shown = state.ui.terminal_tab_shown.contains(&agent);
+    let terminal_shown = state.ui.side_terminal.get(&agent).copied();
     match after.or(before) {
         Some(next) => open_file(state, agent, next.clone(), None),
         None => close_file_view(state, agent),
     }
-    // A file closed behind the terminal's tab leaves the terminal shown.
-    if terminal_shown {
-        terminals::show_tab(state, agent);
+    // A file closed behind a terminal's tab leaves the terminal shown.
+    if let Some(terminal) = terminal_shown {
+        state.ui.side_terminal.insert(agent, terminal);
     }
 }
 
@@ -1821,8 +1823,16 @@ pub fn show_read_file(
     entry.files.insert(found, Loadable::Loaded(read));
 }
 
+/// Closes the agent's files. The changed ones stay closed when the view opens again.
 pub fn close_file_view(state: &mut AppState, agent: AgentId) {
-    state.ui.file_views.remove(&agent);
+    if let Some(view) = state.ui.file_views.remove(&agent) {
+        let mut closed = view.closed;
+        if let Some(entry) = state.agents.get(&agent) {
+            closed.extend(entry.changed_paths());
+        }
+        state.ui.closed_files.insert(agent, closed);
+    }
+    docks::forget_files(state, agent);
     state.ui.badge = None;
     state.ui.popover.take_if(|popover| match popover {
         Popover::FileList => true,
@@ -1838,11 +1848,9 @@ pub fn close_file_view(state: &mut AppState, agent: AgentId) {
     }
 }
 
-/// The file view's "×": closes its files, and hides the terminal when it is one of its tabs.
+/// The side dock's "×": closes its files, and hides its terminals.
 pub fn close_file_panel(state: &mut AppState, agent: AgentId) {
-    if terminals::in_file_view(state, agent) {
-        terminals::hide(state, agent);
-    }
+    terminals::hide_dock(state, agent, Dock::Side);
     close_file_view(state, agent);
 }
 

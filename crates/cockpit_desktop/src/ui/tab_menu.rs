@@ -1,12 +1,13 @@
 //! The menu a right-click on a file view tab, or on its row in the list of open files, opens at
-//! the pointer: close the tab or a group of tabs around it, copy its path, put it in the message,
-//! or show it in the files pane.
+//! the pointer: pin it, close it or a group of tabs around it, copy its path, put it in the
+//! message, or show it in the files pane.
 
 use dioxus::prelude::*;
 
 use crate::bridge::{self, COMPOSER_ID};
 use crate::connection::Cockpit;
-use crate::state::tab_menu::{self, TabItem, TabTarget};
+use crate::state::docks::{self, TabKey};
+use crate::state::tab_menu::{self, TabGroup, TabItem, TabTarget};
 use crate::state::{TabMenuOrigin, actions, file_tree, git};
 use crate::ui::file_list::FILTER_ID;
 use crate::ui::files_pane;
@@ -43,7 +44,8 @@ pub fn TabMenu() -> Element {
             key: row.item.key(target.origin),
             enabled: row.enabled,
             title: title(row.item, row.enabled),
-            divided: row.item == TabItem::CopyPath || Some(row.item) == first_outside,
+            divided: matches!(row.item, TabItem::Close(TabGroup::This) | TabItem::CopyPath)
+                || Some(row.item) == first_outside,
             danger: false,
         })
         .collect();
@@ -88,6 +90,10 @@ fn run(cockpit: Cockpit, target: &TabTarget, item: TabItem) {
     let agent = target.agent;
     let path = &target.path;
     match item {
+        TabItem::Pin | TabItem::Unpin => cockpit.update(|state| {
+            tab_menu::close_menu(state);
+            docks::toggle_pin(state, agent, &TabKey::File(path.clone()));
+        }),
         TabItem::Close(group) => cockpit.update_with_drafts(|state, drafts| {
             tab_menu::close(state, drafts, agent, path, group, target.origin);
         }),

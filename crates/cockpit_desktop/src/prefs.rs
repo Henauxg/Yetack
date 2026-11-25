@@ -73,8 +73,9 @@ use strum::{EnumString, IntoStaticStr, VariantArray};
 use crate::config::Environment;
 use crate::connection::Cockpit;
 use crate::keymap::Keymap;
-use crate::state::Block;
+use crate::state::docks::AgentLayout;
 use crate::state::projects::ProjectKey;
+use crate::state::{Block, ViewMode};
 
 pub const PREFS_FOLDER: &str = "yetack-desktop";
 const PREFS_FILE: &str = "prefs.json";
@@ -895,24 +896,21 @@ pub struct ClearedFolders {
     pub after: Option<ItemId>,
 }
 
-/// Where each agent's terminal pane sits, and its size in each place. Whether it shows is not
-/// kept: it opens closed.
+/// The dock each agent's new terminals open in, and the bottom dock's height. Whether the
+/// terminals show is not kept: they open hidden.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct TerminalPrefs {
-    /// The place of an agent that has none in `agents`: the last place chosen, which the agents
-    /// that start after it take.
-    pub place: TerminalPlace,
-    /// The agents' places, by daemon machine, then by the daemon's agent id. A move keeps the
-    /// place of every agent the app lists.
+    /// The dock of an agent that has none in `agents`: the last dock a terminal moved to, which the
+    /// agents that start after it take.
+    pub place: Dock,
+    /// The agents' docks, by daemon machine, then by the daemon's agent id. A move keeps the
+    /// dock of every agent the app lists.
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
-    pub agents: BTreeMap<String, BTreeMap<AgentId, TerminalPlace>>,
+    pub agents: BTreeMap<String, BTreeMap<AgentId, Dock>>,
     /// The bottom panel's height in pixels. `None` keeps the default.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub height: Option<u16>,
-    /// The right pane's width in pixels. `None` keeps the default.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub width: Option<u16>,
     /// The history a terminal keeps, from the Settings dialog. A terminal keeps the one it opened
     /// with.
     pub scrollback: Scrollback,
@@ -923,7 +921,7 @@ impl TerminalPrefs {
         *self == Self::default()
     }
 
-    pub fn agent(&self, machine: &str, agent: AgentId) -> TerminalPlace {
+    pub fn agent(&self, machine: &str, agent: AgentId) -> Dock {
         self.agents
             .get(machine)
             .and_then(|places| places.get(&agent))
@@ -942,7 +940,7 @@ impl TerminalPrefs {
     }
 
     /// Moves the agent's terminal to `place`, which the next agents take too.
-    pub fn set_agent(&mut self, machine: &str, agent: AgentId, place: TerminalPlace) {
+    pub fn set_agent(&mut self, machine: &str, agent: AgentId, place: Dock) {
         self.agents
             .entry(machine.to_owned())
             .or_default()
@@ -969,16 +967,40 @@ impl TerminalPrefs {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+/// A panel of tabs: files and terminals.
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Hash,
+    Default,
+    Serialize,
+    Deserialize,
+    IntoStaticStr,
+)]
 #[serde(rename_all = "snake_case")]
-pub enum TerminalPlace {
+#[strum(serialize_all = "snake_case")]
+pub enum Dock {
     /// Under the chat and the composer.
     #[default]
     Bottom,
-    /// At the window's right edge.
-    Right,
-    /// A tab of the file view, before the files' tabs.
-    FileView,
+    /// At the window's right, where the file view shows. Also reads "right" and "file_view", the
+    /// words of older preference files.
+    #[serde(alias = "right", alias = "file_view")]
+    Side,
+}
+
+impl Dock {
+    pub fn other(self) -> Self {
+        match self {
+            Self::Bottom => Self::Side,
+            Self::Side => Self::Bottom,
+        }
+    }
 }
 
 /// The history each terminal keeps. Ghostty counts it in bytes, so a wider terminal keeps fewer
@@ -1025,9 +1047,8 @@ impl<'de> Deserialize<'de> for Scrollback {
     }
 }
 
-/// The terminal pane's default and allowed sizes, in pixels.
+/// The bottom dock's default and allowed heights, in pixels.
 pub const DEFAULT_TERMINAL_HEIGHT: u16 = 260;
-pub const DEFAULT_TERMINAL_WIDTH: u16 = 480;
 pub const MIN_TERMINAL_SIZE: u16 = 120;
 pub const MAX_TERMINAL_SIZE: u16 = 2000;
 
@@ -1192,7 +1213,7 @@ impl<'de> Deserialize<'de> for StatusFilter {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct FileViewPrefs {
     /// The file view's width as a share of the window's, between 0 and 1. `None` keeps the
@@ -1201,6 +1222,39 @@ pub struct FileViewPrefs {
     pub width_share: Option<f64>,
     /// Long lines wrap instead of scrolling sideways.
     pub wrap: bool,
+    /// Each agent's files, by daemon machine, then by the daemon's agent id, so that they open
+    /// again after a restart.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub agents: BTreeMap<String, BTreeMap<AgentId, SavedFiles>>,
+}
+
+/// An agent's files in the file view, as the preferences keep them.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SavedFiles {
+    /// The file the view shows. `None` while the view is closed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub shown: Option<PathBuf>,
+    pub mode: ViewMode,
+    /// The files opened besides the changed ones, in the order they opened.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub opened: Vec<PathBuf>,
+    /// The changed files whose tab the user closed.
+    #[serde(skip_serializing_if = "BTreeSet::is_empty")]
+    pub closed: BTreeSet<PathBuf>,
+    /// Its docks: where its terminals sit, and the order and the pins of the tabs.
+    #[serde(skip_serializing_if = "AgentLayout::is_empty")]
+    pub layout: AgentLayout,
+}
+
+impl SavedFiles {
+    /// Whether it keeps nothing, so that the preferences can drop it.
+    pub fn is_empty(&self) -> bool {
+        self.shown.is_none()
+            && self.opened.is_empty()
+            && self.closed.is_empty()
+            && self.layout.is_empty()
+    }
 }
 
 /// The file view's width, as a share of the window's, until it is moved.
@@ -1210,6 +1264,40 @@ impl FileViewPrefs {
     /// The file view's width as a share of the window's.
     pub fn share(&self) -> f64 {
         self.width_share.unwrap_or(DEFAULT_WIDTH_SHARE)
+    }
+
+    pub fn agent(&self, machine: &str, agent: AgentId) -> Option<&SavedFiles> {
+        self.agents.get(machine)?.get(&agent)
+    }
+
+    /// Keeps `files` for the agent, or drops what it kept when `files` is empty.
+    pub fn set_agent(&mut self, machine: &str, agent: AgentId, files: SavedFiles) {
+        if files.is_empty() {
+            self.forget_agent(machine, agent);
+        } else {
+            self.agents
+                .entry(machine.to_owned())
+                .or_default()
+                .insert(agent, files);
+        }
+    }
+
+    /// Keeps the files of the machine's agents that `keep` names.
+    pub fn keep_agents(&mut self, machine: &str, keep: impl Fn(AgentId) -> bool) {
+        if let Some(agents) = self.agents.get_mut(machine) {
+            agents.retain(|&agent, _| keep(agent));
+            if agents.is_empty() {
+                self.agents.remove(machine);
+            }
+        }
+    }
+
+    pub fn forget_agent(&mut self, machine: &str, agent: AgentId) {
+        self.keep_agents(machine, |kept| kept != agent);
+    }
+
+    pub fn forget_machine(&mut self, machine: &str) {
+        self.agents.remove(machine);
     }
 }
 
@@ -1230,8 +1318,8 @@ pub fn file(environment: &Environment) -> Option<PathBuf> {
 
 impl Prefs {
     /// Moves what the preferences keep under a server's name to its new name: its account
-    /// colors, its agents' notification levels, projects, files panes, cleared folders, terminal
-    /// places and places in the sidebar.
+    /// colors, its agents' notification levels, projects, files panes, cleared folders, open files,
+    /// terminal places and places in the sidebar.
     /// What the new name held, left by a server removed earlier, goes.
     pub fn rename_machine(&mut self, old: &str, new: &str) {
         fn moved<V>(map: &mut BTreeMap<String, V>, old: &str, new: &str) {
@@ -1248,6 +1336,7 @@ impl Prefs {
         moved(&mut self.projects.agents, old, new);
         moved(&mut self.files_pane.agents, old, new);
         moved(&mut self.files_pane.cleared, old, new);
+        moved(&mut self.file_view.agents, old, new);
         moved(&mut self.terminal.agents, old, new);
         self.agent_order.retain(|key| key.machine != new);
         for key in &mut self.agent_order {
@@ -1406,6 +1495,8 @@ mod tests {
 
     use super::*;
     use crate::keymap::Command;
+    use crate::state::docks::{DockTabs, TabKey};
+    use cockpit_protocol::TerminalId;
 
     /// Other programs and other versions of the app read this file: its field names are pinned.
     #[test]
@@ -1413,7 +1504,41 @@ mod tests {
         let text = r#"{
   "file_view": {
     "width_share": 0.42,
-    "wrap": true
+    "wrap": true,
+    "agents": {
+      "build-box": {
+        "4": {
+          "shown": "src/lib.rs",
+          "mode": "whole_file",
+          "opened": [
+            "notes/plan.md"
+          ],
+          "closed": [
+            "Cargo.lock"
+          ],
+          "layout": {
+            "side": {
+              "order": [
+                {
+                  "file": "notes/plan.md"
+                },
+                {
+                  "terminal": 2
+                }
+              ],
+              "pinned": [
+                {
+                  "terminal": 2
+                }
+              ]
+            },
+            "terminals": {
+              "2": "side"
+            }
+          }
+        }
+      }
+    }
   },
   "sidebar": {
     "filter": "needs_you",
@@ -1536,6 +1661,31 @@ mod tests {
                 file_view: FileViewPrefs {
                     width_share: Some(0.42),
                     wrap: true,
+                    agents: BTreeMap::from([(
+                        "build-box".to_owned(),
+                        BTreeMap::from([(
+                            AgentId::new(4),
+                            SavedFiles {
+                                shown: Some(PathBuf::from("src/lib.rs")),
+                                mode: ViewMode::WholeFile,
+                                opened: vec![PathBuf::from("notes/plan.md")],
+                                closed: BTreeSet::from([PathBuf::from("Cargo.lock")]),
+                                layout: AgentLayout {
+                                    side: DockTabs {
+                                        order: vec![
+                                            TabKey::File(PathBuf::from("notes/plan.md")),
+                                            TabKey::Terminal(TerminalId::new(2)),
+                                        ],
+                                        pinned: BTreeSet::from([TabKey::Terminal(
+                                            TerminalId::new(2),
+                                        )]),
+                                    },
+                                    terminals: BTreeMap::from([(TerminalId::new(2), Dock::Side)]),
+                                    ..AgentLayout::default()
+                                },
+                            },
+                        )]),
+                    )]),
                 },
                 sidebar: SidebarPrefs {
                     filter: StatusFilter::NeedsYou,
@@ -1794,15 +1944,12 @@ mod tests {
         let mut prefs = Prefs::default();
         prefs
             .terminal
-            .set_agent("devbox", AgentId::new(4), TerminalPlace::Right);
-        prefs.terminal.place = TerminalPlace::Bottom;
+            .set_agent("devbox", AgentId::new(4), Dock::Side);
+        prefs.terminal.place = Dock::Bottom;
 
         prefs.rename_machine("devbox", "lab");
 
-        assert_eq!(
-            prefs.terminal.agent("lab", AgentId::new(4)),
-            TerminalPlace::Right
-        );
+        assert_eq!(prefs.terminal.agent("lab", AgentId::new(4)), Dock::Side);
         assert!(!prefs.terminal.agents.contains_key("devbox"));
     }
 
@@ -2063,40 +2210,33 @@ mod tests {
     }
 
     #[test]
-    fn each_agent_keeps_its_terminals_place_and_new_agents_take_the_last_one() {
+    fn each_agent_keeps_its_terminals_dock_and_new_agents_take_the_last_one() {
         let mut prefs = TerminalPrefs::default();
-        prefs.set_agent("build-box", AgentId::new(4), TerminalPlace::Right);
-        prefs.set_agent("laptop", AgentId::new(2), TerminalPlace::FileView);
+        prefs.set_agent("build-box", AgentId::new(4), Dock::Side);
+        prefs.set_agent("laptop", AgentId::new(2), Dock::Bottom);
 
         let saved = serde_json::to_value(&prefs).unwrap();
         let read: TerminalPrefs = serde_json::from_value(saved.clone()).unwrap();
-        let older: TerminalPrefs = serde_json::from_str(r#"{"place": "right"}"#).unwrap();
+        let older: TerminalPrefs = serde_json::from_str(
+            r#"{"place": "right", "agents": {"build-box": {"4": "file_view", "5": "bottom"}}}"#,
+        )
+        .unwrap();
         prefs.forget_agent("build-box", AgentId::new(4));
 
         assert_eq!(
             saved,
             serde_json::json!({
-                "place": "file_view",
-                "agents": {"build-box": {"4": "right"}, "laptop": {"2": "file_view"}},
+                "place": "bottom",
+                "agents": {"build-box": {"4": "side"}, "laptop": {"2": "bottom"}},
                 "scrollback": "medium",
             })
         );
-        assert_eq!(
-            read.agent("build-box", AgentId::new(4)),
-            TerminalPlace::Right
-        );
-        assert_eq!(
-            read.agent("build-box", AgentId::new(5)),
-            TerminalPlace::FileView
-        );
-        assert_eq!(
-            older.agent("build-box", AgentId::new(4)),
-            TerminalPlace::Right
-        );
-        assert_eq!(
-            prefs.agent("build-box", AgentId::new(4)),
-            TerminalPlace::FileView
-        );
+        assert_eq!(read.agent("build-box", AgentId::new(4)), Dock::Side);
+        assert_eq!(read.agent("build-box", AgentId::new(6)), Dock::Bottom);
+        assert_eq!(older.agent("build-box", AgentId::new(4)), Dock::Side);
+        assert_eq!(older.agent("build-box", AgentId::new(5)), Dock::Bottom);
+        assert_eq!(older.agent("build-box", AgentId::new(6)), Dock::Side);
+        assert_eq!(prefs.agent("build-box", AgentId::new(4)), Dock::Bottom);
         assert!(!prefs.agents.contains_key("build-box"));
     }
 
@@ -2172,6 +2312,26 @@ mod tests {
             file_view: FileViewPrefs {
                 width_share: Some(0.3),
                 wrap: true,
+                agents: BTreeMap::from([(
+                    "devbox".to_owned(),
+                    BTreeMap::from([(
+                        AgentId::new(4),
+                        SavedFiles {
+                            shown: Some(PathBuf::from("src/lib.rs")),
+                            mode: ViewMode::WholeFile,
+                            opened: vec![PathBuf::from("notes/plan.md")],
+                            closed: BTreeSet::from([PathBuf::from("Cargo.lock")]),
+                            layout: AgentLayout {
+                                side: DockTabs {
+                                    order: vec![TabKey::File(PathBuf::from("notes/plan.md"))],
+                                    pinned: BTreeSet::from([TabKey::Terminal(TerminalId::new(2))]),
+                                },
+                                terminals: BTreeMap::from([(TerminalId::new(2), Dock::Side)]),
+                                ..AgentLayout::default()
+                            },
+                        },
+                    )]),
+                )]),
             },
             sidebar: SidebarPrefs {
                 filter: StatusFilter::Exited,
@@ -2227,6 +2387,7 @@ mod tests {
             file_view: FileViewPrefs {
                 width_share: Some(0.3),
                 wrap: true,
+                ..FileViewPrefs::default()
             },
             sidebar: SidebarPrefs {
                 filter: StatusFilter::Exited,

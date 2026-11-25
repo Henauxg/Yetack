@@ -1,6 +1,6 @@
 //! A file view tab's menu, opened by a right-click on the tab or on its row in the list of open
-//! files: close it, the others, the ones before or after it, or all of them; copy its path; put it
-//! in the message; or show it in the files pane.
+//! files: pin it; close it, the others, the ones before or after it, or all of them; copy its
+//! path; put it in the message; or show it in the files pane. A pinned tab closes only by itself.
 //!
 //! From the list, the tabs before and after are the rows the list shows above and below, and a
 //! close keeps the list open.
@@ -10,10 +10,11 @@ use std::path::{Path, PathBuf};
 use cockpit_protocol::AgentId;
 
 use super::app_state::AppState;
+use super::docks::TabKey;
 use super::drafts::Drafts;
 use super::git::PageKind;
 use super::ui_state::{Popover, TabMenuOrigin};
-use super::{actions, file_edits, file_list, file_tree, git, machines, terminals};
+use super::{actions, docks, file_edits, file_list, file_tree, git, machines};
 use crate::file_manager;
 use crate::path_style::{self, PathStyle};
 
@@ -32,6 +33,8 @@ pub enum TabGroup {
 /// A row of the menu.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TabItem {
+    Pin,
+    Unpin,
     Close(TabGroup),
     CopyPath,
     CopyRelativePath,
@@ -42,6 +45,9 @@ pub enum TabItem {
     ShowInFileManager,
 }
 
+// The terminal tab's menu shares these two labels.
+pub const PIN_LABEL: &str = "Pin";
+pub const UNPIN_LABEL: &str = "Unpin";
 // The files pane's menu shares these labels, and the terminal's menu the first.
 pub const COPY_PATH_LABEL: &str = "Copy the path";
 pub const COPY_RELATIVE_PATH_LABEL: &str = "Copy the relative path";
@@ -51,6 +57,8 @@ impl TabItem {
     pub fn label(self, origin: TabMenuOrigin) -> &'static str {
         let list = origin == TabMenuOrigin::List;
         match self {
+            Self::Pin => PIN_LABEL,
+            Self::Unpin => UNPIN_LABEL,
             Self::Close(TabGroup::This) => "Close",
             Self::Close(TabGroup::Others) => "Close the others",
             Self::Close(TabGroup::Before) if list => "Close the files above",
@@ -72,6 +80,7 @@ impl TabItem {
     pub fn key(self, origin: TabMenuOrigin) -> char {
         let list = origin == TabMenuOrigin::List;
         match self {
+            Self::Pin | Self::Unpin => 'p',
             Self::Close(TabGroup::This) => 'w',
             Self::Close(TabGroup::Others) => 'o',
             Self::Close(TabGroup::Before) if list => 'u',
@@ -161,8 +170,10 @@ pub fn target(state: &AppState, drafts: &Drafts) -> Option<TabTarget> {
     let path = state.ui.file_view(agent)?.menu.clone()?;
     let around = group_tabs(state, drafts, agent, origin);
     let at = around.iter().position(|tab| *tab == path)?;
-    let before = at > 0;
-    let after = at + 1 < around.len();
+    let closable = |tab: &PathBuf| !docks::is_pinned(state, agent, &TabKey::File(tab.clone()));
+    let before = around.iter().take(at).any(closable);
+    let after = around.iter().skip(at + 1).any(closable);
+    let pinned = docks::is_pinned(state, agent, &TabKey::File(path.clone()));
     let folder = &entry.summary.folder;
     let style = PathStyle::of(folder);
     let absolute = PathBuf::from(style.resolve(&folder.to_string_lossy(), &path.to_string_lossy()));
@@ -170,6 +181,7 @@ pub fn target(state: &AppState, drafts: &Drafts) -> Option<TabTarget> {
     let relative = (!style.is_absolute(&relative)).then_some(relative);
     let row = |item: TabItem, enabled: bool| TabRow { item, enabled };
     let mut rows = vec![
+        row(if pinned { TabItem::Unpin } else { TabItem::Pin }, true),
         row(TabItem::Close(TabGroup::This), true),
         row(TabItem::Close(TabGroup::Others), before || after),
         row(TabItem::Close(TabGroup::Before), before),
@@ -213,10 +225,7 @@ pub fn target(state: &AppState, drafts: &Drafts) -> Option<TabTarget> {
 
 /// The agent's tabs, in their order.
 pub fn tabs(state: &AppState, agent: AgentId) -> Vec<PathBuf> {
-    let (Some(entry), Some(view)) = (state.agents.get(&agent), state.ui.file_view(agent)) else {
-        return Vec::new();
-    };
-    view.tabs(&entry.changed_paths())
+    docks::file_tabs(state, agent)
 }
 
 /// The tabs a group is taken from: every tab, or the rows the list shows.
@@ -258,9 +267,13 @@ pub fn close(
     group: TabGroup,
     origin: TabMenuOrigin,
 ) {
-    let closing = taken(&group_tabs(state, drafts, agent, origin), path, group);
+    let mut closing = taken(&group_tabs(state, drafts, agent, origin), path, group);
+    // A pinned tab closes only by itself.
+    if group != TabGroup::This {
+        closing.retain(|tab| !docks::is_pinned(state, agent, &TabKey::File(tab.clone())));
+    }
     close_menu(state);
-    let terminal_shown = state.ui.terminal_tab_shown.contains(&agent);
+    let terminal_shown = state.ui.side_terminal.get(&agent).copied();
     let shown = |state: &AppState| state.ui.file_view(agent).map(|view| view.path.clone());
     if shown(state).is_some_and(|shown| closing.contains(&shown))
         && !closing.iter().any(|tab| tab == path)
@@ -278,9 +291,9 @@ pub fn close(
     if let Some(shown_now) = shown_now.filter(|shown_now| closing.contains(shown_now)) {
         actions::close_tab(state, agent, &shown_now);
     }
-    // Files closed behind the terminal's tab leave the terminal shown.
-    if terminal_shown {
-        terminals::show_tab(state, agent);
+    // Files closed behind a terminal's tab leave the terminal shown.
+    if let Some(terminal) = terminal_shown {
+        state.ui.side_terminal.insert(agent, terminal);
     }
     if origin == TabMenuOrigin::List {
         file_list::after_close(state, drafts, agent, path);
@@ -333,6 +346,26 @@ mod tests {
         assert_eq!(around_c(TabGroup::After), [PathBuf::from("d")]);
         assert_eq!(around_c(TabGroup::All), tabs);
         assert!(taken(&tabs, Path::new("z"), TabGroup::All).is_empty());
+    }
+
+    #[test]
+    fn closing_a_group_leaves_the_pinned_tabs_open() {
+        let mut state = with_tabs("c.rs");
+        docks::toggle_pin(&mut state, agent(), &TabKey::File(PathBuf::from("d.rs")));
+
+        close(
+            &mut state,
+            &mut Drafts::default(),
+            agent(),
+            Path::new("c.rs"),
+            TabGroup::Others,
+            TabMenuOrigin::Tabs,
+        );
+
+        assert_eq!(
+            names(&state),
+            (vec!["d.rs".into(), "c.rs".into()], Some("c.rs".into()))
+        );
     }
 
     #[test]
@@ -552,6 +585,7 @@ mod tests {
         assert_eq!(
             menu(&state, &Drafts::default()),
             [
+                "Pin",
                 "Close",
                 "Close the others",
                 "(Close the tabs on the left)",
@@ -659,7 +693,7 @@ mod tests {
         );
 
         assert_eq!(
-            rows.get(2..4).unwrap(),
+            rows.get(3..5).unwrap(),
             ["(Close the files above)", "Close the files below"]
         );
         assert_eq!(names(&state).0, ["src/lexer.rs", "tests/lexer.rs"]);

@@ -5,9 +5,9 @@ use cockpit_protocol::{AgentId, TerminalId};
 use serde::Deserialize;
 
 use super::app_state::AppState;
+use super::docks::{self, Dock};
 use super::ui_state::Popover;
 use super::{tab_menu, terminals};
-use crate::prefs::TerminalPlace;
 
 /// The link under the pointer, as the page found it.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -39,6 +39,16 @@ pub struct MenuSpot {
     pub link: Option<TerminalLink>,
 }
 
+// The terminal tab's menu shares these labels.
+pub const CLOSE_LABEL: &str = "Close this terminal";
+
+pub fn move_label(dock: Dock) -> &'static str {
+    match dock {
+        Dock::Bottom => "Move to the bottom panel",
+        Dock::Side => "Move to the side panel",
+    }
+}
+
 /// A row of the menu.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TerminalItem {
@@ -49,7 +59,7 @@ pub enum TerminalItem {
     SelectAll,
     Clear,
     NewTerminal,
-    MoveTo(TerminalPlace),
+    MoveTo(Dock),
     Close,
 }
 
@@ -68,10 +78,8 @@ impl TerminalItem {
             Self::SelectAll => "Select the screen",
             Self::Clear => "Clear the screen",
             Self::NewTerminal => "New terminal",
-            Self::MoveTo(TerminalPlace::Bottom) => "Move to the bottom panel",
-            Self::MoveTo(TerminalPlace::Right) => "Move to the right pane",
-            Self::MoveTo(TerminalPlace::FileView) => "Move to a file view tab",
-            Self::Close => "Close this terminal",
+            Self::MoveTo(dock) => move_label(dock),
+            Self::Close => CLOSE_LABEL,
         }
     }
 
@@ -85,9 +93,7 @@ impl TerminalItem {
             Self::SelectAll => 's',
             Self::Clear => 'l',
             Self::NewTerminal => 'n',
-            Self::MoveTo(TerminalPlace::Bottom) => 'b',
-            Self::MoveTo(TerminalPlace::Right) => 'r',
-            Self::MoveTo(TerminalPlace::FileView) => 'f',
+            Self::MoveTo(_) => 'm',
             Self::Close => 'x',
         }
     }
@@ -134,13 +140,16 @@ pub fn target(state: &AppState) -> Option<(MenuSpot, Vec<TerminalRow>)> {
         .terminal_menu
         .clone()
         .filter(|spot| terminals::shows(state, spot.agent, spot.terminal))?;
-    let rows = rows(&spot, terminals::place(state, spot.agent));
+    let rows = rows(
+        &spot,
+        docks::terminal_dock(state, spot.agent, spot.terminal),
+    );
     Some((spot, rows))
 }
 
-/// The link's rows when there is a link, the clipboard's, Clear, then a new terminal, the places
-/// the terminal can move to, and Close.
-fn rows(spot: &MenuSpot, place: TerminalPlace) -> Vec<TerminalRow> {
+/// The link's rows when there is a link, the clipboard's, Clear, then a new terminal, the move to
+/// the other panel, and Close.
+fn rows(spot: &MenuSpot, dock: Dock) -> Vec<TerminalRow> {
     let row = |item, divided| TerminalRow {
         item,
         enabled: true,
@@ -164,16 +173,7 @@ fn rows(spot: &MenuSpot, place: TerminalPlace) -> Vec<TerminalRow> {
         row(TerminalItem::Clear, true),
         row(TerminalItem::NewTerminal, true),
     ]);
-    rows.extend(
-        [
-            TerminalPlace::Bottom,
-            TerminalPlace::Right,
-            TerminalPlace::FileView,
-        ]
-        .into_iter()
-        .filter(|other| *other != place)
-        .map(|other| row(TerminalItem::MoveTo(other), false)),
-    );
+    rows.push(row(TerminalItem::MoveTo(dock.other()), false));
     rows.push(row(TerminalItem::Close, true));
     rows
 }
@@ -201,7 +201,7 @@ mod tests {
 
     #[test]
     fn without_a_link_the_clipboard_comes_first_and_copy_waits_for_a_selection() {
-        let rows = rows(&spot(false, None), TerminalPlace::Bottom);
+        let rows = rows(&spot(false, None), Dock::Bottom);
 
         assert_eq!(
             items(&rows),
@@ -211,8 +211,7 @@ mod tests {
                 (TerminalItem::SelectAll, true, false),
                 (TerminalItem::Clear, true, true),
                 (TerminalItem::NewTerminal, true, true),
-                (TerminalItem::MoveTo(TerminalPlace::Right), true, false),
-                (TerminalItem::MoveTo(TerminalPlace::FileView), true, false),
+                (TerminalItem::MoveTo(Dock::Side), true, false),
                 (TerminalItem::Close, true, true),
             ]
         );
@@ -226,7 +225,7 @@ mod tests {
             line: 12,
         };
 
-        let rows = rows(&spot(true, Some(web.clone())), TerminalPlace::FileView);
+        let rows = rows(&spot(true, Some(web.clone())), Dock::Side);
 
         assert_eq!(
             items(&rows)[..3],
@@ -255,10 +254,9 @@ mod tests {
                 true,
                 Some(TerminalLink::Web("https://a.example".to_owned())),
             ),
-            TerminalPlace::Bottom,
+            Dock::Bottom,
         );
         let mut keys: Vec<char> = rows.iter().map(|row| row.item.key()).collect();
-        keys.push(TerminalItem::MoveTo(TerminalPlace::Bottom).key());
 
         let count = keys.len();
         keys.sort_unstable();

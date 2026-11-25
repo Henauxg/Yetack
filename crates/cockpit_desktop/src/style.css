@@ -8178,10 +8178,99 @@ html.splitting * {
   color: var(--text);
 }
 
-.terminal-tab-in-view .file-tab-name {
+/* A pinned tab's pin, which unpins it, shows at all times. */
+.file-tab-pin {
+  visibility: visible;
+}
+
+.file-tab[data-dragged] {
+  opacity: 0.35;
+}
+
+.file-tab.tab-ghost {
+  position: fixed;
+  z-index: 50;
+  border-radius: 6px;
+  background: var(--raised);
+  box-shadow: var(--shadow);
+  color: var(--text);
+  pointer-events: none;
+  transition: none;
+  animation: lift var(--motion-in) var(--ease-out);
+}
+
+/* Where a dragged tab lands, between two tabs. */
+.tab-drop-line {
+  position: fixed;
+  z-index: 49;
+  width: 2px;
+  border-radius: 1px;
+  background: var(--teal);
+  pointer-events: none;
+}
+
+/* A terminal's tab: a teal prompt before its title, and its exit once the shell ended. */
+.terminal-tab .file-tab-name {
   display: inline-flex;
   align-items: center;
   gap: 6px;
+}
+
+.terminal-tab-icon {
+  display: inline-flex;
+  color: var(--teal);
+}
+
+.terminal-tab .terminal-exited {
+  color: var(--red);
+  font-size: 11px;
+}
+
+.file-tabs > .terminal-new {
+  align-self: center;
+}
+
+/* The area a closed dock shows while a terminal's tab is dragged, which opens the dock. */
+.dock-zone {
+  display: none;
+}
+
+.dragging-tab:not(.dragging-fixed-tab) .dock-zone {
+  position: absolute;
+  z-index: 45;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 12px;
+  border: 1.5px dashed color-mix(in srgb, var(--teal) 60%, transparent);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--teal) 7%, var(--bg));
+  color: var(--text-soft);
+  font-size: 13px;
+  text-align: center;
+  pointer-events: none;
+  animation: fade-in var(--motion-in) var(--ease-out) backwards;
+  transition: background var(--motion-hover) var(--ease), border-color var(--motion-hover) var(--ease);
+}
+
+.dock-zone.bottom {
+  left: 18px;
+  right: 18px;
+  bottom: 12px;
+  height: 110px;
+}
+
+.dock-zone.side {
+  top: 12px;
+  right: 12px;
+  bottom: 140px;
+  width: 150px;
+}
+
+.dock-zone.drop-target {
+  border-style: solid;
+  background: color-mix(in srgb, var(--teal) 16%, var(--bg));
 }
 
 /* The count of open files at the end of the tabs, which opens their list. */
@@ -8525,8 +8614,8 @@ html.splitting * {
 
 /* Files pane: the selected agent's folder as a tree, at the window's right edge. */
 
-/* The terminal pane: under the chat and the composer, or at the window's right edge. Its size is
-   an inline height or width, which its grip changes. */
+/* A terminal's panel: the bottom dock, under the chat and the composer, whose height is inline and
+   changes with its grip, or a terminal over the side dock's files. */
 .terminal-pane {
   position: relative;
   flex: none;
@@ -8541,12 +8630,6 @@ html.splitting * {
   max-height: 70%;
   border-top: 1px solid var(--line-strong);
   animation: terminal-up var(--motion-in) var(--ease-out) backwards;
-}
-
-.terminal-pane.right {
-  max-width: 60%;
-  border-left: 1px solid var(--line-strong);
-  animation: terminal-in var(--motion-in) var(--ease-out) backwards;
 }
 
 /* In the file view, the terminal takes the place of the file. */
@@ -8572,29 +8655,13 @@ html.splitting * {
   }
 }
 
-@keyframes terminal-in {
-  from {
-    width: 0;
-  }
-}
-
 .terminal-pane.bottom.leaving {
   animation: terminal-down var(--motion-out) var(--ease-in) forwards;
-}
-
-.terminal-pane.right.leaving {
-  animation: terminal-out var(--motion-out) var(--ease-in) forwards;
 }
 
 @keyframes terminal-down {
   to {
     height: 0;
-  }
-}
-
-@keyframes terminal-out {
-  to {
-    width: 0;
   }
 }
 
@@ -8612,67 +8679,29 @@ html.splitting * {
   cursor: row-resize;
 }
 
-.terminal-pane.right > .terminal-grip {
-  top: 0;
-  bottom: 0;
-  left: -3px;
-  width: 6px;
-  cursor: col-resize;
-}
-
 .terminal-grip:hover,
 .terminal-pane.resizing > .terminal-grip {
   background: rgba(45, 212, 191, 0.35);
 }
 
+/* The bottom dock's row of tabs, as the side dock's. */
 .terminal-bar {
   flex: none;
   display: flex;
-  align-items: stretch;
-  height: 30px;
-  padding-right: 4px;
-  border-bottom: 1px solid #262626;
+  align-items: flex-end;
+  gap: 4px;
+  padding: 4px 6px 0 8px;
+  border-bottom: 1px solid var(--line);
   background: #171717;
 }
 
-.terminal-tabs {
-  flex: 1;
-  min-width: 0;
-  display: flex;
-  overflow: hidden;
+.terminal-bar .file-tab {
+  min-height: 32px;
 }
 
-.terminal-tab {
-  min-width: 0;
-  display: flex;
-  align-items: center;
-  border-right: 1px solid #242424;
-  color: var(--muted);
-  transition: color var(--motion-hover) var(--ease), background var(--motion-hover) var(--ease);
-}
-
-.terminal-tab.current {
-  background: #121212;
-  box-shadow: inset 0 -2px 0 var(--teal);
-  color: var(--text);
-}
-
-.terminal-tab:not(.current):hover {
-  background: #1d1d1d;
-  color: var(--text-soft);
-}
-
-.terminal-tab-name {
-  min-width: 0;
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  height: 100%;
-  padding: 0 4px 0 10px;
-  border: 0;
-  background: transparent;
-  color: inherit;
-  font-size: 12px;
+.terminal-bar > .terminal-new,
+.terminal-bar > .terminal-controls {
+  align-self: center;
 }
 
 .terminal-title {
@@ -8681,12 +8710,6 @@ html.splitting * {
   white-space: nowrap;
 }
 
-.terminal-exited {
-  color: var(--dim);
-  font-size: 11px;
-}
-
-.terminal-tab-close,
 .terminal-add {
   flex: none;
   display: inline-flex;
@@ -8702,15 +8725,12 @@ html.splitting * {
   transition: color var(--motion-hover) var(--ease), background var(--motion-hover) var(--ease);
 }
 
-.terminal-tab-close:hover,
 .terminal-add:not(:disabled):hover {
   background: #262626;
   color: var(--text);
 }
 
-.terminal-tab-close:active,
-.terminal-add:not(:disabled):active,
-.terminal-tab-name:active {
+.terminal-add:not(:disabled):active {
   transform: scale(var(--press-scale));
 }
 
@@ -8777,65 +8797,6 @@ html.splitting * {
   border-radius: 4px;
   color: var(--dim);
   font-size: 11px;
-}
-
-.terminal-move-anchor {
-  position: relative;
-}
-
-.terminal-move.open {
-  background: #262626;
-  color: var(--text);
-}
-
-.terminal-move-menu {
-  position: absolute;
-  z-index: 8;
-  top: calc(100% + 4px);
-  right: 0;
-  width: 210px;
-  padding: 4px;
-  border: 1px solid #3a3a3a;
-  border-radius: 8px;
-  background: #222222;
-  box-shadow: var(--shadow);
-  animation: popover-in var(--motion-in) var(--ease-out) backwards;
-}
-
-.terminal-move-head {
-  padding: 5px 8px 3px;
-  color: var(--dim);
-  font-size: 11px;
-}
-
-.terminal-move-item {
-  width: 100%;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 6px 8px;
-  border: 0;
-  border-radius: 5px;
-  background: transparent;
-  color: var(--text-soft);
-  font-size: 12.5px;
-  text-align: left;
-  transition: background var(--motion-hover) var(--ease);
-}
-
-.terminal-move-item:hover {
-  background: #2f2f2f;
-  color: var(--text);
-}
-
-.terminal-move-item:active {
-  background: var(--pressed);
-}
-
-.terminal-move-check {
-  display: inline-flex;
-  width: 12px;
-  color: var(--teal);
 }
 
 /* The shells a new terminal can run, under the button beside the "+". `--menu-y` is the button's
@@ -12279,8 +12240,8 @@ html.splitting .sidebar {
   animation: none;
 }
 
-/* A terminal at the bottom or the right that shows with its agent draws at once. */
-.app.terminal-instant .terminal-pane:is(.bottom, .right):not(.leaving) {
+/* A bottom dock that shows with its agent draws at once. */
+.app.terminal-instant .terminal-pane.bottom:not(.leaving) {
   animation: none;
 }
 

@@ -1,10 +1,10 @@
-//! The terminal pane: tabs for the selected agent's terminals over a ghostty-web terminal, in the
-//! bottom panel, at the right edge, or as a tab of the file view.
+//! The terminals: their tabs, in the bottom dock or among the side dock's files, over a ghostty-web
+//! terminal.
 //!
 //! The page owns the terminals. Its script keeps one ghostty-web terminal per shell, each in a box
-//! of its own, and puts the shown one's box in the pane's screen wherever the pane is: moving the
-//! pane keeps the screen and its scrollback. Output comes from the connections apart from the
-//! state ([`crate::terminal_feed`]), and the keys typed go out as `terminal.input`.
+//! of its own, and puts each dock's shown one's box in that dock's screen: moving a terminal to
+//! the other dock keeps its screen and its scrollback. Output comes from the connections apart
+//! from the state ([`crate::terminal_feed`]), and the keys typed go out as `terminal.input`.
 
 use std::path::PathBuf;
 
@@ -17,24 +17,23 @@ use crate::connection::Cockpit;
 use crate::keymap::{Chord, Command};
 use crate::machine::MachineId;
 use crate::path_style::PathStyle;
-use crate::prefs::{
-    DEFAULT_TERMINAL_HEIGHT, DEFAULT_TERMINAL_WIDTH, MAX_TERMINAL_SIZE, MIN_TERMINAL_SIZE,
-    TerminalPlace,
-};
+use crate::prefs::{DEFAULT_TERMINAL_HEIGHT, MAX_TERMINAL_SIZE, MIN_TERMINAL_SIZE};
 use crate::render::{self, LineRef};
+use crate::state::docks::{self, Dock, TabKey};
 use crate::state::terminal_menu::{self, MenuSpot, TerminalLink};
-use crate::state::{Popover, actions, terminals};
+use crate::state::terminals::AgentTerminals;
+use crate::state::{AppState, Popover, actions, terminal_tab_menu, terminals};
 use crate::terminal_feed::FeedReceiver;
 use crate::ui::icons::{Icon, IconKind};
-use crate::ui::presence::Presence;
 use crate::ui::shell_menu::ShellButton;
 
 /// ghostty-web 0.4.0, an ES module that holds its WebAssembly inline. See
 /// `assets/ghostty-web/README.md`.
 const GHOSTTY_WEB: &str = include_str!("../../assets/ghostty-web/ghostty-web.js");
 
-/// The element the shown terminal's box goes in.
+// The elements that hold the terminal each dock shows: the bottom dock's, then the side dock's.
 const SCREEN_ID: &str = "terminal-screen";
+const SIDE_SCREEN_ID: &str = "terminal-screen-side";
 
 /// Receives ghostty-web's source, then the pane's ids and the size limits, then output and
 /// screens. Sends what the user types, the sizes, the titles, and which terminals it needs the
@@ -712,8 +711,10 @@ function terminalFor(agent, terminal) {
 // The entry goes first, so a terminal whose dispose throws is not met again.
 function forget(entry) {
   terminals.delete(entry.name);
-  if (shown === entry.name) {
-    shown = null;
+  for (const [screen, name] of shownIn) {
+    if (name === entry.name) {
+      shownIn.delete(screen);
+    }
   }
   clearTimeout(entry.settle);
   entry.observer.disconnect();
@@ -731,63 +732,73 @@ function forget(entry) {
   loadSpare();
 }
 
-// ghostty-web draws every open terminal on each frame, even one out of the page. Only `drawn`
-// keeps drawing. A paused terminal still takes writes.
+// ghostty-web draws every open terminal on each frame, even one out of the page. Only the ones in
+// `drawn` keep drawing. A paused terminal still takes writes.
 function drawOnly(drawn) {
   for (const entry of terminals.values()) {
     const term = entry.term;
-    if (entry === drawn && entry.paused) {
+    if (drawn.has(entry) && entry.paused) {
       entry.paused = false;
       term.startRenderLoop();
-    } else if (entry !== drawn && !entry.paused) {
+    } else if (!drawn.has(entry) && !entry.paused) {
       entry.paused = true;
       cancelAnimationFrame(term.animationFrameId);
     }
   }
 }
 
-// Puts the shown terminal's box in the screen, wherever the pane is.
-let shown = null;
+// The terminal each screen showed last, by the screen's id.
+const shownIn = new Map();
+// Puts the terminal each dock shows in that dock's screen. Only these terminals keep drawing.
 function place() {
-  const screen = document.getElementById(settings.screen_id);
+  const drawn = new Set();
+  for (const id of settings.screen_ids) {
+    const entry = placeIn(id);
+    if (entry !== null) {
+      drawn.add(entry);
+    }
+  }
+  drawOnly(drawn);
+}
+// Puts the terminal that the screen `id` names into that screen. A terminal that shows there anew
+// takes the focus.
+function placeIn(id) {
+  const screen = document.getElementById(id);
   if (screen === null) {
-    // The pane closed: the terminal it shows next takes the focus, even the same one.
-    shown = null;
-    drawOnly(null);
-    return;
+    // The dock closed: the terminal it shows next takes the focus, even the same one.
+    shownIn.delete(id);
+    return null;
   }
   const agent = Number(screen.dataset.agent);
   const terminal = Number(screen.dataset.terminal);
   if (!terminal) {
     screen.replaceChildren();
-    shown = null;
-    drawOnly(null);
-    return;
+    shownIn.delete(id);
+    return null;
   }
   const entry = terminalFor(agent, terminal);
   if (entry === null) {
     // Another terminal left on screen meanwhile would take the keys typed.
     screen.replaceChildren();
-    shown = null;
-    drawOnly(null);
+    shownIn.delete(id);
     placeOnLoad = true;
     unfocusedOnLoad = unfocused ?? unfocusedOnLoad;
-    return;
+    return null;
   }
-  drawOnly(entry);
-  // A terminal that moves to another place takes the focus, as one that shows anew does.
+  // A terminal that moves to another dock takes the focus, as one that shows anew does.
   const moved = entry.box.parentElement !== screen;
   if (moved) {
     screen.replaceChildren(entry.box);
   }
   const now = key(agent, terminal);
-  if (now !== shown || moved) {
-    shown = now;
+  if (now !== shownIn.get(id) || moved) {
+    shownIn.set(id, now);
     fitWhenSettled(entry);
     if (now !== unfocused) {
       requestAnimationFrame(() => entry.term.focus());
     }
   }
+  return entry;
 }
 new MutationObserver(place).observe(document.body, {
   childList: true,
@@ -890,7 +901,8 @@ pub const FIT_SETTLE_MS: u32 = 180;
 
 #[derive(Serialize)]
 struct Settings {
-    screen_id: &'static str,
+    /// The screens of the bottom dock and of the side dock.
+    screen_ids: [&'static str; 2],
     /// [`FIT_SETTLE_MS`].
     settle_ms: u32,
     min: u16,
@@ -1108,7 +1120,7 @@ pub fn use_terminal_script(cockpit: Cockpit) {
     let script = use_hook(|| {
         let mut script = document::eval(SCRIPT);
         let settings = Settings {
-            screen_id: SCREEN_ID,
+            screen_ids: [SCREEN_ID, SIDE_SCREEN_ID],
             settle_ms: FIT_SETTLE_MS,
             min: MIN_TERMINAL_SIZE,
             max: MAX_TERMINAL_SIZE,
@@ -1288,35 +1300,18 @@ fn receive(cockpit: Cockpit, script: document::Eval, message: FromPage) {
         }
         FromPage::Problem { text } => tracing::warn!("the terminal script failed on {text}"),
         FromPage::Toggle => cockpit.change(terminals::toggle_pane),
+        // The grip is on the bottom dock: the file view's splitter sizes the side dock.
         FromPage::Size { size } => cockpit.update(|state| {
-            let size = size.clamp(MIN_TERMINAL_SIZE, MAX_TERMINAL_SIZE);
-            // The grip is on the selected agent's pane.
-            let place = state
-                .ui
-                .selected
-                .map_or(state.prefs.terminal.place, |agent| {
-                    terminals::place(state, agent)
-                });
-            match place {
-                TerminalPlace::Bottom => state.prefs.terminal.height = Some(size),
-                TerminalPlace::Right => state.prefs.terminal.width = Some(size),
-                // The file view's splitter sizes it.
-                TerminalPlace::FileView => {}
-            }
+            state.prefs.terminal.height = Some(size.clamp(MIN_TERMINAL_SIZE, MAX_TERMINAL_SIZE));
         }),
     }
 }
 
-/// The pane, where the prefs put it. `place` is where this one sits in the layout, `leaving`
-/// while it folds away, and `instant` when it draws without its opening animation.
+/// The bottom dock: the tabs of the terminals that sit there, and the shown one's screen.
+/// `leaving` while it folds away.
 #[component]
-pub fn TerminalPane(
-    place: TerminalPlace,
-    leaving: bool,
-    #[props(default)] instant: bool,
-) -> Element {
+pub fn TerminalPane(leaving: bool) -> Element {
     let cockpit: Cockpit = use_context();
-    let mut moving = use_signal(|| false);
     let state = cockpit.state.read();
     let Some((agent, terminals)) = terminals::selected(&state) else {
         return rsx! {};
@@ -1326,39 +1321,172 @@ pub fn TerminalPane(
         .get(MachineId::of(agent))
         .map(|machine| machine.daemon.machine.clone())
         .unwrap_or_default();
-    let (height, width) = (state.prefs.terminal.height, state.prefs.terminal.width);
-    let current = terminals::place(&state, agent);
-    let (class, grip, style) = match place {
-        TerminalPlace::Bottom => (
-            if leaving {
-                "terminal-pane bottom leaving"
-            } else {
-                "terminal-pane bottom"
-            },
-            Some("bottom"),
-            format!("height: {}px", height.unwrap_or(DEFAULT_TERMINAL_HEIGHT)),
-        ),
-        TerminalPlace::Right => (
-            if leaving {
-                "terminal-pane right leaving"
-            } else {
-                "terminal-pane right"
-            },
-            Some("right"),
-            format!("width: {}px", width.unwrap_or(DEFAULT_TERMINAL_WIDTH)),
-        ),
-        TerminalPlace::FileView => (
-            if instant {
-                "terminal-pane in-file-view instant"
-            } else {
-                "terminal-pane in-file-view"
-            },
-            None,
-            String::new(),
-        ),
+    let height = state.prefs.terminal.height;
+    let class = if leaving {
+        "terminal-pane bottom leaving"
+    } else {
+        "terminal-pane bottom"
     };
-    let shown = terminals.shown.map_or(0, TerminalId::get);
-    let tabs = terminals.tabs.clone();
+    let style = format!("height: {}px", height.unwrap_or(DEFAULT_TERMINAL_HEIGHT));
+    let shown = terminals::bottom_terminal(&state, agent);
+    let tabs = tab_views(&state, agent, terminals, Dock::Bottom, shown);
+    drop(state);
+    rsx! {
+        section { class, style, aria_label: "Terminal", inert: leaving.then_some(true),
+            div { class: "terminal-grip", "data-terminal-grip": "bottom", aria_hidden: true }
+            div { class: "terminal-bar",
+                div {
+                    class: "tab-list terminal-tabs scroll-x",
+                    role: "tablist",
+                    "data-dock": <&str>::from(Dock::Bottom),
+                    "data-agent": "{agent.get()}",
+                    for tab in tabs {
+                        TerminalTabView {
+                            key: "{tab.terminal.get()}",
+                            agent: tab.agent,
+                            terminal: tab.terminal,
+                            title: tab.title,
+                            exited: tab.exited,
+                            selected: tab.selected,
+                            pinned: tab.pinned,
+                        }
+                    }
+                }
+                NewTerminal { agent, dock: Dock::Bottom }
+                div { class: "terminal-controls",
+                    if !machine.is_empty() {
+                        span { class: "terminal-machine", title: "The shell runs on this machine", "{machine}" }
+                    }
+                    button {
+                        class: "icon-button",
+                        aria_label: "Hide the terminal",
+                        title: "Hide the terminal: its shells keep running",
+                        onclick: move |_| cockpit.update(|state| terminals::hide_dock(state, agent, Dock::Bottom)),
+                        Icon { kind: IconKind::Close, size: 13 }
+                    }
+                }
+            }
+            TerminalScreen { agent, terminal: shown, dock: Dock::Bottom, leaving }
+        }
+    }
+}
+
+/// What a terminal's tab shows, for each terminal of `dock`.
+pub fn tab_views(
+    state: &AppState,
+    agent: AgentId,
+    terminals: &AgentTerminals,
+    dock: Dock,
+    shown: Option<TerminalId>,
+) -> Vec<TerminalTabViewProps> {
+    docks::tabs(state, agent, dock)
+        .iter()
+        .filter_map(|tab| match tab {
+            TabKey::Terminal(terminal) => tab_view(state, agent, terminals, *terminal, shown),
+            TabKey::File(_) => None,
+        })
+        .collect()
+}
+
+/// What the tab of `terminal` shows.
+pub fn tab_view(
+    state: &AppState,
+    agent: AgentId,
+    terminals: &AgentTerminals,
+    terminal: TerminalId,
+    shown: Option<TerminalId>,
+) -> Option<TerminalTabViewProps> {
+    let tab = terminals.tab(terminal)?;
+    let title = if tab.title.is_empty() {
+        "shell".to_owned()
+    } else {
+        tab.title.clone()
+    };
+    let exited = tab.exited.map(|exit| match exit.code {
+        Some(code) => format!("exit {code}"),
+        None => "ended".to_owned(),
+    });
+    Some(TerminalTabViewProps {
+        agent,
+        terminal,
+        title,
+        exited,
+        selected: shown == Some(terminal),
+        pinned: docks::is_pinned(state, agent, &TabKey::Terminal(terminal)),
+    })
+}
+
+/// A terminal's tab, which looks as a file's: its "×" ends the shell, and a pinned tab shows a
+/// pin, which unpins it, in its place.
+#[component]
+pub fn TerminalTabView(
+    agent: AgentId,
+    terminal: TerminalId,
+    title: String,
+    exited: Option<String>,
+    selected: bool,
+    pinned: bool,
+) -> Element {
+    let cockpit: Cockpit = use_context();
+    let key = TabKey::Terminal(terminal);
+    let page_key = key.to_page();
+    rsx! {
+        div {
+            class: if selected { "file-tab terminal-tab selected" } else { "file-tab terminal-tab" },
+            role: "tab",
+            aria_selected: selected,
+            "data-tab": "{page_key}",
+            "data-pinned": pinned.then_some(""),
+            oncontextmenu: move |event: MouseEvent| {
+                event.prevent_default();
+                let point = event.client_coordinates();
+                // Whole pixels are enough to place a menu.
+                #[expect(clippy::cast_possible_truncation, reason = "a window's pixels fit in i32")]
+                let (x, y) = (point.x.round() as i32, point.y.round() as i32);
+                cockpit.update(|state| terminal_tab_menu::open(state, agent, terminal, x, y));
+            },
+            button {
+                class: "file-tab-name",
+                onclick: move |_| cockpit.update(|state| terminals::show(state, agent, terminal)),
+                span { class: "terminal-tab-icon", Icon { kind: IconKind::Terminal, size: 12 } }
+                span { class: "terminal-title", "{title}" }
+                if let Some(exited) = exited {
+                    span { class: "terminal-exited", "{exited}" }
+                }
+            }
+            if pinned {
+                button {
+                    class: "file-tab-close file-tab-pin",
+                    aria_label: "Unpin {title}",
+                    title: "Unpin",
+                    onclick: move |_| {
+                        let key = key.clone();
+                        cockpit.update(|state| docks::toggle_pin(state, agent, &key));
+                    },
+                    Icon { kind: IconKind::Pin, size: 12 }
+                }
+            } else {
+                button {
+                    class: "file-tab-close",
+                    aria_label: "Close this terminal",
+                    title: "Close this terminal: ends its shell",
+                    onclick: move |_| cockpit.change(|state| terminals::close(state, agent, terminal)),
+                    Icon { kind: IconKind::Close, size: 12 }
+                }
+            }
+        }
+    }
+}
+
+/// A dock's "+" and the button beside it that picks the shell: the new terminal opens in `dock`.
+#[component]
+pub fn NewTerminal(agent: AgentId, dock: Dock) -> Element {
+    let cockpit: Cockpit = use_context();
+    let state = cockpit.state.read();
+    let Some(entry) = state.agents.get(&agent) else {
+        return rsx! {};
+    };
+    let terminals = &entry.terminals;
     let opening = terminals.opening;
     let offers_shells = terminals.offers_shells();
     let add_title = terminals.default_shell().map_or_else(
@@ -1367,124 +1495,46 @@ pub fn TerminalPane(
     );
     let shell_menu_open = matches!(
         state.ui.popover,
-        Some(Popover::ShellMenu { agent: shown, .. }) if shown == agent
+        Some(Popover::ShellMenu { agent: shown, dock: from, .. }) if shown == agent && from == dock
     );
     drop(state);
-    let places = [
-        (TerminalPlace::Bottom, "Bottom panel"),
-        (TerminalPlace::Right, "Right pane"),
-        (TerminalPlace::FileView, "Tab of the file view"),
-    ];
     rsx! {
-        section { class, style, aria_label: "Terminal", inert: leaving.then_some(true),
-            if let Some(grip) = grip {
-                div { class: "terminal-grip", "data-terminal-grip": grip, aria_hidden: true }
+        div { class: "terminal-new",
+            button {
+                class: "terminal-add",
+                aria_label: "New terminal",
+                title: "{add_title}",
+                disabled: opening,
+                onclick: move |_| cockpit.change(|state| terminals::open(state, agent, None, dock)),
+                Icon { kind: IconKind::Plus, size: 12 }
             }
-            div { class: "terminal-bar",
-                div { class: "terminal-tabs", role: "tablist",
-                    for tab in tabs {
-                        {
-                            let terminal = tab.terminal;
-                            let current = terminal.get() == shown;
-                            let title = if tab.title.is_empty() { "shell".to_owned() } else { tab.title.clone() };
-                            rsx! {
-                                div {
-                                    key: "{terminal.get()}",
-                                    class: if current { "terminal-tab current" } else { "terminal-tab" },
-                                    button {
-                                        class: "terminal-tab-name",
-                                        role: "tab",
-                                        aria_selected: current,
-                                        onclick: move |_| cockpit.update(|state| terminals::show(state, agent, terminal)),
-                                        Icon { kind: IconKind::Terminal, size: 12 }
-                                        span { class: "terminal-title", "{title}" }
-                                        if let Some(exit) = tab.exited {
-                                            span { class: "terminal-exited",
-                                                match exit.code {
-                                                    Some(code) => format!("exited {code}"),
-                                                    None => "ended".to_owned(),
-                                                }
-                                            }
-                                        }
-                                    }
-                                    button {
-                                        class: "terminal-tab-close",
-                                        aria_label: "Close this terminal",
-                                        title: "Close this terminal: ends its shell",
-                                        onclick: move |_| cockpit.change(|state| terminals::close(state, agent, terminal)),
-                                        Icon { kind: IconKind::Close, size: 10 }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    div { class: "terminal-new",
-                        button {
-                            class: "terminal-add",
-                            aria_label: "New terminal",
-                            title: "{add_title}",
-                            disabled: opening,
-                            onclick: move |_| cockpit.change(|state| terminals::open(state, agent, None)),
-                            Icon { kind: IconKind::Plus, size: 12 }
-                        }
-                        ShellButton { agent, offers: offers_shells, open: shell_menu_open, disabled: opening }
-                    }
-                }
-                div { class: "terminal-controls",
-                    if !machine.is_empty() {
-                        span { class: "terminal-machine", title: "The shell runs on this machine", "{machine}" }
-                    }
-                    span { class: "terminal-move-anchor",
-                        button {
-                            class: if moving() { "icon-button terminal-move open" } else { "icon-button terminal-move" },
-                            aria_label: "Move the terminal",
-                            aria_expanded: moving(),
-                            title: "Move the terminal",
-                            onclick: move |_| moving.toggle(),
-                            Icon { kind: IconKind::PanelBottom, size: 13 }
-                        }
-                        Presence { open: moving(),
-                            div { class: "terminal-move-menu popover", role: "menu",
-                                div { class: "terminal-move-head", "Move the terminal to" }
-                                for (target, label) in places {
-                                    button {
-                                        class: "terminal-move-item",
-                                        role: "menuitemradio",
-                                        aria_checked: target == current,
-                                        onclick: move |_| {
-                                            moving.set(false);
-                                            cockpit.update(|state| terminals::move_to(state, target));
-                                        },
-                                        span { class: "terminal-move-check",
-                                            if target == current { Icon { kind: IconKind::Check, size: 12 } }
-                                        }
-                                        "{label}"
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    // In the file view, the terminal's tab hides it.
-                    if place != TerminalPlace::FileView {
-                        button {
-                            class: "icon-button",
-                            aria_label: "Hide the terminal",
-                            title: "Hide the terminal: its shells keep running",
-                            onclick: move |_| cockpit.update(|state| terminals::hide(state, agent)),
-                            Icon { kind: IconKind::Close, size: 13 }
-                        }
-                    }
-                }
-            }
-            div {
-                // A pane that leaves as the other place's opens gives the terminal to that one.
-                id: (!leaving).then_some(SCREEN_ID),
-                class: "terminal-screen",
-                // The page's script leaves the keys typed here to the terminal.
-                "data-records-keys": "",
-                "data-agent": "{agent.get()}",
-                "data-terminal": "{shown}",
-            }
+            ShellButton { agent, dock, offers: offers_shells, open: shell_menu_open, disabled: opening }
+        }
+    }
+}
+
+/// Where `dock` shows `terminal`: the page's script puts the terminal's box in it. A dock that
+/// leaves gives the terminal to the one that opens.
+#[component]
+pub fn TerminalScreen(
+    agent: AgentId,
+    terminal: Option<TerminalId>,
+    dock: Dock,
+    #[props(default)] leaving: bool,
+) -> Element {
+    let id = match dock {
+        Dock::Bottom => SCREEN_ID,
+        Dock::Side => SIDE_SCREEN_ID,
+    };
+    let shown = terminal.map_or(0, TerminalId::get);
+    rsx! {
+        div {
+            id: (!leaving).then_some(id),
+            class: "terminal-screen",
+            // The page's script leaves the keys typed here to the terminal.
+            "data-records-keys": "",
+            "data-agent": "{agent.get()}",
+            "data-terminal": "{shown}",
         }
     }
 }
@@ -1513,7 +1563,7 @@ mod tests {
     #[test]
     fn the_messages_to_and_from_the_page_are_pinned() {
         let settings = Settings {
-            screen_id: SCREEN_ID,
+            screen_ids: [SCREEN_ID, SIDE_SCREEN_ID],
             settle_ms: FIT_SETTLE_MS,
             min: 120,
             max: 2000,
@@ -1583,7 +1633,8 @@ mod tests {
         assert_eq!(
             serde_json::to_value(settings).unwrap(),
             json!({
-                "screen_id": "terminal-screen", "settle_ms": 180, "min": 120, "max": 2000,
+                "screen_ids": ["terminal-screen", "terminal-screen-side"], "settle_ms": 180,
+                "min": 120, "max": 2000,
                 "scrollback_bytes": 10_000_000,
             })
         );

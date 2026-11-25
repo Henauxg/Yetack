@@ -24,7 +24,7 @@ use super::transcript::HistoryState;
 use super::ui_state::{Dialog, FolderAction, OpenFileView};
 use super::{
     accounts, actions, chat_images, chat_reveal, details_updates, file_edits, file_tree, git,
-    mcp_reconnect, mcp_sign_in, page_copy, terminals, working_folder,
+    mcp_reconnect, mcp_sign_in, page_copy, saved_files, terminals, working_folder,
 };
 use crate::machine::MachineId;
 use crate::path_style;
@@ -997,6 +997,8 @@ pub fn apply_response(
                     // The app dropped the agent's details events while it was closing.
                     details_updates::forget(&mut entry);
                     state.agents.entry(agent).or_insert(entry);
+                    // The close dropped what the window held of the agent: its files open again.
+                    saved_files::restore(state, agent);
                     state
                         .ui
                         .report(format!("The agent was not closed: {}", failure.message));

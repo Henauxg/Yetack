@@ -17,8 +17,8 @@ use crate::keymap::Command;
 use crate::machine::MachineId;
 use crate::path_style::PathStyle;
 use crate::pdf_files::{self, PdfSource};
-use crate::prefs::TerminalPlace;
 use crate::render::{self, Diff, Language, MAX_RENDERED_LINES, diff_lines};
+use crate::state::docks::{self, Dock, TabKey};
 use crate::state::git::{self, DiffBase, GitHubLinks};
 use crate::state::{
     FileFreshness, FileRead, FileUpdate, Loadable, Popover, Reread, TabMenuOrigin, ViewMode,
@@ -37,7 +37,9 @@ use crate::ui::icons::{Icon, IconKind};
 use crate::ui::markdown::MarkdownView;
 use crate::ui::presence::use_agent_presence;
 use crate::ui::splitter::FILE_VIEW_ID;
-use crate::ui::terminal_pane::TerminalPane;
+use crate::ui::terminal_pane::{
+    self, NewTerminal, TerminalScreen, TerminalTabView, TerminalTabViewProps,
+};
 use crate::ui::zoom::ZoomImage;
 use crate::{bridge, browser, format, page_files};
 
@@ -73,8 +75,8 @@ pub(super) const FILE_LOADING_CLASS: &str = "file-loading";
 /// The widths of the placeholder lines shown while the file loads, in percent of the text's width.
 const LOADING_LINE_WIDTHS: [u8; 8] = [46, 72, 64, 30, 81, 58, 69, 38];
 
-/// The panel: the tabs of the files and of the terminal, when the terminal is one, and the shown
-/// tab's content.
+/// The side dock: the tabs of the files and of the terminals that sit there, and the shown tab's
+/// content.
 #[component]
 pub fn FileViewPanel() -> Element {
     let cockpit: Cockpit = use_context();
@@ -82,7 +84,7 @@ pub fn FileViewPanel() -> Element {
         let state = cockpit.state.read();
         let selected = state.ui.selected;
         let terminal_open =
-            selected.filter(|agent| terminals::file_view_shows_terminal(&state, *agent));
+            selected.filter(|agent| terminals::side_terminal(&state, *agent).is_some());
         (selected, terminal_open)
     };
     // The panel stays as the window switches agents: it tells whether the terminal came with its
@@ -94,22 +96,40 @@ pub fn FileViewPanel() -> Element {
         return rsx! {};
     };
     let agent = entry.id();
-    let view = state.ui.file_view(agent);
-    let terminal_tab = terminals::in_file_view(&state, agent);
-    if view.is_none() && !terminal_tab {
+    if !terminals::side_open(&state, agent) {
         return rsx! {};
     }
-    let terminal_shown = terminals::file_view_shows_terminal(&state, agent);
+    let view = state.ui.file_view(agent);
+    let side_terminal = terminals::side_terminal(&state, agent);
     let folder = entry.summary.folder.clone();
-    let changed_paths = entry.changed_paths();
-    let tabs = view
-        .map(|view| view.tabs(&changed_paths))
-        .unwrap_or_default();
-    let tab_count = tabs.len();
+    let keys = docks::tabs(&state, agent, Dock::Side);
+    let files: Vec<PathBuf> = keys
+        .iter()
+        .filter_map(|key| match key {
+            TabKey::File(path) => Some(path.clone()),
+            TabKey::Terminal(_) => None,
+        })
+        .collect();
+    let mut labels = tab_labels(PathStyle::of(&folder), &files).into_iter();
+    let tabs: Vec<SideTab> = keys
+        .iter()
+        .filter_map(|key| match key {
+            TabKey::File(path) => Some(SideTab::File {
+                path: path.clone(),
+                label: labels.next().unwrap_or_default(),
+                pinned: docks::is_pinned(&state, agent, key),
+            }),
+            TabKey::Terminal(terminal) => {
+                terminal_pane::tab_view(&state, agent, &entry.terminals, *terminal, side_terminal)
+                    .map(SideTab::Terminal)
+            }
+        })
+        .collect();
+    let tab_count = files.len();
     let has_files = view.is_some();
     // The file whose tab is selected, which Ctrl+W closes. In the terminal, Ctrl+W is the shell's.
     let shown = view
-        .filter(|_| !terminal_shown)
+        .filter(|_| side_terminal.is_none())
         .map(|view| view.path.clone());
     let closed_by_key = shown.clone();
     let list_menu = matches!(
@@ -120,7 +140,6 @@ pub fn FileViewPanel() -> Element {
         })
     );
     let list_open = state.ui.popover == Some(Popover::FileList) || list_menu;
-    let labels = tab_labels(PathStyle::of(&folder), &tabs);
     drop(state);
     rsx! {
         section {
@@ -140,34 +159,57 @@ pub fn FileViewPanel() -> Element {
                 }
             },
             div { class: "file-tabs",
-                div { class: "tab-list scroll-x", role: "tablist", aria_label: "Files changed by this agent",
-                    if terminal_tab {
-                        TerminalTab { agent, selected: terminal_shown }
-                    }
-                    for (tab, label) in tabs.into_iter().zip(labels) {
-                        FileTab {
-                            key: "{tab.display()}",
-                            agent,
-                            selected: shown.as_ref() == Some(&tab),
-                            full: full_path(&folder, &tab),
-                            path: tab,
-                            label,
+                div {
+                    class: "tab-list scroll-x",
+                    role: "tablist",
+                    aria_label: "Files changed by this agent, and terminals",
+                    "data-dock": <&str>::from(Dock::Side),
+                    "data-agent": "{agent.get()}",
+                    for tab in tabs {
+                        match tab {
+                            SideTab::File { path, label, pinned } => rsx! {
+                                FileTab {
+                                    key: "file-{path.display()}",
+                                    agent,
+                                    pinned,
+                                    selected: shown.as_ref() == Some(&path),
+                                    full: full_path(&folder, &path),
+                                    path,
+                                    label,
+                                }
+                            },
+                            SideTab::Terminal(tab) => rsx! {
+                                TerminalTabView {
+                                    key: "terminal-{tab.terminal.get()}",
+                                    agent: tab.agent,
+                                    terminal: tab.terminal,
+                                    title: tab.title,
+                                    exited: tab.exited,
+                                    selected: tab.selected,
+                                    pinned: tab.pinned,
+                                }
+                            },
                         }
                     }
                 }
+                NewTerminal { agent, dock: Dock::Side }
                 if has_files {
                     FileListButton { agent, count: tab_count, open: list_open, covered: list_menu }
                 }
                 button {
                     class: "icon-button",
                     aria_label: "Close the file view",
-                    title: "Close the file view",
+                    title: "Close the files, and hide the terminals here",
                     onclick: move |_| cockpit.update(|state| actions::close_file_panel(state, agent)),
                     Icon { kind: IconKind::Close, size: 16 }
                 }
             }
-            if terminal_shown {
-                TerminalPane { place: TerminalPlace::FileView, leaving: false, instant: terminal_instant }
+            if let Some(terminal) = side_terminal {
+                section {
+                    class: if terminal_instant { "terminal-pane in-file-view instant" } else { "terminal-pane in-file-view" },
+                    aria_label: "Terminal",
+                    TerminalScreen { agent, terminal: Some(terminal), dock: Dock::Side }
+                }
             } else {
                 FileShown { agent }
             }
@@ -175,42 +217,14 @@ pub fn FileViewPanel() -> Element {
     }
 }
 
-/// The terminal's tab, before the files'. Its "×" hides the terminal, and its shells keep running.
-#[component]
-fn TerminalTab(agent: AgentId, selected: bool) -> Element {
-    let cockpit: Cockpit = use_context();
-    use_effect(use_reactive!(|selected| {
-        if selected {
-            bridge::reveal(SHOWN_TAB_ID);
-        }
-    }));
-    rsx! {
-        div {
-            id: selected.then_some(SHOWN_TAB_ID),
-            class: if selected { "file-tab terminal-tab-in-view selected" } else { "file-tab terminal-tab-in-view" },
-            role: "tab",
-            aria_selected: selected,
-            onauxclick: move |event| {
-                if event.trigger_button() == Some(MouseButton::Auxiliary) {
-                    event.prevent_default();
-                    cockpit.update(|state| terminals::hide(state, agent));
-                }
-            },
-            button {
-                class: "file-tab-name",
-                onclick: move |_| cockpit.update(|state| terminals::show_tab(state, agent)),
-                Icon { kind: IconKind::Terminal, size: 12 }
-                "Terminal"
-            }
-            button {
-                class: "file-tab-close",
-                aria_label: "Hide the terminal",
-                title: "Hide the terminal: its shells keep running",
-                onclick: move |_| cockpit.update(|state| terminals::hide(state, agent)),
-                Icon { kind: IconKind::Close, size: 12 }
-            }
-        }
-    }
+/// A tab of the side dock.
+enum SideTab {
+    File {
+        path: PathBuf,
+        label: String,
+        pinned: bool,
+    },
+    Terminal(TerminalTabViewProps),
 }
 
 /// The shown file: its bar, its text and its foot.
@@ -606,10 +620,23 @@ pub fn use_page_copies(cockpit: Cockpit) {
 }
 
 /// `label` is the file's name, with the folders that tell it apart from another tab; `full`, its
-/// absolute path.
+/// absolute path. A pinned tab shows a pin, which unpins it, in place of its "×".
 #[component]
-fn FileTab(agent: AgentId, path: PathBuf, label: String, full: String, selected: bool) -> Element {
+fn FileTab(
+    agent: AgentId,
+    path: PathBuf,
+    label: String,
+    full: String,
+    selected: bool,
+    pinned: bool,
+) -> Element {
     let cockpit: Cockpit = use_context();
+    let key = TabKey::File(path.clone());
+    let page_key = key.to_page();
+    let unpin = move |_| {
+        let key = key.clone();
+        cockpit.update(|state| docks::toggle_pin(state, agent, &key));
+    };
     let close = {
         let path = path.clone();
         move || {
@@ -631,6 +658,10 @@ fn FileTab(agent: AgentId, path: PathBuf, label: String, full: String, selected:
             role: "tab",
             aria_selected: selected,
             title: "{full}",
+            "data-tab": "{page_key}",
+            "data-pinned": pinned.then_some(""),
+            // A file stays in the side dock.
+            "data-tab-fixed": "",
             onauxclick: move |event| {
                 if event.trigger_button() == Some(MouseButton::Auxiliary) {
                     event.prevent_default();
@@ -654,12 +685,22 @@ fn FileTab(agent: AgentId, path: PathBuf, label: String, full: String, selected:
                 },
                 "{label}"
             }
-            button {
-                class: "file-tab-close",
-                aria_label: "Close {label}",
-                title: "Close (middle-click, or Ctrl+W in the file view)",
-                onclick: move |_| close(),
-                Icon { kind: IconKind::Close, size: 12 }
+            if pinned {
+                button {
+                    class: "file-tab-close file-tab-pin",
+                    aria_label: "Unpin {label}",
+                    title: "Unpin",
+                    onclick: unpin,
+                    Icon { kind: IconKind::Pin, size: 12 }
+                }
+            } else {
+                button {
+                    class: "file-tab-close",
+                    aria_label: "Close {label}",
+                    title: "Close (middle-click, or Ctrl+W in the file view)",
+                    onclick: move |_| close(),
+                    Icon { kind: IconKind::Close, size: 12 }
+                }
             }
         }
     }

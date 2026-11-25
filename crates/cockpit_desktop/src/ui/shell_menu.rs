@@ -8,6 +8,7 @@ use dioxus::prelude::*;
 
 use crate::bridge::{self, HIGHLIGHTED_CLASS};
 use crate::connection::Cockpit;
+use crate::state::docks::Dock;
 use crate::state::menu_keys::MenuKey;
 use crate::state::{MenuSide, terminals};
 use crate::ui::icons::{Icon, IconKind};
@@ -20,7 +21,13 @@ const WINDOW_HEIGHT_SCRIPT: &str = "return window.innerHeight;";
 /// `offers` a choice of shell. A switch shows the other agent's at once, and only the agent whose
 /// shells go sees it leave.
 #[component]
-pub fn ShellButton(agent: AgentId, offers: bool, open: bool, disabled: bool) -> Element {
+pub fn ShellButton(
+    agent: AgentId,
+    dock: Dock,
+    offers: bool,
+    open: bool,
+    disabled: bool,
+) -> Element {
     let cockpit: Cockpit = use_context();
     let mut mounted = use_signal(|| None::<Rc<MountedData>>);
     let Some(shown) = use_agent_presence(Some(agent), offers.then_some(agent)) else {
@@ -62,7 +69,7 @@ pub fn ShellButton(agent: AgentId, offers: bool, open: bool, disabled: bool) -> 
                         MenuSide::Below => bottom,
                         MenuSide::Above => top,
                     };
-                    terminals::toggle_shell_menu(state, agent, x, y, side);
+                    terminals::toggle_shell_menu(state, agent, dock, x, y, side);
                 });
             },
             Icon { kind: IconKind::ChevronDown, size: 12 }
@@ -105,6 +112,7 @@ fn ShellList(menu: terminals::ShellMenu) -> Element {
     let mut highlighted = use_signal(|| None::<usize>);
     let terminals::ShellMenu {
         agent,
+        dock,
         x,
         y,
         side,
@@ -117,7 +125,7 @@ fn ShellList(menu: terminals::ShellMenu) -> Element {
             if let Some(shell) = shells.get(index) {
                 let program = shell.program.clone();
                 bridge::give_focus_back(None);
-                cockpit.change(|state| terminals::pick_shell(state, agent, program));
+                cockpit.change(|state| terminals::pick_shell(state, agent, program, dock));
             }
         }
     };

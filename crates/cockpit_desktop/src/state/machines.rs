@@ -17,7 +17,7 @@ use super::server_setup::{self, InstallReport, SetupRun};
 use super::ui_state::{Dialog, MachineEdit, MachineMenu, MachinesView};
 
 use super::update_offer::ProgramBuild;
-use super::{daemon_start, file_tree, terminals, update_offer};
+use super::{daemon_start, file_tree, saved_files, terminals, update_offer};
 use crate::config::{DaemonConfig, MachineConfig};
 use crate::daemon_label::{DaemonLabel, DaemonPlace};
 use crate::format;
@@ -546,6 +546,7 @@ pub fn forget(state: &mut AppState, drafts: &mut Drafts, machine: MachineId) {
         return;
     }
     file_tree::forget_machine_panes(state, machine);
+    saved_files::forget_machine(state, machine);
     terminals::forget_machine_places(state, machine);
     state.machines.others.remove(&machine);
     let on_machine = |agent: &AgentId| MachineId::of(*agent) == machine;
@@ -571,7 +572,7 @@ mod tests {
     use std::time::Duration;
 
     use super::*;
-    use crate::prefs::TerminalPlace;
+    use crate::prefs::Dock;
     use crate::state::app_state::tests::{state_with, summary};
     use crate::state::daemon_probe::DaemonProbe;
     use crate::state::daemon_update::UpdateLink;
@@ -1009,7 +1010,11 @@ mod tests {
         for agent in [AgentId::new(1), remote.id] {
             state.ui.selected = Some(agent);
             crate::state::file_tree::toggle_pane(&mut state);
-            terminals::move_to(&mut state, TerminalPlace::Right);
+            let machine = state.daemon_machine(agent).unwrap().to_owned();
+            state
+                .prefs
+                .terminal
+                .set_agent(&machine, MachineId::daemon_agent(agent), Dock::Side);
         }
         let local_machine = state.daemon_machine(AgentId::new(1)).map(str::to_owned);
 

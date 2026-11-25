@@ -36,7 +36,7 @@ use crate::config::{DaemonConfig, MachineConfig};
 use crate::daemon_label::DaemonLabel;
 use crate::machine::MachineId;
 use crate::path_style::PathStyle;
-use crate::prefs::{CommentPlacement, GroupBy, ProjectRule, ProjectSplit, TerminalPlace};
+use crate::prefs::{CommentPlacement, Dock, GroupBy, ProjectRule, ProjectSplit};
 use crate::self_update::CheckFileError;
 use crate::state::app_update::{self, AppStep, InstallKind, Release, ReleaseAsset};
 use crate::state::daemon_probe::{
@@ -2027,8 +2027,8 @@ fn show_projects_and_terminal(state: &mut AppState) {
     state.prefs.sidebar.project_split = ProjectSplit::ByMachine;
     keep_projects(state);
     state.ui.selected = Some(agent);
-    state.prefs.terminal.place = TerminalPlace::Bottom;
-    state.ui.terminal_panes.insert(agent);
+    state.prefs.terminal.place = Dock::Bottom;
+    state.ui.terminal_docks.insert((agent, Dock::Bottom));
     // The terminal takes the chat's height: the folded block leaves the reply's notes room beside
     // their passages.
     state.ui.open_blocks.remove(&Block::Messages);

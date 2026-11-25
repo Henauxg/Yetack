@@ -1,5 +1,5 @@
-//! The terminal pane: each agent's terminals, the tab it shows, its tab in the file view, the
-//! shells a new terminal can run, and the requests that list, open and close them. The output
+//! Each agent's terminals: the docks they sit in and the one each dock shows, whether they show,
+//! the shells a new terminal can run, and the requests that list, open and close them. The output
 //! does not pass here: it goes from the connection to the page, see `terminal_feed`.
 
 use std::collections::BTreeSet;
@@ -12,12 +12,12 @@ use cockpit_protocol::{
 };
 
 use super::app_state::AppState;
+use super::docks::{self, Dock, TabKey};
 use super::requests::{Outgoing, Purpose};
 use super::ui_state::{MenuSide, Popover};
 use super::{blocks_view, terminal_menu};
 use crate::machine::MachineId;
 use crate::path_style::PathStyle;
-use crate::prefs::TerminalPlace;
 
 /// The size a terminal opens with, before the pane measures itself.
 const OPENING_SIZE: TerminalSize = TerminalSize { cols: 80, rows: 24 };
@@ -36,11 +36,13 @@ const SHELL_MENU_MARGIN: i32 = 8;
 pub struct AgentTerminals {
     /// In the order they opened.
     pub tabs: Vec<TerminalTab>,
-    /// The tab the pane shows.
+    /// The terminal the bottom dock shows, when it sits there.
     pub shown: Option<TerminalId>,
     pub listing: Listing,
     /// An `agent.terminal_open` is on its way.
     pub opening: bool,
+    /// The dock the terminal on its way opens in.
+    pub opening_dock: Dock,
     /// The last opening failed: the pane waits for the "+" rather than trying again.
     pub open_failed: bool,
     /// The shells a terminal can run, the default one among them. Empty from a daemon that
@@ -94,6 +96,10 @@ impl AgentTerminals {
     /// Whether the tab bar offers a choice of shell.
     pub fn offers_shells(&self) -> bool {
         self.shells.len() > 1
+    }
+
+    pub fn tab(&self, terminal: TerminalId) -> Option<&TerminalTab> {
+        self.tabs.iter().find(|tab| tab.terminal == terminal)
     }
 
     fn tab_mut(&mut self, terminal: TerminalId) -> Option<&mut TerminalTab> {
@@ -161,97 +167,210 @@ fn outgoing(request: Request, purpose: Purpose) -> Outgoing {
     }
 }
 
-/// Whether `terminal` is the one the selected agent `agent` shows.
+/// Whether `terminal` is one the selected agent `agent` shows, in either dock.
 pub fn shows(state: &AppState, agent: AgentId, terminal: TerminalId) -> bool {
-    selected(state)
-        .is_some_and(|(selected, terminals)| selected == agent && terminals.shown == Some(terminal))
+    state.ui.selected == Some(agent)
+        && (bottom_terminal(state, agent) == Some(terminal)
+            || side_terminal(state, agent) == Some(terminal))
 }
 
-/// Whether the selected agent's pane shows.
+/// Whether the selected agent's terminals show in either dock, which lists them.
 pub fn pane_open(state: &AppState) -> bool {
+    state.ui.selected.is_some_and(|agent| {
+        docks::terminals_shown(state, agent, Dock::Bottom)
+            || docks::terminals_shown(state, agent, Dock::Side)
+    })
+}
+
+/// Whether a terminal of the selected agent is on screen, or a dock that waits for one, which the
+/// header's button shows.
+pub fn on_screen(state: &AppState) -> bool {
     state
         .ui
         .selected
-        .is_some_and(|agent| state.ui.terminal_panes.contains(&agent))
+        .is_some_and(|agent| on_screen_for(state, agent))
 }
 
-/// Where `agent`'s terminal sits: the place kept for it, else the last place chosen.
-pub fn place(state: &AppState, agent: AgentId) -> TerminalPlace {
-    state
-        .daemon_machine(agent)
-        .map_or(state.prefs.terminal.place, |machine| {
-            state
-                .prefs
-                .terminal
-                .agent(machine, MachineId::daemon_agent(agent))
-        })
+fn on_screen_for(state: &AppState, agent: AgentId) -> bool {
+    bottom_open(state, agent)
+        || side_terminal(state, agent).is_some()
+        || (docks::terminals_shown(state, agent, Dock::Side) && waits_in(state, agent, Dock::Side))
 }
 
-/// Whether `agent`'s terminal is a tab of its file view.
-pub fn in_file_view(state: &AppState, agent: AgentId) -> bool {
-    place(state, agent) == TerminalPlace::FileView && state.ui.terminal_panes.contains(&agent)
+/// Whether `dock` waits for a terminal: the agent's are being listed, or one opens there.
+fn waits_in(state: &AppState, agent: AgentId, dock: Dock) -> bool {
+    let Some(entry) = state.agents.get(&agent) else {
+        return false;
+    };
+    let terminals = &entry.terminals;
+    if terminals.opening {
+        return terminals.opening_dock == dock;
+    }
+    terminals.listing != Listing::Listed && dock == docks::default_dock(state, agent)
 }
 
-/// Whether `agent`'s file view shows the terminal: the user picked its tab, or no file is open.
-pub fn file_view_shows_terminal(state: &AppState, agent: AgentId) -> bool {
-    in_file_view(state, agent)
-        && (state.ui.file_view(agent).is_none() || state.ui.terminal_tab_shown.contains(&agent))
+/// Whether the bottom dock shows for `agent`: its terminals show, and it has one or waits for
+/// one.
+pub fn bottom_open(state: &AppState, agent: AgentId) -> bool {
+    docks::terminals_shown(state, agent, Dock::Bottom)
+        && (!docks::terminals_in(state, agent, Dock::Bottom).is_empty()
+            || waits_in(state, agent, Dock::Bottom))
 }
 
-/// The file `agent`'s file view shows, unless the terminal's tab is over it.
-pub fn shown_file(state: &AppState, agent: AgentId) -> Option<&Path> {
-    let view = state.ui.file_view(agent)?;
-    (!file_view_shows_terminal(state, agent)).then_some(view.path.as_path())
+/// The terminal the bottom dock shows: the one picked last, else its first tab.
+pub fn bottom_terminal(state: &AppState, agent: AgentId) -> Option<TerminalId> {
+    if !docks::terminals_shown(state, agent, Dock::Bottom) {
+        return None;
+    }
+    let picked = state.agents.get(&agent)?.terminals.shown;
+    let tabs = docks::tabs(state, agent, Dock::Bottom);
+    picked
+        .filter(|picked| tabs.contains(&TabKey::Terminal(*picked)))
+        .or_else(|| first_terminal(&tabs))
 }
 
-/// Whether `agent`'s file view panel shows: with a file open, or with the terminal as its tab.
-pub fn file_view_open(state: &AppState, agent: AgentId) -> bool {
-    state.ui.file_view(agent).is_some() || in_file_view(state, agent)
+fn first_terminal(tabs: &[TabKey]) -> Option<TerminalId> {
+    tabs.iter().find_map(|tab| match tab {
+        TabKey::Terminal(terminal) => Some(*terminal),
+        TabKey::File(_) => None,
+    })
 }
 
-/// Shows the terminal's tab in `agent`'s file view, when the terminal is a tab there.
-pub fn show_tab(state: &mut AppState, agent: AgentId) {
-    if place(state, agent) == TerminalPlace::FileView {
-        state.ui.terminal_tab_shown.insert(agent);
+/// The terminal the side dock shows over its files: the one picked last, or its first terminal
+/// when no file is open. `None` while a file shows.
+pub fn side_terminal(state: &AppState, agent: AgentId) -> Option<TerminalId> {
+    let tabs = docks::tabs(state, agent, Dock::Side);
+    let picked = state
+        .ui
+        .side_terminal
+        .get(&agent)
+        .copied()
+        .filter(|picked| tabs.contains(&TabKey::Terminal(*picked)));
+    if state.ui.file_view(agent).is_some() {
+        picked
+    } else {
+        picked.or_else(|| first_terminal(&tabs))
     }
 }
 
-/// Hides `agent`'s pane. Its shells keep running.
+/// The file `agent`'s side dock shows, unless a terminal is over it.
+pub fn shown_file(state: &AppState, agent: AgentId) -> Option<&Path> {
+    let view = state.ui.file_view(agent)?;
+    side_terminal(state, agent)
+        .is_none()
+        .then_some(view.path.as_path())
+}
+
+/// Whether `agent`'s side dock shows: with a file open, or with a terminal that shows there.
+pub fn side_open(state: &AppState, agent: AgentId) -> bool {
+    state.ui.file_view(agent).is_some()
+        || (docks::terminals_shown(state, agent, Dock::Side)
+            && (!docks::terminals_in(state, agent, Dock::Side).is_empty()
+                || waits_in(state, agent, Dock::Side)))
+}
+
+/// Shows `terminal` in its dock, and that dock's terminals.
+pub fn show(state: &mut AppState, agent: AgentId, terminal: TerminalId) {
+    let dock = docks::terminal_dock(state, agent, terminal);
+    state.ui.terminal_docks.insert((agent, dock));
+    match dock {
+        Dock::Bottom => {
+            if let Some(terminals) = terminals_mut(state, agent) {
+                terminals.shown = Some(terminal);
+            }
+        }
+        Dock::Side => {
+            state.ui.side_terminal.insert(agent, terminal);
+        }
+    }
+}
+
+/// Hides the terminals of `agent`'s `dock`. Their shells keep running. With no terminal left on
+/// screen, the other dock's terminals hide too, so that none opens on its own there later.
+pub fn hide_dock(state: &mut AppState, agent: AgentId, dock: Dock) {
+    following_badges(state, agent, |state| {
+        state.ui.terminal_docks.remove(&(agent, dock));
+        if dock == Dock::Side {
+            state.ui.side_terminal.remove(&agent);
+        }
+        if !on_screen_for(state, agent) {
+            state.ui.terminal_docks.remove(&(agent, dock.other()));
+            state.ui.side_terminal_wanted.remove(&agent);
+        }
+    });
+    if !pane_open(state) {
+        close_shell_menu(state, |shown| shown == agent);
+    }
+}
+
+/// Hides `agent`'s terminals in both docks. Their shells keep running.
 pub fn hide(state: &mut AppState, agent: AgentId) {
-    close_shell_menu(state, |shown| shown == agent);
+    hide_dock(state, agent, Dock::Bottom);
+    hide_dock(state, agent, Dock::Side);
+}
+
+/// Runs `change`, which may close the side dock. The chat then takes its width back, and a card
+/// opened from a badge closes with the badges.
+fn following_badges(state: &mut AppState, agent: AgentId, change: impl FnOnce(&mut AppState)) {
     let badges_before = blocks_view::shows_badges(state, agent);
-    state.ui.terminal_panes.remove(&agent);
-    state.ui.terminal_tab_shown.remove(&agent);
-    // The cards over the chat leave their badges, as when the file view closes.
+    change(state);
     if badges_before && !blocks_view::shows_badges(state, agent) {
         state.ui.badge = None;
     }
 }
 
-/// The header's button and its shortcut, for the selected agent. In the file view, a file shown
-/// over the terminal's tab gives it its place first.
+/// The header's button and its shortcut, for the selected agent: hides the terminals on screen,
+/// else shows them in both docks. A side dock that holds terminals shows one over its files.
 pub fn toggle_pane(state: &mut AppState) -> Vec<Outgoing> {
     let Some(agent) = state.ui.selected else {
         return Vec::new();
     };
-    if in_file_view(state, agent) && !file_view_shows_terminal(state, agent) {
-        show_tab(state, agent);
-    } else if state.ui.terminal_panes.contains(&agent) {
+    if on_screen(state) {
         hide(state, agent);
-    } else {
-        state.ui.terminal_panes.insert(agent);
-        show_tab(state, agent);
+        return Vec::new();
+    }
+    state.ui.terminal_docks.insert((agent, Dock::Bottom));
+    state.ui.terminal_docks.insert((agent, Dock::Side));
+    let picked = state.ui.side_terminal.get(&agent).copied();
+    let side = docks::terminals_in(state, agent, Dock::Side);
+    let shown = picked
+        .filter(|picked| side.contains(picked))
+        .or_else(|| side.first().copied());
+    if let Some(terminal) = shown {
+        state.ui.side_terminal.insert(agent, terminal);
+    }
+    let listed = state
+        .agents
+        .get(&agent)
+        .is_some_and(|entry| entry.terminals.listing == Listing::Listed);
+    if !listed {
+        state.ui.side_terminal_wanted.insert(agent);
     }
     Vec::new()
 }
 
-/// Moves the selected agent's terminal to `to`, where the agents that start later put theirs. The
-/// other agents keep theirs where it is.
-pub fn move_to(state: &mut AppState, to: TerminalPlace) {
-    let Some(agent) = state.ui.selected else {
-        state.prefs.terminal.place = to;
+/// Moves `terminal` to `to`, before the tab `before` or at the end, and shows it there. The agent's
+/// next terminals open in `to`, and so do the terminals of the agents that start later. The other
+/// agents keep theirs where they are.
+pub fn move_terminal(
+    state: &mut AppState,
+    agent: AgentId,
+    terminal: TerminalId,
+    to: Dock,
+    before: Option<&TabKey>,
+) {
+    let from = docks::terminal_dock(state, agent, terminal);
+    following_badges(state, agent, |state| {
+        state.ui.terminal_docks.insert((agent, to));
+        docks::move_tab(state, agent, &TabKey::Terminal(terminal), to, before);
+        if from != to && state.ui.side_terminal.get(&agent) == Some(&terminal) {
+            state.ui.side_terminal.remove(&agent);
+        }
+        show(state, agent, terminal);
+    });
+    if from == to {
         return;
-    };
+    }
     let Some(machine) = state.daemon_machine(agent).map(str::to_owned) else {
         return;
     };
@@ -267,27 +386,26 @@ pub fn move_to(state: &mut AppState, to: TerminalPlace) {
     for (name, other) in others {
         state.prefs.terminal.keep_place(&name, other);
     }
-    let badges_before = blocks_view::shows_badges(state, agent);
     state
         .prefs
         .terminal
         .set_agent(&machine, MachineId::daemon_agent(agent), to);
-    state.ui.terminal_panes.insert(agent);
-    show_tab(state, agent);
-    // A terminal that leaves the file view alone in it closes it, and its badges go.
-    if badges_before && !blocks_view::shows_badges(state, agent) {
-        state.ui.badge = None;
-    }
 }
 
-/// While the pane shows, the selected agent's terminals are listed, and an agent with none gets
-/// one.
+/// While terminals show, the selected agent's are listed, and an agent with none gets one, in the
+/// dock it opens terminals in, else in the other dock that shows.
 pub fn needed_requests(state: &mut AppState) -> Vec<Outgoing> {
     if !pane_open(state) {
         return Vec::new();
     }
     let Some(agent) = state.ui.selected else {
         return Vec::new();
+    };
+    let default = docks::default_dock(state, agent);
+    let dock = if docks::terminals_shown(state, agent, default) {
+        default
+    } else {
+        default.other()
     };
     let Some(terminals) = terminals_mut(state, agent) else {
         return Vec::new();
@@ -303,18 +421,26 @@ pub fn needed_requests(state: &mut AppState) -> Vec<Outgoing> {
         Listing::Listed
             if terminals.tabs.is_empty() && !terminals.opening && !terminals.open_failed =>
         {
-            open(state, agent, None)
+            open(state, agent, None, dock)
         }
         Listing::Asking | Listing::Listed => Vec::new(),
     }
 }
 
-/// The tab bar's "+" with `None`, which opens the default shell, or a row of the shell menu.
-pub fn open(state: &mut AppState, agent: AgentId, shell: Option<PathBuf>) -> Vec<Outgoing> {
+/// A dock's "+" with `None`, which opens the default shell, or a row of the shell menu. The new
+/// terminal opens in `dock`.
+pub fn open(
+    state: &mut AppState,
+    agent: AgentId,
+    shell: Option<PathBuf>,
+    dock: Dock,
+) -> Vec<Outgoing> {
+    state.ui.terminal_docks.insert((agent, dock));
     let Some(terminals) = terminals_mut(state, agent) else {
         return Vec::new();
     };
     terminals.opening = true;
+    terminals.opening_dock = dock;
     terminals.open_failed = false;
     vec![outgoing(
         Request::AgentTerminalOpen(TerminalOpenParams {
@@ -330,6 +456,7 @@ pub fn open(state: &mut AppState, agent: AgentId, shell: Option<PathBuf>) -> Vec
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ShellMenu {
     pub agent: AgentId,
+    pub dock: Dock,
     pub x: i32,
     pub y: i32,
     pub side: MenuSide,
@@ -369,22 +496,43 @@ pub fn shell_menu_side(
 
 /// The button beside the "+": opens or closes the agent's shell menu on `side` of the button, at
 /// its left edge `x` and its edge `y` on that side.
-pub fn toggle_shell_menu(state: &mut AppState, agent: AgentId, x: i32, y: i32, side: MenuSide) {
+pub fn toggle_shell_menu(
+    state: &mut AppState,
+    agent: AgentId,
+    dock: Dock,
+    x: i32,
+    y: i32,
+    side: MenuSide,
+) {
     let open = matches!(
         state.ui.popover,
-        Some(Popover::ShellMenu { agent: shown, .. }) if shown == agent
+        Some(Popover::ShellMenu { agent: shown, dock: from, .. }) if shown == agent && from == dock
     );
-    state.ui.popover = (!open).then_some(Popover::ShellMenu { agent, x, y, side });
+    state.ui.popover = (!open).then_some(Popover::ShellMenu {
+        agent,
+        dock,
+        x,
+        y,
+        side,
+    });
 }
 
 /// The open shell menu, while its agent offers a choice of shell.
 pub fn shell_menu(state: &AppState) -> Option<ShellMenu> {
-    let Some(Popover::ShellMenu { agent, x, y, side }) = state.ui.popover else {
+    let Some(Popover::ShellMenu {
+        agent,
+        dock,
+        x,
+        y,
+        side,
+    }) = state.ui.popover
+    else {
         return None;
     };
     let terminals = &state.agents.get(&agent)?.terminals;
     terminals.offers_shells().then(|| ShellMenu {
         agent,
+        dock,
         x,
         y,
         side,
@@ -393,9 +541,22 @@ pub fn shell_menu(state: &AppState) -> Option<ShellMenu> {
 }
 
 /// A row of the shell menu: opens a terminal with that shell.
-pub fn pick_shell(state: &mut AppState, agent: AgentId, program: PathBuf) -> Vec<Outgoing> {
+pub fn pick_shell(
+    state: &mut AppState,
+    agent: AgentId,
+    program: PathBuf,
+    dock: Dock,
+) -> Vec<Outgoing> {
     close_shell_menu(state, |shown| shown == agent);
-    open(state, agent, Some(program))
+    open(state, agent, Some(program), dock)
+}
+
+/// Drops a terminal that closed from the layout and from the side dock it showed in.
+fn forget_terminal(state: &mut AppState, agent: AgentId, terminal: TerminalId) {
+    docks::forget_tab(state, agent, &TabKey::Terminal(terminal));
+    if state.ui.side_terminal.get(&agent) == Some(&terminal) {
+        state.ui.side_terminal.remove(&agent);
+    }
 }
 
 /// Closes the shell menu of an agent that `gone` names: the menu would show over nothing, and its
@@ -443,6 +604,15 @@ pub fn listed(
     if terminals.shown.is_none() {
         terminals.shown = terminals.tabs.last().map(|tab| tab.terminal);
     }
+    let ids: BTreeSet<TerminalId> = terminals.tabs.iter().map(|tab| tab.terminal).collect();
+    docks::keep_terminals(state, agent, &ids);
+    docks::settle_terminals(state, agent);
+    // Terminals the shortcut asked for while unlisted show in the side dock too, over its files.
+    if state.ui.side_terminal_wanted.remove(&agent)
+        && let Some(&last) = docks::terminals_in(state, agent, Dock::Side).last()
+    {
+        state.ui.side_terminal.insert(agent, last);
+    }
 }
 
 /// `agent.terminal_open` answered: the pane shows the new terminal.
@@ -450,12 +620,14 @@ pub fn opened(state: &mut AppState, agent: AgentId, opened: Option<TerminalId>) 
     let Some(terminals) = terminals_mut(state, agent) else {
         return;
     };
+    let dock = terminals.opening_dock;
     terminals.opening = false;
     terminals.open_failed = opened.is_none();
     if let Some(terminal) = opened {
         terminals.add(terminal, String::new());
         terminals.fresh.insert(terminal);
-        terminals.shown = Some(terminal);
+        docks::place_terminal(state, agent, terminal, dock);
+        show(state, agent, terminal);
         // The new terminal takes the screen from the one a menu may be open on.
         terminal_menu::close_if(state, |spot| spot.agent == agent);
     }
@@ -474,6 +646,7 @@ pub fn apply_update(state: &mut AppState, update: TerminalUpdate) {
             {
                 tab.title = title;
             }
+            docks::settle_terminals(state, update.agent);
         }
         TerminalChange::Exited { code } => {
             if let Some(tab) = terminals.tab_mut(update.terminal) {
@@ -482,6 +655,7 @@ pub fn apply_update(state: &mut AppState, update: TerminalUpdate) {
         }
         TerminalChange::Closed => {
             terminals.remove(update.terminal);
+            forget_terminal(state, update.agent, update.terminal);
             terminal_menu::close_if(state, |spot| {
                 spot.agent == update.agent && spot.terminal == update.terminal
             });
@@ -540,20 +714,16 @@ pub fn connected(state: &mut AppState, machine: MachineId) {
     close_shell_menu(state, |agent| MachineId::of(agent) == machine);
 }
 
-pub fn show(state: &mut AppState, agent: AgentId, terminal: TerminalId) {
-    if let Some(terminals) = terminals_mut(state, agent) {
-        terminals.shown = Some(terminal);
-    }
-}
-
 /// A tab's "×": ends its shell.
 pub fn close(state: &mut AppState, agent: AgentId, terminal: TerminalId) -> Vec<Outgoing> {
     let Some(terminals) = terminals_mut(state, agent) else {
         return Vec::new();
     };
     terminals.remove(terminal);
-    // The last tab closed: the pane closes with it, rather than opening another.
-    if terminals.tabs.is_empty() {
+    let last = terminals.tabs.is_empty();
+    forget_terminal(state, agent, terminal);
+    // The last tab closed: the terminals hide with it, rather than opening another.
+    if last {
         hide(state, agent);
     }
     vec![outgoing(
@@ -772,7 +942,7 @@ mod tests {
 
         opened(&mut state, agent(), None);
         let after_failure = needed_requests(&mut state);
-        let asked = open(&mut state, agent(), None);
+        let asked = open(&mut state, agent(), None, Dock::Bottom);
 
         assert!(after_failure.is_empty(), "{after_failure:?}");
         assert_eq!(asked.len(), 1);
@@ -844,10 +1014,15 @@ mod tests {
         let terminals = &state.agents[&agent()].terminals;
         let default = terminals.default_shell().map(|shell| shell.name.clone());
 
-        toggle_shell_menu(&mut state, agent(), 40, 60, MenuSide::Below);
+        toggle_shell_menu(&mut state, agent(), Dock::Bottom, 40, 60, MenuSide::Below);
         let menu = shell_menu(&state);
-        let picked = pick_shell(&mut state, agent(), PathBuf::from("/usr/bin/bash"));
-        let plus = open(&mut state, agent(), None);
+        let picked = pick_shell(
+            &mut state,
+            agent(),
+            PathBuf::from("/usr/bin/bash"),
+            Dock::Bottom,
+        );
+        let plus = open(&mut state, agent(), None, Dock::Bottom);
 
         assert_eq!(default.as_deref(), Some("zsh"));
         let menu = menu.expect("the menu shows");
@@ -891,8 +1066,8 @@ mod tests {
         let mut one = pane_with_shells(vec![shell("/usr/bin/bash", true)]);
         let mut older = pane_with_shells(Vec::new());
 
-        toggle_shell_menu(&mut one, agent(), 40, 60, MenuSide::Below);
-        toggle_shell_menu(&mut older, agent(), 40, 60, MenuSide::Below);
+        toggle_shell_menu(&mut one, agent(), Dock::Bottom, 40, 60, MenuSide::Below);
+        toggle_shell_menu(&mut older, agent(), Dock::Bottom, 40, 60, MenuSide::Below);
 
         assert!(!one.agents[&agent()].terminals.offers_shells());
         assert!(!older.agents[&agent()].terminals.offers_shells());
@@ -906,8 +1081,15 @@ mod tests {
         let shells = vec![shell("/usr/bin/bash", true), shell("/usr/bin/zsh", false)];
         let mut hidden = pane_with_shells(shells.clone());
         let mut reconnected = pane_with_shells(shells);
-        toggle_shell_menu(&mut hidden, agent(), 40, 60, MenuSide::Below);
-        toggle_shell_menu(&mut reconnected, agent(), 40, 60, MenuSide::Below);
+        toggle_shell_menu(&mut hidden, agent(), Dock::Bottom, 40, 60, MenuSide::Below);
+        toggle_shell_menu(
+            &mut reconnected,
+            agent(),
+            Dock::Bottom,
+            40,
+            60,
+            MenuSide::Below,
+        );
 
         toggle_pane(&mut hidden);
         connected(&mut reconnected, MachineId::THIS);
@@ -1113,18 +1295,28 @@ mod tests {
         assert_eq!(screen_is_fresh(&mut state, 3), Some(false));
     }
 
-    /// The terminal is a tab of the file view, which shows `a.rs` and `b.rs`.
+    /// The file view shows `a.rs` and `b.rs`, and the agent's terminal 1 sits in the side dock.
     fn in_file_view_with_two_files() -> AppState {
         let mut state = state_with(vec![summary(1, AgentStatus::Idle)]);
         state.ui.selected = Some(agent());
-        state.prefs.terminal.place = TerminalPlace::FileView;
+        state.prefs.terminal.place = Dock::Side;
         actions::open_file(&mut state, agent(), PathBuf::from("a.rs"), None);
         actions::open_file(&mut state, agent(), PathBuf::from("b.rs"), None);
+        listed(&mut state, agent(), Some(vec![tab(1)]), Vec::new());
+        state
+    }
+
+    /// The agent shows no file, and its terminal 1 sits in the side dock.
+    fn alone_in_the_side_dock() -> AppState {
+        let mut state = state_with(vec![summary(1, AgentStatus::Idle)]);
+        state.ui.selected = Some(agent());
+        state.prefs.terminal.place = Dock::Side;
+        listed(&mut state, agent(), Some(vec![tab(1)]), Vec::new());
         state
     }
 
     fn shows_terminal(state: &AppState) -> bool {
-        file_view_shows_terminal(state, agent())
+        side_terminal(state, agent()).is_some()
     }
 
     fn shown_path(state: &AppState) -> Option<PathBuf> {
@@ -1146,10 +1338,10 @@ mod tests {
     }
 
     #[test]
-    fn back_after_the_terminal_left_the_file_view_goes_to_the_file_before() {
+    fn back_after_the_terminal_left_the_side_dock_goes_to_the_file_before() {
         let mut state = in_file_view_with_two_files();
         toggle_pane(&mut state);
-        move_to(&mut state, TerminalPlace::Bottom);
+        move_terminal(&mut state, agent(), TerminalId::new(1), Dock::Bottom, None);
 
         actions::travel_files(&mut state, agent(), Travel::Back);
 
@@ -1171,13 +1363,16 @@ mod tests {
     }
 
     #[test]
-    fn in_the_file_view_the_shortcut_brings_the_terminal_over_the_file_before_it_hides_it() {
+    fn in_the_side_dock_the_shortcut_brings_the_terminal_over_the_file_before_it_hides_it() {
         let mut state = in_file_view_with_two_files();
 
         toggle_pane(&mut state);
         let opened = shows_terminal(&state);
         actions::open_file(&mut state, agent(), PathBuf::from("a.rs"), None);
-        let file_over_it = (in_file_view(&state, agent()), shows_terminal(&state));
+        let file_over_it = (
+            docks::terminals_shown(&state, agent(), Dock::Side),
+            shows_terminal(&state),
+        );
         toggle_pane(&mut state);
         let brought = shows_terminal(&state);
         toggle_pane(&mut state);
@@ -1185,7 +1380,7 @@ mod tests {
         assert!(opened);
         assert_eq!(file_over_it, (true, false));
         assert!(brought);
-        assert!(!in_file_view(&state, agent()));
+        assert!(!docks::terminals_shown(&state, agent(), Dock::Side));
         assert!(state.ui.file_view(agent()).is_some(), "the files stay");
     }
 
@@ -1202,24 +1397,24 @@ mod tests {
         assert!(state.ui.file_view(agent()).is_none());
         assert!(
             shows_terminal(&state),
-            "the terminal alone keeps the file view"
+            "the terminal alone keeps the side dock"
         );
     }
 
     #[test]
-    fn closing_the_file_view_hides_its_terminal_and_not_a_terminal_elsewhere() {
+    fn closing_the_side_dock_hides_its_terminal_and_not_the_bottom_docks() {
         let mut state = in_file_view_with_two_files();
         toggle_pane(&mut state);
 
         actions::close_file_panel(&mut state, agent());
-        let in_view_hidden = !pane_open(&state);
-        move_to(&mut state, TerminalPlace::Bottom);
+        let side_hidden = !docks::terminals_shown(&state, agent(), Dock::Side);
+        move_terminal(&mut state, agent(), TerminalId::new(1), Dock::Bottom, None);
         actions::open_file(&mut state, agent(), PathBuf::from("a.rs"), None);
         actions::close_file_panel(&mut state, agent());
 
-        assert!(in_view_hidden);
+        assert!(side_hidden);
         assert!(state.ui.file_view(agent()).is_none());
-        assert!(pane_open(&state), "the bottom panel stays");
+        assert!(bottom_open(&state, agent()), "the bottom dock stays");
     }
 
     #[test]
@@ -1266,50 +1461,66 @@ mod tests {
     }
 
     #[test]
-    fn hiding_the_terminal_alone_in_the_file_view_closes_the_panel_and_its_badges() {
-        let mut state = state_with(vec![summary(1, AgentStatus::Idle)]);
-        state.ui.selected = Some(agent());
-        state.prefs.terminal.place = TerminalPlace::FileView;
+    fn hiding_the_terminal_alone_in_the_side_dock_closes_it_and_its_badges() {
+        let mut state = alone_in_the_side_dock();
         toggle_pane(&mut state);
-        let opened = file_view_open(&state, agent());
+        let opened = side_open(&state, agent());
         state.ui.badge = Some(Block::Tasks);
 
         toggle_pane(&mut state);
 
         assert!(opened);
-        assert!(!file_view_open(&state, agent()));
+        assert!(!side_open(&state, agent()));
         assert_eq!(state.ui.badge, None);
     }
 
     #[test]
     fn hiding_the_terminal_keeps_the_badges_card_while_the_user_keeps_the_blocks_folded() {
-        let mut state = state_with(vec![summary(1, AgentStatus::Idle)]);
-        state.ui.selected = Some(agent());
+        let mut state = alone_in_the_side_dock();
         state.prefs.blocks.form = BlocksForm::Badges;
-        state.prefs.terminal.place = TerminalPlace::FileView;
         toggle_pane(&mut state);
         state.ui.badge = Some(Block::Tasks);
 
         toggle_pane(&mut state);
 
-        assert!(!file_view_open(&state, agent()));
+        assert!(!side_open(&state, agent()));
         assert_eq!(state.ui.badge, Some(Block::Tasks));
     }
 
     #[test]
-    fn the_bottom_panel_leaves_no_terminal_tab_for_a_later_move_to_the_file_view() {
+    fn a_terminal_moved_to_the_side_dock_sits_among_the_files_and_shows() {
         let mut state = in_file_view_with_two_files();
-        state.prefs.terminal.place = TerminalPlace::Bottom;
+        state.prefs.terminal.place = Dock::Bottom;
+        state.ui.layouts.clear();
         toggle_pane(&mut state);
+        let bottom_before = bottom_open(&state, agent());
 
-        state.prefs.terminal.place = TerminalPlace::FileView;
+        move_terminal(
+            &mut state,
+            agent(),
+            TerminalId::new(1),
+            Dock::Side,
+            Some(&TabKey::File(PathBuf::from("b.rs"))),
+        );
 
-        assert!(in_file_view(&state, agent()));
-        assert!(!shows_terminal(&state), "the file stays over it");
+        assert!(bottom_before);
+        assert_eq!(
+            docks::tabs(&state, agent(), Dock::Side),
+            [
+                TabKey::File(PathBuf::from("a.rs")),
+                TabKey::Terminal(TerminalId::new(1)),
+                TabKey::File(PathBuf::from("b.rs")),
+            ]
+        );
+        assert!(shows_terminal(&state));
+        assert!(
+            !bottom_open(&state, agent()),
+            "the bottom dock has no terminal left"
+        );
     }
 
     #[test]
-    fn each_agent_keeps_its_terminals_place_and_a_later_agent_takes_the_last_one() {
+    fn each_agent_keeps_its_terminals_dock_and_a_later_agent_takes_the_last_one() {
         let other = AgentId::new(2);
         let later = AgentId::new(3);
         let mut state = state_with(vec![
@@ -1317,23 +1528,30 @@ mod tests {
             summary(2, AgentStatus::Idle),
         ]);
         state.ui.selected = Some(agent());
+        listed(&mut state, agent(), Some(vec![tab(1)]), Vec::new());
+        listed(&mut state, other, Some(vec![tab(2)]), Vec::new());
 
-        move_to(&mut state, TerminalPlace::Right);
-        let kept = place(&state, other);
-        state.ui.selected = Some(other);
-        move_to(&mut state, TerminalPlace::FileView);
+        move_terminal(&mut state, agent(), TerminalId::new(1), Dock::Side, None);
 
-        assert_eq!(kept, TerminalPlace::Bottom, "the other agent's stays");
-        assert_eq!(place(&state, agent()), TerminalPlace::Right);
-        assert_eq!(place(&state, other), TerminalPlace::FileView);
-        assert_eq!(place(&state, later), TerminalPlace::FileView);
+        assert_eq!(docks::default_dock(&state, agent()), Dock::Side);
+        assert_eq!(
+            docks::default_dock(&state, other),
+            Dock::Bottom,
+            "the other agent's stays"
+        );
+        assert_eq!(docks::default_dock(&state, later), Dock::Side);
+        assert_eq!(
+            docks::terminal_dock(&state, other, TerminalId::new(2)),
+            Dock::Bottom
+        );
     }
 
     #[test]
-    fn a_removed_agent_leaves_no_terminal_place_behind() {
+    fn a_removed_agent_leaves_no_terminal_dock_behind() {
         let mut state = state_with(vec![summary(1, AgentStatus::Idle)]);
         state.ui.selected = Some(agent());
-        move_to(&mut state, TerminalPlace::Right);
+        listed(&mut state, agent(), Some(vec![tab(1)]), Vec::new());
+        move_terminal(&mut state, agent(), TerminalId::new(1), Dock::Side, None);
 
         forget_place(&mut state, agent());
 
@@ -1341,18 +1559,124 @@ mod tests {
     }
 
     #[test]
-    fn moving_the_terminal_alone_out_of_the_file_view_drops_its_badges() {
-        let mut state = state_with(vec![summary(1, AgentStatus::Idle)]);
-        state.ui.selected = Some(agent());
-        state.prefs.terminal.place = TerminalPlace::FileView;
+    fn moving_the_terminal_alone_out_of_the_side_dock_drops_its_badges() {
+        let mut state = alone_in_the_side_dock();
         toggle_pane(&mut state);
         state.ui.badge = Some(Block::Tasks);
 
-        move_to(&mut state, TerminalPlace::Bottom);
+        move_terminal(&mut state, agent(), TerminalId::new(1), Dock::Bottom, None);
 
-        assert!(!file_view_open(&state, agent()));
-        assert!(pane_open(&state));
+        assert!(!side_open(&state, agent()));
+        assert!(bottom_open(&state, agent()));
         assert_eq!(state.ui.badge, None);
+    }
+
+    #[test]
+    fn a_closed_terminal_leaves_its_dock_and_its_pin() {
+        let mut state = alone_in_the_side_dock();
+        toggle_pane(&mut state);
+        docks::toggle_pin(&mut state, agent(), &TabKey::Terminal(TerminalId::new(1)));
+
+        close(&mut state, agent(), TerminalId::new(1));
+
+        assert!(state.ui.layouts.is_empty());
+        assert_eq!(state.ui.side_terminal.get(&agent()), None);
+    }
+
+    #[test]
+    fn moving_one_terminal_leaves_the_others_where_they_were() {
+        let mut state = state_with(vec![summary(1, AgentStatus::Idle)]);
+        state.ui.selected = Some(agent());
+        toggle_pane(&mut state);
+        needed_requests(&mut state);
+        listed(&mut state, agent(), Some(vec![tab(1), tab(2)]), Vec::new());
+
+        move_terminal(&mut state, agent(), TerminalId::new(1), Dock::Side, None);
+
+        assert_eq!(
+            docks::terminal_dock(&state, agent(), TerminalId::new(2)),
+            Dock::Bottom
+        );
+        assert!(bottom_open(&state, agent()));
+    }
+
+    #[test]
+    fn the_shortcut_hides_a_dock_that_waits_for_its_terminals() {
+        let mut state = state_with(vec![summary(1, AgentStatus::Idle)]);
+        state.ui.selected = Some(agent());
+        toggle_pane(&mut state);
+        needed_requests(&mut state);
+        let waiting = bottom_open(&state, agent());
+
+        toggle_pane(&mut state);
+
+        assert!(waiting);
+        assert!(!pane_open(&state));
+    }
+
+    #[test]
+    fn no_terminal_opens_once_the_user_hid_the_one_dock_on_screen() {
+        let mut state = state_with(vec![summary(1, AgentStatus::Idle)]);
+        state.ui.selected = Some(agent());
+        toggle_pane(&mut state);
+        needed_requests(&mut state);
+        listed(&mut state, agent(), Some(vec![tab(1)]), Vec::new());
+
+        hide_dock(&mut state, agent(), Dock::Bottom);
+        connected(&mut state, MachineId::THIS);
+        let asked = needed_requests(&mut state);
+
+        assert!(!pane_open(&state));
+        assert!(asked.is_empty(), "{asked:?}");
+    }
+
+    #[test]
+    fn a_new_listing_leaves_the_file_the_user_picked_over_the_side_terminal() {
+        let mut state = in_file_view_with_two_files();
+        toggle_pane(&mut state);
+        actions::show_file(&mut state, agent(), PathBuf::from("b.rs"));
+
+        connected(&mut state, MachineId::THIS);
+        needed_requests(&mut state);
+        listed(&mut state, agent(), Some(vec![tab(1)]), Vec::new());
+
+        assert!(!shows_terminal(&state));
+        assert_eq!(shown_path(&state), Some(PathBuf::from("b.rs")));
+    }
+
+    #[test]
+    fn a_file_moved_while_the_side_terminals_hide_leaves_their_place() {
+        let mut state = in_file_view_with_two_files();
+        actions::open_file(&mut state, agent(), PathBuf::from("c.rs"), None);
+        toggle_pane(&mut state);
+        let a = TabKey::File(PathBuf::from("a.rs"));
+        move_terminal(
+            &mut state,
+            agent(),
+            TerminalId::new(1),
+            Dock::Side,
+            Some(&a),
+        );
+        hide(&mut state, agent());
+
+        docks::move_tab(
+            &mut state,
+            agent(),
+            &TabKey::File(PathBuf::from("c.rs")),
+            Dock::Side,
+            Some(&TabKey::File(PathBuf::from("b.rs"))),
+        );
+        toggle_pane(&mut state);
+
+        assert_eq!(
+            docks::tabs(&state, agent(), Dock::Side),
+            [
+                TabKey::Terminal(TerminalId::new(1)),
+                a,
+                TabKey::File(PathBuf::from("c.rs")),
+                TabKey::File(PathBuf::from("b.rs")),
+            ]
+        );
     }
 
     #[test]

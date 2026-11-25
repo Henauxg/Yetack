@@ -160,7 +160,7 @@ pub fn Header() -> Element {
         None => (None, summary.title.clone()),
     };
     let files_open = file_tree::pane_open(&state, agent);
-    let terminal_open = terminals::pane_open(&state);
+    let terminal_open = terminals::on_screen(&state);
     let plan_text = plan.map_or_else(|| "?".to_owned(), |percent| format!("{percent}%"));
     let context_text = context.map_or_else(|| "?".to_owned(), |percent| format!("{percent}%"));
     let plan_words = match chip {

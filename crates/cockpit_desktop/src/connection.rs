@@ -131,6 +131,7 @@ impl Cockpit {
         let requests = {
             let mut state = signal.write();
             let mut requests = change(&mut state);
+            state::saved_files::save(&mut state);
             requests.extend(state::needed_requests(&mut state));
             state::keep_first_answers(&mut state, &mut requests);
             requests

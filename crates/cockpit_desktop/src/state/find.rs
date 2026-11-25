@@ -134,7 +134,7 @@ pub fn is_open(state: &AppState, pane: FindPane, agent: AgentId) -> bool {
         FindPane::Chat => state.ui.chat_finds.contains(&agent),
         FindPane::File => {
             state.ui.file_view(agent).is_some_and(|view| view.find)
-                && !terminals::file_view_shows_terminal(state, agent)
+                && terminals::side_terminal(state, agent).is_none()
         }
     }
 }
@@ -146,7 +146,7 @@ pub fn open(state: &mut AppState, drafts: &mut Drafts, pane: FindPane, selection
     let Some(agent) = state.ui.selected else {
         return;
     };
-    let pane = if terminals::file_view_shows_terminal(state, agent) {
+    let pane = if terminals::side_terminal(state, agent).is_some() {
         FindPane::Chat
     } else {
         pane

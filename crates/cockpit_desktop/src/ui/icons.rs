@@ -16,8 +16,8 @@ pub enum IconKind {
     ChevronRight,
     ChevronLeft,
     Close,
-    /// The terminal's "Move to" button: a window with a panel at its bottom.
-    PanelBottom,
+    /// A pinned tab, in place of its close button.
+    Pin,
     /// Folds the blocks into badges: a window with a panel on its right, and an arrow towards it.
     PanelRightClose,
     /// Unfolds the badges into blocks: the same window, the arrow away from the panel.
@@ -106,8 +106,8 @@ impl IconKind {
             Self::ChevronRight => r#"<path d="M9 6l6 6-6 6"></path>"#,
             Self::ChevronLeft => r#"<path d="M15 6l-6 6 6 6"></path>"#,
             Self::Close => r#"<path d="M6 6l12 12"></path><path d="M18 6L6 18"></path>"#,
-            Self::PanelBottom => {
-                r#"<rect x="3" y="4" width="18" height="16" rx="2"></rect><path d="M3 14h18"></path>"#
+            Self::Pin => {
+                r#"<path d="M12 17v5"></path><path d="M9 10.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24V16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V7a1 1 0 0 1 1-1 2 2 0 0 0 0-4H8a2 2 0 0 0 0 4 1 1 0 0 1 1 1z"></path>"#
             }
             Self::PanelRightClose => {
                 r#"<rect x="3" y="4" width="18" height="16" rx="2"></rect><path d="M15 4v16"></path><path d="M8 9l3 3-3 3"></path>"#

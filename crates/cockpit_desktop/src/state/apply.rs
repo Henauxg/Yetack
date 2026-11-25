@@ -18,7 +18,8 @@ use super::sending::Sending;
 use super::transcript::Transcript;
 use super::{
     actions, daemon_start, daemon_update, details_updates, file_reread, file_tree, git, grouping,
-    notification_levels, project_menu, projects, resume, sending, terminal_menu, terminals,
+    notification_levels, project_menu, projects, resume, saved_files, sending, terminal_menu,
+    terminals,
 };
 use crate::machine::MachineId;
 
@@ -218,11 +219,15 @@ pub fn apply_catchup(
     state.ui.unread.retain(|agent| agents.contains_key(agent));
     state
         .ui
-        .terminal_panes
-        .retain(|agent| agents.contains_key(agent));
+        .terminal_docks
+        .retain(|(agent, _)| agents.contains_key(agent));
     state
         .ui
-        .terminal_tab_shown
+        .side_terminal
+        .retain(|agent, _| agents.contains_key(agent));
+    state
+        .ui
+        .side_terminal_wanted
         .retain(|agent| agents.contains_key(agent));
     state
         .ui
@@ -239,6 +244,14 @@ pub fn apply_catchup(
     state
         .ui
         .file_views
+        .retain(|agent, _| agents.contains_key(agent));
+    state
+        .ui
+        .closed_files
+        .retain(|agent, _| agents.contains_key(agent));
+    state
+        .ui
+        .layouts
         .retain(|agent, _| agents.contains_key(agent));
     state
         .page_copies
@@ -272,6 +285,16 @@ pub fn apply_catchup(
         projects::apply_pick(state, agent);
     }
     file_tree::keep_listed_panes(state, machine);
+    saved_files::keep_listed(state, machine);
+    let listed: Vec<AgentId> = state
+        .agents
+        .keys()
+        .copied()
+        .filter(|agent| MachineId::of(*agent) == machine)
+        .collect();
+    for agent in listed {
+        saved_files::restore(state, agent);
+    }
     terminals::keep_listed_places(state, machine);
     state.fix_selection();
     actions::follow_hidden_title_edit(state, drafts);
@@ -325,6 +348,7 @@ pub fn apply(
             state.agents.insert(agent, AgentEntry::new(summary));
             // A new entry has no terminals: a menu open on the old one's goes.
             terminal_menu::close_if(state, |spot| spot.agent == agent);
+            saved_files::restore(state, agent);
             projects::apply_pick(state, agent);
             if state.ui.selected.is_none() {
                 state.fix_selection();
@@ -341,6 +365,7 @@ pub fn apply(
             forget_agent(state, drafts, agent);
             notification_levels::forget_agent(state, agent);
             file_tree::forget_pane(state, agent);
+            saved_files::forget(state, agent);
             terminals::forget_place(state, agent);
             grouping::forget(state, agent);
             projects::forget_agent(state, agent);
@@ -493,8 +518,11 @@ pub fn forget_agent(
         .mcp_sign_ins
         .retain(|(owner, _), _| *owner != agent);
     state.ui.file_views.remove(&agent);
-    state.ui.terminal_panes.remove(&agent);
-    state.ui.terminal_tab_shown.remove(&agent);
+    state.ui.closed_files.remove(&agent);
+    state.ui.layouts.remove(&agent);
+    state.ui.terminal_docks.retain(|(shown, _)| *shown != agent);
+    state.ui.side_terminal.remove(&agent);
+    state.ui.side_terminal_wanted.remove(&agent);
     state.page_copies.retain_agents(|kept| kept != agent);
     state.ui.finished_tasks_unfolded.remove(&agent);
     state.ui.chat_scrolled_up.remove(&agent);
@@ -665,7 +693,7 @@ mod tests {
 
     use super::*;
     use crate::daemon_label::DaemonLabel;
-    use crate::prefs::{GroupBy, NotificationLevel, StatusFilter, TerminalPlace};
+    use crate::prefs::{Dock, GroupBy, NotificationLevel, StatusFilter};
     use crate::state::app_state::tests::{
         DAEMON_COMMIT, DAEMON_VERSION, connected_update, placed, state_with, summary,
     };
@@ -835,7 +863,7 @@ mod tests {
         for agent in [AgentId::new(1), AgentId::new(2)] {
             state.ui.selected = Some(agent);
             file_tree::toggle_pane(&mut state);
-            terminals::move_to(&mut state, TerminalPlace::Right);
+            keep_terminals_beside(&mut state, agent);
         }
 
         apply_catchup(
@@ -868,7 +896,20 @@ mod tests {
             .collect();
         assert_eq!(kept, [AgentId::new(2)]);
         assert_eq!(places, [AgentId::new(2)]);
-        assert_eq!(state.ui.terminal_panes, BTreeSet::from([AgentId::new(2)]));
+        assert_eq!(
+            state.ui.terminal_docks,
+            BTreeSet::from([(AgentId::new(2), Dock::Side)])
+        );
+    }
+
+    /// The agent's terminals open in the side dock, and show.
+    fn keep_terminals_beside(state: &mut AppState, agent: AgentId) {
+        let machine = state.daemon_machine(agent).unwrap().to_owned();
+        state
+            .prefs
+            .terminal
+            .set_agent(&machine, MachineId::daemon_agent(agent), Dock::Side);
+        state.ui.terminal_docks.insert((agent, Dock::Side));
     }
 
     fn record(event: Event) -> EventRecord {

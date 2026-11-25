@@ -45,7 +45,7 @@ impl BlocksView {
 }
 
 pub fn view(state: &AppState, agent: AgentId) -> BlocksView {
-    if terminals::file_view_open(state, agent) {
+    if terminals::side_open(state, agent) {
         return BlocksView::BesideFileView;
     }
     if state.ui.chat_room == ChatRoom::TooNarrow {
@@ -99,10 +99,10 @@ fn selected_shows_badges(state: &AppState) -> bool {
 mod tests {
     use std::path::PathBuf;
 
-    use cockpit_protocol::AgentStatus;
+    use cockpit_protocol::{AgentStatus, TerminalId, TerminalInfo};
 
     use super::*;
-    use crate::prefs::TerminalPlace;
+    use crate::prefs::Dock;
     use crate::state::{Block, actions, state_with, summary};
 
     fn agent() -> AgentId {
@@ -171,9 +171,15 @@ mod tests {
     }
 
     #[test]
-    fn a_badge_opens_its_card_beside_the_terminal_alone_in_the_file_view() {
+    fn a_badge_opens_its_card_beside_the_terminal_alone_in_the_side_dock() {
         let mut state = selected();
-        state.prefs.terminal.place = TerminalPlace::FileView;
+        state.prefs.terminal.place = Dock::Side;
+        let terminal = TerminalInfo {
+            terminal: TerminalId::new(1),
+            title: "zsh".to_owned(),
+            exited: None,
+        };
+        terminals::listed(&mut state, agent(), Some(vec![terminal]), Vec::new());
         terminals::toggle_pane(&mut state);
         let open_before = state.ui.open_blocks.clone();
 

@@ -11,18 +11,18 @@ use super::actions::{self, Direction};
 use super::app_state::AppState;
 use super::drafts::{Drafts, FileListDraft};
 use super::ui_state::{Popover, TabMenuOrigin};
-use super::{tab_menu, terminals};
+use super::{docks, tab_menu, terminals};
 use crate::path_style::PathStyle;
 
 /// The open files the filter leaves, in the order of the tabs. The filter matches the path as the
 /// row shows it, whatever the case.
 pub fn rows(state: &AppState, drafts: &Drafts, agent: AgentId) -> Vec<PathBuf> {
-    let (Some(entry), Some(view)) = (state.agents.get(&agent), state.ui.file_view(agent)) else {
+    let Some(entry) = state.agents.get(&agent) else {
         return Vec::new();
     };
     let query = drafts.file_list.query.to_lowercase();
     let folder = &entry.summary.folder;
-    view.tabs(&entry.changed_paths())
+    docks::file_tabs(state, agent)
         .into_iter()
         .filter(|tab| shown_text(folder, tab).to_lowercase().contains(&query))
         .collect()

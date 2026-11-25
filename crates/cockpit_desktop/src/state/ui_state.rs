@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use cockpit_protocol::{
     AccountId, AgentId, AgentSummary, ClaudeSessionId, CommitHash, DirListing, Effort, Image,
-    ItemId, PermissionMode,
+    ItemId, PermissionMode, TerminalId,
 };
 use serde::{Deserialize, Serialize};
 use strum::{EnumString, IntoStaticStr, VariantArray};
@@ -16,6 +16,7 @@ use super::accounts::{AccountsView, AddAccountForm};
 use super::agent_map::MapView;
 use super::app_state::{self, Loadable};
 use super::blocks_view::ChatRoom;
+use super::docks::{AgentLayout, Dock};
 use super::find::FindFocus;
 use super::mcp_reconnect::Reconnects;
 use super::mcp_sign_in::SignIns;
@@ -99,6 +100,13 @@ pub enum Popover {
         y: i32,
         origin: TabMenuOrigin,
     },
+    /// A terminal tab's menu, opened by a right-click at `x`, `y` in the window's pixels.
+    TerminalTabMenu {
+        agent: AgentId,
+        terminal: TerminalId,
+        x: i32,
+        y: i32,
+    },
     /// The selected agent's notification levels, from its header tag.
     AgentNotifications,
     /// The app's notification levels, from the sidebar's bell.
@@ -109,6 +117,8 @@ pub enum Popover {
     /// at `x`, `y` in the window's pixels: the button's left edge, and its edge on `side`.
     ShellMenu {
         agent: AgentId,
+        /// The dock whose button opened it, where the terminal opens.
+        dock: Dock,
         x: i32,
         y: i32,
         side: MenuSide,
@@ -487,7 +497,8 @@ impl FolderList {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum ViewMode {
     #[default]
     Diff,
@@ -711,11 +722,14 @@ pub enum TitlePlace {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UiState {
     pub selected: Option<AgentId>,
-    /// The agents whose terminal pane shows while they are selected. It outlives a reconnection,
+    /// The docks whose terminals show while their agent is selected. It outlives a reconnection,
     /// which makes the agents' entries again.
-    pub terminal_panes: BTreeSet<AgentId>,
-    /// The agents whose file view shows the terminal's tab rather than a file.
-    pub terminal_tab_shown: BTreeSet<AgentId>,
+    pub terminal_docks: BTreeSet<(AgentId, Dock)>,
+    /// The terminal each agent's side dock shows over its files.
+    pub side_terminal: BTreeMap<AgentId, TerminalId>,
+    /// The agents whose terminals the shortcut showed before they were listed: once listed, the
+    /// side dock shows one of its own over its files.
+    pub side_terminal_wanted: BTreeSet<AgentId>,
     /// Where a terminal's right-click menu opened, while `Popover::TerminalMenu` shows it.
     pub terminal_menu: Option<MenuSpot>,
     /// Terminal output the daemon kept, which the page writes before what comes next.
@@ -747,6 +761,11 @@ pub struct UiState {
     pub popover: Option<Popover>,
     pub dialog: Option<Dialog>,
     pub file_views: BTreeMap<AgentId, FileView>,
+    /// The changed files each agent without a file view closed, which stay closed when the view
+    /// opens again.
+    pub closed_files: BTreeMap<AgentId, BTreeSet<PathBuf>>,
+    /// Each agent's docks: where its terminals sit, and the order and the pins of the tabs.
+    pub layouts: BTreeMap<AgentId, AgentLayout>,
     pub mcp: McpView,
     /// The MCP reconnects running, and the outcomes their servers' pages show.
     pub mcp_reconnects: Reconnects,
@@ -790,8 +809,9 @@ impl Default for UiState {
     fn default() -> Self {
         Self {
             selected: None,
-            terminal_panes: BTreeSet::new(),
-            terminal_tab_shown: BTreeSet::new(),
+            terminal_docks: BTreeSet::new(),
+            side_terminal: BTreeMap::new(),
+            side_terminal_wanted: BTreeSet::new(),
             terminal_menu: None,
             terminal_screens: Vec::new(),
             unread: BTreeSet::new(),
@@ -808,6 +828,8 @@ impl Default for UiState {
             popover: None,
             dialog: None,
             file_views: BTreeMap::new(),
+            closed_files: BTreeMap::new(),
+            layouts: BTreeMap::new(),
             mcp: McpView::default(),
             mcp_reconnects: Reconnects::new(),
             mcp_sign_ins: SignIns::new(),

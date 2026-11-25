@@ -8,7 +8,7 @@ use dioxus::prelude::*;
 use crate::bridge::use_bridge;
 use crate::connection::{Cockpit, Startup, use_clock, use_cockpit};
 use crate::perf::{self, PerfBox};
-use crate::prefs::{TerminalPlace, use_prefs_saver};
+use crate::prefs::{Dock, use_prefs_saver};
 use crate::state::{
     ConnectionState, NoteKind, actions, blocks_view, daemon_update, file_tree, sending, terminals,
 };
@@ -38,9 +38,11 @@ use crate::ui::splitter::{
     SidebarSplitter, Splitter, use_splitter,
 };
 use crate::ui::subagent_menu::BlockSubagentMenu;
+use crate::ui::tab_drag::use_tab_drag;
 use crate::ui::tab_menu::TabMenu;
 use crate::ui::terminal_menu::TerminalMenu;
 use crate::ui::terminal_pane::{TerminalPane, use_terminal_script};
+use crate::ui::terminal_tab_menu::TerminalTabMenu;
 use crate::ui::transcript::{TranscriptView, use_call_detail, use_undrawn_rows};
 use crate::voice_desk::use_voice;
 
@@ -63,6 +65,7 @@ pub fn App() -> Element {
     use_kept_folds();
     use_splitter(cockpit);
     use_reorder(cockpit);
+    use_tab_drag(cockpit);
     use_held_release(cockpit);
     use_page_copies(cockpit);
     use_undrawn_rows();
@@ -75,7 +78,7 @@ pub fn App() -> Element {
     let state = cockpit.state.read();
     let selected = state.ui.selected;
     let switching = use_switching(cockpit, selected);
-    let file_view_agent = selected.filter(|agent| terminals::file_view_open(&state, *agent));
+    let file_view_agent = selected.filter(|agent| terminals::side_open(&state, *agent));
     let file_view_open = file_view_agent.is_some();
     // The chat keeps the cards' column on its right, or only the badges' strip.
     let blocks_folded = selected.is_some_and(|agent| blocks_view::shows_badges(&state, agent));
@@ -90,13 +93,11 @@ pub fn App() -> Element {
     let files_agent = selected.filter(|agent| file_tree::pane_open(&state, *agent));
     let files_open = files_agent.is_some();
     let files_pane = use_presence(files_agent);
-    // The terminal pane folds away as it closes, wherever it was. As the files pane, it leaves
-    // with a fold only for the agent that closed it.
-    let terminal_agent = selected.filter(|_| terminals::pane_open(&state));
-    let terminal_pane =
-        use_presence(terminal_agent.map(|agent| (agent, terminals::place(&state, agent))));
-    // A switch can show the next agent's terminal in another place, which mounts the pane there
-    // within the same opening: the pane's agent, place and opening tell what the window drew last.
+    // The bottom dock folds away as it closes. As the files pane, it leaves with a fold only for
+    // the agent that closed it.
+    let terminal_agent = selected.filter(|agent| terminals::bottom_open(&state, *agent));
+    let terminal_pane = use_presence(terminal_agent);
+    // The dock's agent and opening tell what the window drew last.
     let mut last_terminal = use_hook(|| CopyValue::new(TerminalShown::default()));
     last_terminal.with_mut(|last| last.follow(terminal_pane.as_ref(), switching));
     let files_leaving = files_pane
@@ -157,19 +158,10 @@ pub fn App() -> Element {
     let share = state.prefs.file_view.share();
     let sidebar_width = state.prefs.sidebar.width();
     let files_width = state.prefs.files_pane.width();
-    let terminal_at = |place| {
-        terminal_pane
-            .as_ref()
-            .filter(|shown| {
-                let (agent, at) = shown.value;
-                at == place && (!shown.leaving || Some(agent) == selected)
-            })
-            .map(|shown| shown.leaving)
-    };
-    let (terminal_bottom, terminal_right) = (
-        terminal_at(TerminalPlace::Bottom),
-        terminal_at(TerminalPlace::Right),
-    );
+    let terminal_bottom = terminal_pane
+        .as_ref()
+        .filter(|shown| !shown.leaving || Some(shown.value) == selected)
+        .map(|shown| shown.leaving);
     rsx! {
         div { id: APP_ID, class: app_class, style: "{SHARE_PROPERTY}: {share}; {SIDEBAR_WIDTH_PROPERTY}: {sidebar_width}px; {FILES_WIDTH_PROPERTY}: {files_width}px",
             if perf_info() {
@@ -193,9 +185,15 @@ pub fn App() -> Element {
                     QuoteLayer {}
                     FloatingBlocks { in_view }
                     Composer {}
+                    if terminal_bottom.is_none() {
+                        DockZone { dock: Dock::Bottom }
+                    }
+                    if !file_view_open {
+                        DockZone { dock: Dock::Side }
+                    }
                 }
                 if let Some(leaving) = terminal_bottom {
-                    TerminalPane { place: TerminalPlace::Bottom, leaving }
+                    TerminalPane { leaving }
                 }
             }
             if file_view_open {
@@ -210,9 +208,6 @@ pub fn App() -> Element {
                 FilesPane {}
             } else if files_leaving {
                 div { class: "files-pane leaving", aria_hidden: true }
-            }
-            if let Some(leaving) = terminal_right {
-                TerminalPane { place: TerminalPlace::Right, leaving }
             }
             if closes_on_click {
                 div {
@@ -230,6 +225,7 @@ pub fn App() -> Element {
             ProjectMenu {}
             TreeMenu {}
             TabMenu {}
+            TerminalTabMenu {}
             TerminalMenu {}
             ShellMenu {}
             BlockSubagentMenu {}
@@ -240,22 +236,38 @@ pub fn App() -> Element {
     }
 }
 
+/// The area a closed dock shows while a tab is dragged: a tab dropped on it opens the dock.
+#[component]
+fn DockZone(dock: Dock) -> Element {
+    let name: &str = dock.into();
+    let label = match dock {
+        Dock::Bottom => "Drop here to open it below the chat",
+        Dock::Side => "Drop here to open it beside the chat",
+    };
+    rsx! {
+        div { class: "dock-zone {name}", "data-dock": name, "data-dock-zone": "", aria_hidden: true,
+            Icon { kind: IconKind::Terminal, size: 14 }
+            span { "{label}" }
+        }
+    }
+}
+
 /// The root's class in the frame that draws another agent: the style sheet draws its layout at
 /// once.
 pub const SWITCHING_CLASS: &str = "switching";
 
-/// The agent, the place and the opening of the terminal pane the window drew last, and whether an
-/// agent switch showed it.
+/// The agent and the opening of the bottom dock the window drew last, and whether an agent switch
+/// showed it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 struct TerminalShown {
-    pane: Option<(AgentId, TerminalPlace)>,
+    pane: Option<AgentId>,
     opening: u32,
     by_switch: bool,
 }
 
 impl TerminalShown {
     /// Follows a render that shows `shown`, in the frame of an agent switch when `switching`.
-    fn follow(&mut self, shown: Option<&Shown<(AgentId, TerminalPlace)>>, switching: bool) {
+    fn follow(&mut self, shown: Option<&Shown<AgentId>>, switching: bool) {
         if let Some(shown) = shown
             && !shown.leaving
             && (self.pane != Some(shown.value) || self.opening != shown.opening)
@@ -369,14 +381,9 @@ fn ClosedNote() -> Element {
 mod tests {
     use super::*;
 
-    fn shown(
-        agent: u32,
-        place: TerminalPlace,
-        leaving: bool,
-        opening: u32,
-    ) -> Shown<(AgentId, TerminalPlace)> {
+    fn shown(agent: u32, leaving: bool, opening: u32) -> Shown<AgentId> {
         Shown {
-            value: (AgentId::new(agent), place),
+            value: AgentId::new(agent),
             leaving,
             opening,
         }
@@ -384,7 +391,7 @@ mod tests {
 
     /// Agent 1's terminal shows at the bottom, agent 2's is closed. Each time agent 1 comes back
     /// on screen, its terminal draws at once, and it plays its animation when the user opens it
-    /// again or moves it.
+    /// again.
     #[test]
     fn a_terminal_draws_at_once_each_time_it_shows_with_its_agent() {
         let mut last = TerminalShown::default();
@@ -393,19 +400,17 @@ mod tests {
             last.by_switch
         };
 
-        let opened = by_switch(Some(&shown(1, TerminalPlace::Bottom, false, 1)), false);
-        by_switch(Some(&shown(1, TerminalPlace::Bottom, true, 1)), true);
+        let opened = by_switch(Some(&shown(1, false, 1)), false);
+        by_switch(Some(&shown(1, true, 1)), true);
         by_switch(None, false);
-        let back = by_switch(Some(&shown(1, TerminalPlace::Bottom, false, 2)), true);
-        let after = by_switch(Some(&shown(1, TerminalPlace::Bottom, false, 2)), false);
-        by_switch(Some(&shown(1, TerminalPlace::Bottom, true, 2)), false);
-        let reopened = by_switch(Some(&shown(1, TerminalPlace::Bottom, false, 3)), false);
-        let moved = by_switch(Some(&shown(1, TerminalPlace::Right, false, 3)), false);
+        let back = by_switch(Some(&shown(1, false, 2)), true);
+        let after = by_switch(Some(&shown(1, false, 2)), false);
+        by_switch(Some(&shown(1, true, 2)), false);
+        let reopened = by_switch(Some(&shown(1, false, 3)), false);
 
         assert!(!opened);
         assert!(back, "it came back with its agent");
         assert!(after, "it stays so while it is open");
         assert!(!reopened, "the user opened it again");
-        assert!(!moved, "the user moved it");
     }
 }
