@@ -886,6 +886,7 @@ fn StatusFilters(chips: Vec<FilterChip>) -> Element {
 #[component]
 fn AgentRowView(row: AgentRow) -> Element {
     let cockpit: Cockpit = use_context();
+    let hover: CardHover = use_context();
     let agent = row.id;
     let mut classes = vec![ROW_CLASS, row.status_class.as_str()];
     if row.selected {
@@ -937,7 +938,19 @@ fn AgentRowView(row: AgentRow) -> Element {
     let class = classes.join(" ");
     // The close button sits beside the row, over its corner: a button cannot hold another.
     rsx! {
-        div { class: if row.selected { "row-wrap selected" } else { "row-wrap" },
+        div {
+            class: if row.selected { "row-wrap selected" } else { "row-wrap" },
+            // The branch card shows beside the sidebar, level with the row. The close button counts
+            // as the row: the pointer crosses it on its way to the card.
+            onmouseenter: move |event: MouseEvent| {
+                let width = cockpit.state.peek().prefs.sidebar.width();
+                let top = event.client_coordinates().y - event.element_coordinates().y;
+                // Whole pixels are enough to place a card.
+                #[expect(clippy::cast_possible_truncation, reason = "a window's pixels fit in i32")]
+                let y = top.round() as i32;
+                hover.enter(cockpit, agent, i32::from(width) + i32::from(CARD_GAP), y);
+            },
+            onmouseleave: move |_| hover.leave(cockpit),
             AgentRowButton { row: row.clone(), class }
             button {
                 class: "row-close",
@@ -953,7 +966,6 @@ fn AgentRowView(row: AgentRow) -> Element {
 #[component]
 fn AgentRowButton(row: AgentRow, class: String) -> Element {
     let cockpit: Cockpit = use_context();
-    let hover: CardHover = use_context();
     let voice: VoiceDesk = use_context();
     let agent = row.id;
     // A memo: the live words change the voice state several times a second.
@@ -965,16 +977,6 @@ fn AgentRowButton(row: AgentRow, class: String) -> Element {
             aria_current: row.selected,
             "data-row-agent": "{agent.get()}",
             onclick: move |_| cockpit.update(|state| actions::select_agent(state, agent)),
-            // The branch card shows beside the sidebar, level with the row.
-            onmouseenter: move |event: MouseEvent| {
-                let width = cockpit.state.peek().prefs.sidebar.width();
-                let top = event.client_coordinates().y - event.element_coordinates().y;
-                // Whole pixels are enough to place a card.
-                #[expect(clippy::cast_possible_truncation, reason = "a window's pixels fit in i32")]
-                let y = top.round() as i32;
-                hover.enter(cockpit, agent, i32::from(width) + i32::from(CARD_GAP), y);
-            },
-            onmouseleave: move |_| hover.leave(cockpit),
             oncontextmenu: move |event: MouseEvent| {
                 event.prevent_default();
                 let point = event.client_coordinates();

@@ -530,6 +530,8 @@ pub fn forget_agent(
     state.ui.chat_finds.remove(&agent);
     drafts.retain_agents(|kept| kept != agent);
     state.ui.title_edit.take_if(|edit| edit.agent == agent);
+    // A card left open makes the next row show its card at once, without waiting for a rest.
+    state.ui.branch_card.take_if(|card| card.agent == agent);
     project_menu::prune(state);
     state
         .ui

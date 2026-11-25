@@ -847,8 +847,10 @@ pub fn start_rename(state: &mut AppState, drafts: &mut Drafts, agent: AgentId) {
     start_rename_at(state, drafts, agent, TitlePlace::Header);
 }
 
-/// Turns the title of the agent's sidebar row into a field holding it.
+/// Turns the title of the agent's sidebar row into a field holding it. The branch card goes: the
+/// field replaces the row with no mouseleave that would hide it.
 pub fn start_rename_in_sidebar(state: &mut AppState, drafts: &mut Drafts, agent: AgentId) {
+    state.ui.branch_card = None;
     start_rename_at(state, drafts, agent, TitlePlace::Sidebar);
 }
 
@@ -2804,7 +2806,7 @@ mod tests {
     use crate::state::grouping::GroupKey;
     use crate::state::requests::{apply_response, needed_requests};
     use crate::state::transcript::KEPT_ITEMS_AWAY;
-    use crate::state::ui_state::{ClosedAgent, MAX_FILE_HISTORY, NoteKind};
+    use crate::state::ui_state::{BranchCard, ClosedAgent, MAX_FILE_HISTORY, NoteKind};
 
     const AGENT: u32 = 1;
 
@@ -3633,6 +3635,39 @@ mod tests {
         request_close(&mut state, &mut Drafts::default(), AgentId::new(1));
 
         assert_eq!(state.ui.selected, Some(AgentId::new(2)));
+    }
+
+    #[test]
+    fn closing_an_agent_drops_its_branch_card() {
+        let mut state = idle_ordered();
+        let card = |agent| BranchCard {
+            agent: AgentId::new(agent),
+            x: 268,
+            y: 140,
+        };
+        state.ui.branch_card = Some(card(2));
+
+        request_close(&mut state, &mut Drafts::default(), AgentId::new(3));
+        let other_closed = state.ui.branch_card;
+        request_close(&mut state, &mut Drafts::default(), AgentId::new(2));
+
+        assert_eq!(other_closed, Some(card(2)));
+        assert_eq!(state.ui.branch_card, None);
+    }
+
+    /// The rename's field replaces the row without a mouseleave, which would keep the card.
+    #[test]
+    fn a_rename_in_the_sidebar_drops_the_branch_card() {
+        let mut state = idle_ordered();
+        state.ui.branch_card = Some(BranchCard {
+            agent: AgentId::new(2),
+            x: 268,
+            y: 140,
+        });
+
+        start_rename_in_sidebar(&mut state, &mut Drafts::default(), AgentId::new(2));
+
+        assert_eq!(state.ui.branch_card, None);
     }
 
     #[test]

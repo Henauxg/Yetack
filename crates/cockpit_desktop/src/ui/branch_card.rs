@@ -17,37 +17,26 @@ use crate::{bridge, format, path_style};
 const SHOW_AFTER: Duration = Duration::from_millis(600);
 /// How long the card stays after the pointer leaves the row or the card, so that the pointer can
 /// go from one to the other.
-const HIDE_AFTER: Duration = Duration::from_millis(250);
+const HIDE_AFTER: Duration = Duration::from_millis(100);
 
 /// The pointer's part in the card, which the rows, the header and the card share.
 #[derive(Clone, Copy)]
 pub struct CardHover {
-    /// Counts the pointer's moves onto and off a row or the card: a delayed show or hide runs
-    /// only if no move came after it.
-    moves: Signal<u64>,
-    /// The pointer is over the card.
-    over_card: Signal<bool>,
+    pointer: Signal<Pointer>,
 }
 
 /// Provides [`CardHover`] to the window.
 pub fn use_card_hover() {
     use_context_provider(|| CardHover {
-        moves: Signal::new(0),
-        over_card: Signal::new(false),
+        pointer: Signal::new(Pointer::default()),
     });
 }
 
 impl CardHover {
-    fn next(mut self) -> u64 {
-        let next = self.moves.peek().wrapping_add(1);
-        self.moves.set(next);
-        next
-    }
-
     /// The pointer came onto `agent`'s row or branch line, at `x`, `y`: its card shows after a
     /// rest, or at once when another card shows already.
-    pub fn enter(self, cockpit: Cockpit, agent: AgentId, x: i32, y: i32) {
-        let this_move = self.next();
+    pub fn enter(mut self, cockpit: Cockpit, agent: AgentId, x: i32, y: i32) {
+        let this_move = self.pointer.write().onto_row();
         let card = BranchCard { agent, x, y };
         if cockpit.state.peek().ui.branch_card.is_some() {
             cockpit.update(|state| state.ui.branch_card = Some(card));
@@ -55,22 +44,82 @@ impl CardHover {
         }
         spawn(async move {
             tokio::time::sleep(SHOW_AFTER).await;
-            if *self.moves.peek() == this_move {
+            if self.pointer.peek().shows(this_move) {
                 cockpit.update(|state| state.ui.branch_card = Some(card));
             }
         });
     }
 
-    /// The pointer left a row, the branch line or the card: the card goes, unless the pointer
-    /// comes back onto one meanwhile.
-    pub fn leave(self, cockpit: Cockpit) {
-        let this_move = self.next();
+    /// The pointer left a row or the branch line: the card goes, unless the pointer comes onto
+    /// the card or a row meanwhile.
+    pub fn leave(mut self, cockpit: Cockpit) {
+        let this_move = self.pointer.write().off();
+        self.hide_after(this_move, cockpit);
+    }
+
+    fn enter_card(mut self) {
+        self.pointer.write().onto_card();
+    }
+
+    fn leave_card(mut self, cockpit: Cockpit) {
+        let this_move = self.pointer.write().off_card();
+        self.hide_after(this_move, cockpit);
+    }
+
+    fn hide_after(self, this_move: u64, cockpit: Cockpit) {
         spawn(async move {
             tokio::time::sleep(HIDE_AFTER).await;
-            if *self.moves.peek() == this_move && !*self.over_card.peek() {
+            if self.pointer.peek().hides(this_move) {
                 cockpit.update(|state| state.ui.branch_card = None);
             }
         });
+    }
+}
+
+/// Where the pointer is, for the card's delayed show and hide.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+struct Pointer {
+    /// Counts the pointer's moves onto and off a row or the card: a delayed show or hide runs
+    /// only if no move came after it.
+    moves: u64,
+    over_card: bool,
+}
+
+impl Pointer {
+    fn moved(&mut self) -> u64 {
+        self.moves = self.moves.wrapping_add(1);
+        self.moves
+    }
+
+    /// The pointer is off the card too, even when the card went from under it: Dioxus removes
+    /// an element without a mouseleave.
+    fn onto_row(&mut self) -> u64 {
+        self.over_card = false;
+        self.moved()
+    }
+
+    fn onto_card(&mut self) {
+        self.over_card = true;
+        self.moved();
+    }
+
+    fn off(&mut self) -> u64 {
+        self.moved()
+    }
+
+    fn off_card(&mut self) -> u64 {
+        self.over_card = false;
+        self.moved()
+    }
+
+    /// Whether the show that waits since `this_move` runs.
+    fn shows(self, this_move: u64) -> bool {
+        self.moves == this_move
+    }
+
+    /// Whether the hide that waits since `this_move` runs.
+    fn hides(self, this_move: u64) -> bool {
+        self.moves == this_move && !self.over_card
     }
 }
 
@@ -120,20 +169,13 @@ pub fn BranchCardView() -> Element {
         folder,
         status,
     } = shown.value;
-    let mut over_card = hover.over_card;
     rsx! {
         div {
             class: if shown.leaving { "branch-card leaving" } else { "branch-card" },
             style: "--card-x: {card.x}px; --card-y: {card.y}px",
             inert: shown.leaving.then_some(true),
-            onmouseenter: move |_| {
-                over_card.set(true);
-                hover.next();
-            },
-            onmouseleave: move |_| {
-                over_card.set(false);
-                hover.leave(cockpit);
-            },
+            onmouseenter: move |_| hover.enter_card(),
+            onmouseleave: move |_| hover.leave_card(cockpit),
             span { class: "branch-card-title", "{title}" }
             span { class: "branch-card-folder mono", title: "{folder}", "{folder}" }
             div { class: "branch-card-divider" }
@@ -295,5 +337,34 @@ mod tests {
             older_daemon, None,
             "with an older daemon, no card shows, as before"
         );
+    }
+
+    /// A click on the card's uncommitted files closes the card under the pointer.
+    #[test]
+    fn a_card_that_goes_from_under_the_pointer_does_not_keep_the_next_one() {
+        let mut pointer = Pointer::default();
+        pointer.onto_card();
+
+        let rest = pointer.onto_row();
+        let shown = pointer.shows(rest);
+        let away = pointer.off();
+
+        assert!(shown);
+        assert!(pointer.hides(away));
+    }
+
+    #[test]
+    fn the_card_stays_while_the_pointer_goes_from_the_row_onto_it() {
+        let mut pointer = Pointer::default();
+        let rest = pointer.onto_row();
+        let shown = pointer.shows(rest);
+        let away = pointer.off();
+        pointer.onto_card();
+        let kept = !pointer.hides(away);
+        let gone = pointer.off_card();
+
+        assert!(shown);
+        assert!(kept);
+        assert!(pointer.hides(gone));
     }
 }
