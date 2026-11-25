@@ -11,10 +11,11 @@ use cockpit_protocol::{
     GitCommitFile, GitFile, GitFileParams, GitIgnore, GitShowParams, GitStatus, LogEntry, Request,
     ResponseBody, Upstream,
 };
-use strum::IntoStaticStr;
+use strum::{IntoStaticStr, VariantArray};
 use url::Url;
 
 use super::app_state::{AgentEntry, AppState, FileRead, Loadable};
+use super::docks::Dock;
 use super::requests::{Outgoing, Purpose};
 use super::ui_state::{Popover, ShownCommit, ViewMode, is_markdown};
 use crate::machine::MachineId;
@@ -158,15 +159,27 @@ pub fn step_finished(entry: &mut AgentEntry, step: Step) {
     }
 }
 
-/// The requests the agent's git needs now: what the file view and the header show for the
+/// The requests the agent's git needs now: what the file views and the header show for the
 /// selected `agent`.
 pub fn requests(state: &mut AppState, agent: AgentId) -> Vec<Outgoing> {
     let mut requests = Vec::new();
-    let view = state.ui.file_view(agent);
+    let active = state.ui.active_files_dock(agent);
     let history_open = matches!(
         state.ui.popover,
         Some(Popover::FileHistory { agent: shown, .. }) if shown == agent
     );
+    let views: Vec<ShownView> = Dock::VARIANTS
+        .iter()
+        .filter_map(|&dock| {
+            let view = state.ui.file_view_in(agent, dock)?;
+            Some(ShownView {
+                path: view.path.clone(),
+                mode: view.mode,
+                commit: view.shown_commit().cloned(),
+                history_open: history_open && dock == active,
+            })
+        })
+        .collect();
     let Some(entry) = state.agents.get_mut(&agent) else {
         return requests;
     };
@@ -177,19 +190,41 @@ pub fn requests(state: &mut AppState, agent: AgentId) -> Vec<Outgoing> {
             Purpose::Git(GitPurpose::Status { agent }),
         ));
     }
-    let Some(view) = view else {
-        return requests;
-    };
+    // Only the shown files' git is kept, as only their texts are: a file's can be large.
+    let shown: Vec<PathBuf> = views
+        .iter()
+        .map(|view| absolute(entry, &view.path))
+        .collect();
+    entry.git.files.retain(|kept, _| shown.contains(kept));
+    for view in &views {
+        file_requests(entry, agent, view, &mut requests);
+    }
+    requests
+}
+
+/// What a file view shows, as its git needs it.
+struct ShownView {
+    path: PathBuf,
+    mode: ViewMode,
+    commit: Option<CommitHash>,
+    history_open: bool,
+}
+
+/// The requests the git of the file `view` shows needs now.
+fn file_requests(
+    entry: &mut AgentEntry,
+    agent: AgentId,
+    view: &ShownView,
+    requests: &mut Vec<Outgoing>,
+) {
     let is_text = matches!(
         entry.files.get(&view.path),
         Some(Loadable::Loaded(FileRead::Text { .. }))
     );
     if !is_text {
-        return requests;
+        return;
     }
     let path = absolute(entry, &view.path);
-    // Only the shown file's git is kept, as only its text is: a file's can be large.
-    entry.git.files.retain(|kept, _| *kept == path);
     let file = entry.git.files.entry(path.clone()).or_default();
     let params = GitFileParams {
         agent,
@@ -224,7 +259,7 @@ pub fn requests(state: &mut AppState, agent: AgentId) -> Vec<Outgoing> {
             }),
         ));
     }
-    if history_open && file.log.wanted() {
+    if view.history_open && file.log.wanted() {
         file.log.start();
         requests.push(outgoing(
             Request::AgentGitLog(params),
@@ -234,11 +269,7 @@ pub fn requests(state: &mut AppState, agent: AgentId) -> Vec<Outgoing> {
             }),
         ));
     }
-    if let Some(commit) = view
-        .commit
-        .as_ref()
-        .filter(|shown| shown.path == view.path)
-        .map(|shown| shown.hash.clone())
+    if let Some(commit) = view.commit.clone()
         && !file.commits.contains_key(&commit)
     {
         file.commits.insert(commit.clone(), Loadable::Loading);
@@ -255,7 +286,6 @@ pub fn requests(state: &mut AppState, agent: AgentId) -> Vec<Outgoing> {
             }),
         ));
     }
-    requests
 }
 
 /// The state of another agent's checkouts, for the card a sidebar row shows on hover, and for
@@ -301,7 +331,7 @@ pub fn show_commit(state: &mut AppState, agent: AgentId, hash: Option<CommitHash
     if matches!(state.ui.popover, Some(Popover::FileHistory { .. })) {
         state.ui.popover = None;
     }
-    if let Some(view) = state.ui.file_views.get_mut(&agent) {
+    if let Some(view) = state.ui.file_view_mut(agent) {
         if hash.is_some() && hash.as_ref() != view.shown_commit() {
             view.remember_place();
         }
@@ -318,7 +348,7 @@ pub fn show_commit(state: &mut AppState, agent: AgentId, hash: Option<CommitHash
 /// Shows the shown file's uncommitted changes: its diff.
 pub fn show_uncommitted(state: &mut AppState, agent: AgentId) {
     show_commit(state, agent, None);
-    if let Some(view) = state.ui.file_views.get_mut(&agent) {
+    if let Some(view) = state.ui.file_view_mut(agent) {
         view.mode = ViewMode::Diff;
     }
 }
@@ -735,6 +765,7 @@ mod tests {
     };
 
     use super::*;
+    use crate::state::docks::Dock;
 
     fn commit(hash: char) -> Commit {
         Commit {
@@ -818,10 +849,10 @@ mod tests {
         state.machines.this.connection = ConnectionState::Connected;
         state.ui.selected = Some(agent());
         let path = PathBuf::from("src/lib.rs");
-        state
-            .ui
-            .file_views
-            .insert(agent(), FileView::new(path.clone(), None, ViewMode::Diff));
+        state.ui.file_views.insert(
+            (agent(), Dock::Side),
+            FileView::new(path.clone(), None, ViewMode::Diff),
+        );
         if let Some(entry) = state.agents.get_mut(&agent()) {
             entry.summary.folder = PathBuf::from("/work/project-1");
             entry
@@ -858,7 +889,7 @@ mod tests {
                 text: "one\n".to_owned(),
             })),
         );
-        if let Some(view) = state.ui.file_views.get_mut(&agent()) {
+        if let Some(view) = state.ui.file_view_mut(agent()) {
             view.mode = ViewMode::WholeFile;
         }
         let blame = git_requests(&mut state);
@@ -933,7 +964,7 @@ mod tests {
     #[test]
     fn a_file_the_preview_cannot_show_shows_whole_with_its_blame() {
         let mut state = viewing_state();
-        if let Some(view) = state.ui.file_views.get_mut(&agent()) {
+        if let Some(view) = state.ui.file_view_mut(agent()) {
             view.mode = ViewMode::Preview;
         }
         git_requests(&mut state);
@@ -1284,7 +1315,7 @@ mod tests {
         let mut state = viewing_state();
         toggle_history(&mut state, agent(), 10, 20);
 
-        crate::state::actions::close_file_view(&mut state, agent());
+        crate::state::actions::close_file_view(&mut state, agent(), Dock::Side);
 
         assert_eq!(state.ui.popover, None);
     }
@@ -1347,7 +1378,7 @@ mod tests {
                 Loadable::Loaded(FileRead::unedited("main\n")),
             );
         }
-        if let Some(view) = state.ui.file_views.get_mut(&agent()) {
+        if let Some(view) = state.ui.file_view_mut(agent()) {
             view.path = other;
         }
 

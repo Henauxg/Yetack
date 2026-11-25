@@ -19,7 +19,7 @@ use crate::ui::file_view::{FILE_BODY_CLASS, FILE_LOADING_CLASS};
 use crate::ui::find_folds::CHIP_CLASS;
 use crate::ui::icons::{Icon, IconKind};
 use crate::ui::presence::use_agent_presence;
-use crate::ui::splitter::FILE_VIEW_ID;
+use crate::ui::splitter::{ACTIVE_ATTRIBUTE, FILE_VIEW_ATTRIBUTE};
 use crate::ui::transcript::{IO_CLIP_CLASS, MESSAGE_CLIP_CLASS, UndrawnRows};
 
 /// The chat find's field.
@@ -162,7 +162,7 @@ class Finder {
       }
       return { root: box.firstElementChild, scroller: box };
     }
-    const body = document.getElementById(settings.file_view_id)?.querySelector(`.${settings.file_body_class}`) ?? null;
+    const body = document.querySelector(`[${settings.file_view_attribute}][${settings.active_attribute}]`)?.querySelector(`.${settings.file_body_class}`) ?? null;
     if (body === null || body.querySelector(`.${settings.file_loading_class}`) !== null) {
       return null;
     }
@@ -580,7 +580,7 @@ document.addEventListener("keydown", (event) => guarded(() => {
     return;
   }
   if (event.key === "F3" && document.querySelector(settings.dialog_selector) === null) {
-    const inFile = target instanceof Element && target.closest(`#${settings.file_view_id}`) !== null;
+    const inFile = target instanceof Element && target.closest(`[${settings.file_view_attribute}]`) !== null;
     const { chat, file } = finders;
     const finder = inFile && file.want.open ? file : chat.want.open ? chat : file.want.open ? file : null;
     if (finder !== null) {
@@ -606,7 +606,9 @@ for (;;) {
 struct Settings {
     chat_scroll_id: &'static str,
     entry_class: &'static str,
-    file_view_id: &'static str,
+    file_view_attribute: &'static str,
+    /// On the file view whose text the find searches.
+    active_attribute: &'static str,
     file_body_class: &'static str,
     /// The placeholder lines of a file that loads, which holds no text yet.
     file_loading_class: &'static str,
@@ -643,7 +645,8 @@ impl Settings {
         Self {
             chat_scroll_id: CHAT_SCROLL_ID,
             entry_class: ENTRY_CLASS,
-            file_view_id: FILE_VIEW_ID,
+            file_view_attribute: FILE_VIEW_ATTRIBUTE,
+            active_attribute: ACTIVE_ATTRIBUTE,
             file_body_class: FILE_BODY_CLASS,
             file_loading_class: FILE_LOADING_CLASS,
             file_box_id: FILE_BOX_ID,
@@ -977,7 +980,9 @@ fn close(cockpit: Cockpit, pane: FindPane, agent: AgentId) {
 pub fn focus_after_find(pane: FindPane) {
     match pane {
         FindPane::Chat => bridge::focus_field(COMPOSER_ID),
-        FindPane::File => bridge::focus_element(FILE_VIEW_ID.to_owned()),
+        FindPane::File => {
+            bridge::focus_selector(format!("[{FILE_VIEW_ATTRIBUTE}][{ACTIVE_ATTRIBUTE}]"));
+        }
     }
 }
 
@@ -1056,7 +1061,8 @@ mod tests {
         let expected = json!({
             "chat_scroll_id": "chat-scroll",
             "entry_class": "transcript-entry",
-            "file_view_id": "file-view",
+            "file_view_attribute": "data-file-view",
+            "active_attribute": "data-active",
             "file_body_class": "file-body",
             "file_loading_class": "file-loading",
             "file_box_id": "file-find-box",

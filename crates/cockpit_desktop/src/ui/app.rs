@@ -246,7 +246,6 @@ fn DockZone(dock: Dock) -> Element {
     };
     rsx! {
         div { class: "dock-zone {name}", "data-dock": name, "data-dock-zone": "", aria_hidden: true,
-            Icon { kind: IconKind::Terminal, size: 14 }
             span { "{label}" }
         }
     }

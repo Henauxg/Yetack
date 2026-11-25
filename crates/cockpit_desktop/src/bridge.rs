@@ -16,7 +16,7 @@ use crate::state::{
     Utf16Offset, WaitingKind, accounts, actions, agent_map, find, handle_key, sidebar_keys,
 };
 use crate::ui::{
-    COMMENT_FIELD_ID, FILE_VIEW_ID, FILES_PANE_ID, FIND_FIELD_IDS, focus_after_find,
+    COMMENT_FIELD_ID, FILE_VIEW_ATTRIBUTE, FILES_PANE_ID, FIND_FIELD_IDS, focus_after_find,
     sidebar_item_id,
 };
 use crate::voice_desk::{VoiceCommand, VoiceDesk};
@@ -146,7 +146,7 @@ document.addEventListener("mouseup", (event) => {
   }
   event.preventDefault();
   const over = event.target instanceof Element
-    && event.target.closest(`#${settings.file_view_id}, #${settings.files_pane_id}`) !== null;
+    && event.target.closest(`[${settings.file_view_attribute}], #${settings.files_pane_id}`) !== null;
   if (over) {
     send({ type: "file_history", travel: event.button === FORWARD_BUTTON ? "forward" : "back" });
   }
@@ -411,7 +411,7 @@ document.addEventListener("keydown", (event) => {
     meta: event.metaKey,
     target: where,
     composer_text: text,
-    pane: target !== null && target.closest(`#${settings.file_view_id}`) !== null ? "file" : "chat",
+    pane: target !== null && target.closest(`[${settings.file_view_attribute}]`) !== null ? "file" : "chat",
     selection,
     in_find: target !== null && settings.find_field_ids.includes(target.id),
   });
@@ -511,6 +511,11 @@ for (let frame = 0; frame < 30; frame++) {
 const FOCUS_SCRIPT: &str = r#"
 const field_id = await dioxus.recv();
 document.getElementById(field_id)?.focus();
+"#;
+
+const FOCUS_SELECTOR_SCRIPT: &str = r#"
+const selector = await dioxus.recv();
+document.querySelector(selector)?.focus();
 "#;
 
 /// Gives the focus back to the element whose id it receives when it lost it, at each of the next 10
@@ -706,8 +711,8 @@ struct Settings {
     takes_escape_attribute: &'static str,
     /// The page's global that keeps the element a menu took the focus from.
     menu_focus_key: &'static str,
-    /// Keys pressed in the file view open and close its find.
-    file_view_id: &'static str,
+    /// Keys pressed in a file view open and close its find.
+    file_view_attribute: &'static str,
     /// Over it and over the file view, the mouse's back and forward buttons move through the
     /// file view's history.
     files_pane_id: &'static str,
@@ -908,7 +913,7 @@ pub fn use_bridge(cockpit: Cockpit, voice: VoiceDesk) {
             records_keys_attribute: RECORDS_KEYS_ATTRIBUTE,
             takes_escape_attribute: TAKES_ESCAPE_ATTRIBUTE,
             menu_focus_key: MENU_FOCUS_KEY,
-            file_view_id: FILE_VIEW_ID,
+            file_view_attribute: FILE_VIEW_ATTRIBUTE,
             files_pane_id: FILES_PANE_ID,
             max_selection: MAX_SELECTION,
             find_field_ids: FIND_FIELD_IDS,
@@ -1053,6 +1058,14 @@ pub fn focus_field(field_id: &'static str) {
     let script = document::eval(FOCUS_SCRIPT);
     if let Err(error) = script.send(field_id) {
         tracing::warn!("cannot focus the field {field_id}: {error}");
+    }
+}
+
+/// Gives the focus to the first element `selector` finds.
+pub fn focus_selector(selector: String) {
+    let script = document::eval(FOCUS_SELECTOR_SCRIPT);
+    if let Err(error) = script.send(&selector) {
+        tracing::warn!("cannot focus {selector}: {error}");
     }
 }
 
@@ -1513,7 +1526,7 @@ mod tests {
             records_keys_attribute: RECORDS_KEYS_ATTRIBUTE,
             takes_escape_attribute: TAKES_ESCAPE_ATTRIBUTE,
             menu_focus_key: MENU_FOCUS_KEY,
-            file_view_id: FILE_VIEW_ID,
+            file_view_attribute: FILE_VIEW_ATTRIBUTE,
             files_pane_id: FILES_PANE_ID,
             max_selection: 1_000,
             find_field_ids: FIND_FIELD_IDS,
@@ -1568,7 +1581,7 @@ mod tests {
                 "records_keys_attribute": "data-records-keys",
                 "takes_escape_attribute": "data-takes-escape",
                 "menu_focus_key": "cockpitFocusBeforeMenu",
-                "file_view_id": "file-view",
+                "file_view_attribute": "data-file-view",
                 "files_pane_id": "files-pane",
                 "max_selection": 1000,
                 "find_field_ids": ["chat-find-field", "file-find-field"],

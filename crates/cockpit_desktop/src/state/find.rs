@@ -134,7 +134,7 @@ pub fn is_open(state: &AppState, pane: FindPane, agent: AgentId) -> bool {
         FindPane::Chat => state.ui.chat_finds.contains(&agent),
         FindPane::File => {
             state.ui.file_view(agent).is_some_and(|view| view.find)
-                && terminals::side_terminal(state, agent).is_none()
+                && terminals::shown_file(state, agent).is_some()
         }
     }
 }
@@ -146,12 +146,12 @@ pub fn open(state: &mut AppState, drafts: &mut Drafts, pane: FindPane, selection
     let Some(agent) = state.ui.selected else {
         return;
     };
-    let pane = if terminals::side_terminal(state, agent).is_some() {
+    let pane = if terminals::shown_file(state, agent).is_none() {
         FindPane::Chat
     } else {
         pane
     };
-    let pane = match state.ui.file_views.get_mut(&agent) {
+    let pane = match state.ui.file_view_mut(agent) {
         Some(view) if pane == FindPane::File => {
             view.find = true;
             FindPane::File
@@ -177,8 +177,7 @@ pub fn close(state: &mut AppState, pane: FindPane, agent: AgentId) -> bool {
         FindPane::File if !is_open(state, pane, agent) => false,
         FindPane::File => state
             .ui
-            .file_views
-            .get_mut(&agent)
+            .file_view_mut(agent)
             .is_some_and(|view| std::mem::take(&mut view.find)),
     }
 }
@@ -283,6 +282,7 @@ mod tests {
     use cockpit_protocol::AgentStatus;
 
     use super::*;
+    use crate::state::docks::Dock;
     use crate::state::ui_state::FileView;
     use crate::state::{ViewMode, state_with, summary};
 
@@ -298,7 +298,7 @@ mod tests {
 
     fn with_file_view(state: &mut AppState) {
         state.ui.file_views.insert(
-            agent(),
+            (agent(), Dock::Side),
             FileView::new(PathBuf::from("src/lexer.rs"), None, ViewMode::WholeFile),
         );
     }

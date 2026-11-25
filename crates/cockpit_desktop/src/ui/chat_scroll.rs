@@ -29,7 +29,7 @@ use crate::connection::Cockpit;
 use crate::state::{ChatReveal, RevealPlace, actions};
 use crate::ui::find::REVEAL_EVENT;
 use crate::ui::icons::{Icon, IconKind};
-use crate::ui::splitter::FILE_VIEW_ID;
+use crate::ui::splitter::FILE_VIEW_ATTRIBUTE;
 
 /// The chat's scroll box.
 pub const CHAT_SCROLL_ID: &str = "chat-scroll";
@@ -528,7 +528,7 @@ document.addEventListener("keydown", (event) => {
   const target = event.target;
   const typing = target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement
     || target instanceof HTMLSelectElement || (target instanceof HTMLElement && target.isContentEditable);
-  const inFileView = target instanceof Element && target.closest(`#${settings.file_view_id}`) !== null;
+  const inFileView = target instanceof Element && target.closest(`[${settings.file_view_attribute}]`) !== null;
   const recording = target instanceof Element && target.closest(`[${settings.records_keys_attribute}]`) !== null;
   if (event.key !== "End" || typing || inFileView || recording || keysBlocked || event.ctrlKey || event.metaKey || event.altKey || event.shiftKey) {
     return;
@@ -546,7 +546,7 @@ struct Settings {
     fold_button_class: &'static str,
     jump_button_id: &'static str,
     /// End there is the file view's.
-    file_view_id: &'static str,
+    file_view_attribute: &'static str,
     /// Marks the element that records a shortcut, whose keys the script leaves alone.
     records_keys_attribute: &'static str,
     revealed_class: &'static str,
@@ -674,7 +674,7 @@ pub fn use_chat_scroll(
             entry_class: ENTRY_CLASS,
             fold_button_class: FOLD_BUTTON_CLASS,
             jump_button_id: JUMP_BUTTON_ID,
-            file_view_id: FILE_VIEW_ID,
+            file_view_attribute: FILE_VIEW_ATTRIBUTE,
             records_keys_attribute: RECORDS_KEYS_ATTRIBUTE,
             revealed_class: REVEALED_CLASS,
             loads_older_attribute: LOADS_OLDER_ATTRIBUTE,
@@ -775,7 +775,7 @@ mod tests {
             entry_class: ENTRY_CLASS,
             fold_button_class: FOLD_BUTTON_CLASS,
             jump_button_id: JUMP_BUTTON_ID,
-            file_view_id: FILE_VIEW_ID,
+            file_view_attribute: FILE_VIEW_ATTRIBUTE,
             records_keys_attribute: RECORDS_KEYS_ATTRIBUTE,
             revealed_class: REVEALED_CLASS,
             loads_older_attribute: LOADS_OLDER_ATTRIBUTE,
@@ -798,7 +798,7 @@ mod tests {
                 "entry_class": "transcript-entry",
                 "fold_button_class": "fold-lines",
                 "jump_button_id": "jump-to-latest",
-                "file_view_id": "file-view",
+                "file_view_attribute": "data-file-view",
                 "records_keys_attribute": "data-records-keys",
                 "revealed_class": "chat-revealed",
                 "loads_older_attribute": "data-loads-older",

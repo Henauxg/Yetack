@@ -760,7 +760,14 @@ pub struct UiState {
     pub finished_tasks_unfolded: BTreeSet<AgentId>,
     pub popover: Option<Popover>,
     pub dialog: Option<Dialog>,
-    pub file_views: BTreeMap<AgentId, FileView>,
+    /// The file views: one for each agent's dock that shows files.
+    pub file_views: BTreeMap<(AgentId, Dock), FileView>,
+    /// The dock whose file view the file actions act on, for each agent: the one the user last
+    /// pressed in.
+    pub pressed_dock: BTreeMap<AgentId, Dock>,
+    /// The agents whose bottom dock shows its file, which the user picked last, rather than one of
+    /// its terminals.
+    pub bottom_picks_file: BTreeSet<AgentId>,
     /// The changed files each agent without a file view closed, which stay closed when the view
     /// opens again.
     pub closed_files: BTreeMap<AgentId, BTreeSet<PathBuf>>,
@@ -828,6 +835,8 @@ impl Default for UiState {
             popover: None,
             dialog: None,
             file_views: BTreeMap::new(),
+            pressed_dock: BTreeMap::new(),
+            bottom_picks_file: BTreeSet::new(),
             closed_files: BTreeMap::new(),
             layouts: BTreeMap::new(),
             mcp: McpView::default(),
@@ -936,8 +945,42 @@ impl UiState {
         self.closed.take_if(|closed| closed.serial == serial);
     }
 
+    /// The dock the file actions of `agent` act on: the one the user last pressed in, while it shows
+    /// files, else the side dock, else the bottom dock.
+    pub fn active_files_dock(&self, agent: AgentId) -> Dock {
+        let has = |dock| self.file_views.contains_key(&(agent, dock));
+        match self.pressed_dock.get(&agent) {
+            Some(&dock) if has(dock) => dock,
+            _ if !has(Dock::Side) && has(Dock::Bottom) => Dock::Bottom,
+            _ => Dock::Side,
+        }
+    }
+
+    /// The file view the file actions of `agent` act on.
     pub fn file_view(&self, agent: AgentId) -> Option<&FileView> {
-        self.file_views.get(&agent)
+        self.file_views.get(&(agent, self.active_files_dock(agent)))
+    }
+
+    pub fn file_view_mut(&mut self, agent: AgentId) -> Option<&mut FileView> {
+        let dock = self.active_files_dock(agent);
+        self.file_views.get_mut(&(agent, dock))
+    }
+
+    pub fn file_view_in(&self, agent: AgentId, dock: Dock) -> Option<&FileView> {
+        self.file_views.get(&(agent, dock))
+    }
+
+    pub fn file_view_in_mut(&mut self, agent: AgentId, dock: Dock) -> Option<&mut FileView> {
+        self.file_views.get_mut(&(agent, dock))
+    }
+
+    /// The files `agent`'s views show, one per dock that shows files.
+    pub fn shown_files(&self, agent: AgentId) -> Vec<PathBuf> {
+        Dock::VARIANTS
+            .iter()
+            .filter_map(|&dock| self.file_view_in(agent, dock))
+            .map(|view| view.path.clone())
+            .collect()
     }
 
     pub fn toggle_finished_tasks(&mut self, agent: AgentId) {

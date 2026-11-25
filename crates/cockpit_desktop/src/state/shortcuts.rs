@@ -1421,7 +1421,8 @@ mod tests {
 
         handle_key(&mut state, &mut drafts, &press("F5", KeyTarget::Field));
 
-        assert_eq!(state.agents[&agent].file_freshness.reread, Reread::Wanted);
+        let freshness = &state.agents[&agent].file_freshness;
+        assert!(freshness.values().any(|file| file.reread == Reread::Wanted));
     }
 
     #[test]

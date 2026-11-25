@@ -6,7 +6,7 @@
 //! the other terminals.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use cockpit_protocol::{AgentId, TerminalId};
 use serde::{Deserialize, Serialize};
@@ -151,12 +151,22 @@ pub fn terminal_dock(state: &AppState, agent: AgentId, terminal: TerminalId) -> 
         .unwrap_or_else(|| default_dock(state, agent))
 }
 
-/// The dock a tab sits in. A file sits in the side dock.
+/// The dock a tab sits in.
 pub fn tab_dock(state: &AppState, agent: AgentId, tab: &TabKey) -> Dock {
     match tab {
-        TabKey::File(_) => Dock::Side,
+        TabKey::File(path) => dock_of_file(state, agent, path),
         TabKey::Terminal(terminal) => terminal_dock(state, agent, *terminal),
     }
+}
+
+/// The dock that holds the tab of `path`: the bottom dock when its file view has it, else the
+/// side dock.
+pub fn dock_of_file(state: &AppState, agent: AgentId, path: &Path) -> Dock {
+    let in_bottom = state
+        .ui
+        .file_view_in(agent, Dock::Bottom)
+        .is_some_and(|view| view.tabs(&[]).iter().any(|tab| tab == path));
+    if in_bottom { Dock::Bottom } else { Dock::Side }
 }
 
 /// The agent's terminals in `dock`, in the order they opened.
@@ -178,17 +188,28 @@ pub fn terminals_shown(state: &AppState, agent: AgentId, dock: Dock) -> bool {
     state.ui.terminal_docks.contains(&(agent, dock))
 }
 
-/// The tabs `dock` shows, in its order: the side dock's files, and the terminals when they show.
+/// The tabs `dock` shows, in its order: its files, and its terminals when they show. The side
+/// dock's file tabs include the changed files. The bottom dock's hold only the files opened there.
 pub fn tabs(state: &AppState, agent: AgentId, dock: Dock) -> Vec<TabKey> {
     let mut tabs = Vec::new();
-    if dock == Dock::Side
-        && let (Some(entry), Some(view)) = (state.agents.get(&agent), state.ui.file_view(agent))
+    if let (Some(entry), Some(view)) =
+        (state.agents.get(&agent), state.ui.file_view_in(agent, dock))
     {
-        tabs.extend(
-            view.tabs(&entry.changed_paths())
-                .into_iter()
-                .map(TabKey::File),
-        );
+        // A changed file whose tab is in the bottom dock is not the side dock's.
+        let changed = match dock {
+            Dock::Side => {
+                let bottom = state
+                    .ui
+                    .file_view_in(agent, Dock::Bottom)
+                    .map(|view| view.tabs(&[]))
+                    .unwrap_or_default();
+                let mut changed = entry.changed_paths();
+                changed.retain(|path| !bottom.contains(path));
+                changed
+            }
+            Dock::Bottom => Vec::new(),
+        };
+        tabs.extend(view.tabs(&changed).into_iter().map(TabKey::File));
     }
     if terminals_shown(state, agent, dock) {
         tabs.extend(
@@ -203,9 +224,14 @@ pub fn tabs(state: &AppState, agent: AgentId, dock: Dock) -> Vec<TabKey> {
     }
 }
 
-/// The side dock's file tabs, in its order.
+/// The file tabs of the dock the file actions act on, in its order.
 pub fn file_tabs(state: &AppState, agent: AgentId) -> Vec<PathBuf> {
-    tabs(state, agent, Dock::Side)
+    file_tabs_in(state, agent, state.ui.active_files_dock(agent))
+}
+
+/// The file tabs of `dock`, in its order.
+pub fn file_tabs_in(state: &AppState, agent: AgentId, dock: Dock) -> Vec<PathBuf> {
+    tabs(state, agent, dock)
         .into_iter()
         .filter_map(|tab| match tab {
             TabKey::File(path) => Some(path),
@@ -220,7 +246,8 @@ pub fn is_pinned(state: &AppState, agent: AgentId, tab: &TabKey) -> bool {
 }
 
 /// Puts `tab` in `to`, just before `before`, or at the end when `before` is `None`. A pinned tab
-/// stays among the pinned ones, and another tab after them. A file stays in the side dock.
+/// stays among the pinned ones, and another tab after them. A file's tab moves to another dock
+/// with `actions::move_file`, which calls this.
 pub fn move_tab(
     state: &mut AppState,
     agent: AgentId,
@@ -229,9 +256,6 @@ pub fn move_tab(
     before: Option<&TabKey>,
 ) {
     let from = tab_dock(state, agent, tab);
-    if matches!(tab, TabKey::File(_)) && to != Dock::Side {
-        return;
-    }
     let pinned = is_pinned(state, agent, tab);
     let left: Vec<TabKey> = tabs(state, agent, from)
         .into_iter()
@@ -349,10 +373,12 @@ pub fn forget_tab(state: &mut AppState, agent: AgentId, tab: &TabKey) {
     });
 }
 
-/// Drops the file tabs of a file view that closed.
-pub fn forget_files(state: &mut AppState, agent: AgentId) {
+/// Drops the file tabs of `dock`'s file view, which closed.
+pub fn forget_files(state: &mut AppState, agent: AgentId, dock: Dock) {
     change_layout(state, agent, |layout| {
-        layout.side.retain(|tab| matches!(tab, TabKey::Terminal(_)));
+        layout
+            .dock_mut(dock)
+            .retain(|tab| matches!(tab, TabKey::Terminal(_)));
     });
 }
 
@@ -379,7 +405,7 @@ mod tests {
     use cockpit_protocol::AgentStatus;
 
     use super::*;
-    use crate::state::{actions, state_with, summary};
+    use crate::state::{ViewMode, actions, state_with, summary};
 
     fn agent() -> AgentId {
         AgentId::new(1)
@@ -445,6 +471,156 @@ mod tests {
 
         assert_eq!(names(&state), ["a.rs", "b.rs", "d.rs", "c.rs"]);
         assert!(!is_pinned(&state, agent(), &file("c.rs")));
+    }
+
+    fn shown(state: &AppState, dock: Dock) -> Option<String> {
+        let view = state.ui.file_view_in(agent(), dock)?;
+        Some(view.path.display().to_string())
+    }
+
+    fn files_in(state: &AppState, dock: Dock) -> Vec<String> {
+        file_tabs_in(state, agent(), dock)
+            .iter()
+            .map(|tab| tab.display().to_string())
+            .collect()
+    }
+
+    #[test]
+    fn the_side_dock_closes_when_its_only_file_moves_to_the_bottom() {
+        let mut state = state_with(vec![summary(1, AgentStatus::Idle)]);
+        actions::open_file(&mut state, agent(), PathBuf::from("a.rs"), None);
+
+        actions::move_file(&mut state, agent(), Path::new("a.rs"), Dock::Bottom, None);
+
+        assert!(!crate::state::terminals::side_open(&state, agent()));
+        assert_eq!(shown(&state, Dock::Bottom).as_deref(), Some("a.rs"));
+    }
+
+    #[test]
+    fn a_file_changed_after_its_move_to_the_bottom_keeps_its_one_tab() {
+        let mut state = with_tabs();
+        actions::move_file(&mut state, agent(), Path::new("b.rs"), Dock::Bottom, None);
+
+        let entry = state.agents.get_mut(&agent()).unwrap();
+        entry.details = crate::state::Loadable::Loaded(cockpit_protocol::AgentDetails {
+            changed_files: vec![cockpit_protocol::ChangedFile {
+                path: PathBuf::from("/work/project-1/b.rs"),
+                lines_added: 1,
+                lines_removed: 0,
+            }],
+            ..cockpit_protocol::AgentDetails::default()
+        });
+
+        assert_eq!(files_in(&state, Dock::Side), ["a.rs", "c.rs", "d.rs"]);
+        assert_eq!(files_in(&state, Dock::Bottom), ["b.rs"]);
+    }
+
+    #[test]
+    fn back_in_the_side_skips_a_file_moved_to_the_bottom() {
+        let mut state = with_tabs();
+        actions::move_file(&mut state, agent(), Path::new("c.rs"), Dock::Bottom, None);
+        state.ui.pressed_dock.insert(agent(), Dock::Side);
+
+        actions::travel_files(&mut state, agent(), crate::state::Travel::Back);
+
+        assert_eq!(shown(&state, Dock::Side).as_deref(), Some("b.rs"));
+        assert_eq!(files_in(&state, Dock::Side), ["a.rs", "b.rs", "d.rs"]);
+    }
+
+    #[test]
+    fn each_docks_file_keeps_its_git() {
+        let mut state = with_tabs();
+        actions::move_file(&mut state, agent(), Path::new("b.rs"), Dock::Bottom, None);
+        let text = || crate::state::FileRead::Text {
+            text: "fn main() {}\n".to_owned(),
+            edits: Vec::new(),
+        };
+        let entry = state.agents.get_mut(&agent()).unwrap();
+        for name in ["b.rs", "d.rs"] {
+            entry
+                .files
+                .insert(PathBuf::from(name), crate::state::Loadable::Loaded(text()));
+        }
+
+        crate::state::git::requests(&mut state, agent());
+
+        assert_eq!(state.agents[&agent()].git.files.len(), 2);
+    }
+
+    #[test]
+    fn a_moved_file_keeps_its_mode() {
+        let mut state = with_tabs();
+        actions::set_view_mode(&mut state, agent(), ViewMode::Diff);
+
+        actions::move_file(&mut state, agent(), Path::new("d.rs"), Dock::Bottom, None);
+
+        let bottom = state.ui.file_view_in(agent(), Dock::Bottom).unwrap();
+        assert_eq!((bottom.mode, bottom.mode_settled), (ViewMode::Diff, true));
+    }
+
+    #[test]
+    fn a_file_moved_to_the_bottom_dock_shows_there_and_leaves_the_side() {
+        let mut state = with_tabs();
+
+        actions::move_file(&mut state, agent(), Path::new("d.rs"), Dock::Bottom, None);
+        actions::move_file(&mut state, agent(), Path::new("b.rs"), Dock::Bottom, None);
+
+        assert_eq!(files_in(&state, Dock::Side), ["a.rs", "c.rs"]);
+        assert_eq!(files_in(&state, Dock::Bottom), ["d.rs", "b.rs"]);
+        assert_eq!(shown(&state, Dock::Side).as_deref(), Some("c.rs"));
+        assert_eq!(shown(&state, Dock::Bottom).as_deref(), Some("b.rs"));
+        let read: Vec<&PathBuf> = state.agents[&agent()].files.keys().collect();
+        assert_eq!(read, [Path::new("b.rs"), Path::new("c.rs")]);
+    }
+
+    #[test]
+    fn a_file_whose_tab_is_in_the_bottom_dock_opens_there_and_its_actions_follow() {
+        let mut state = with_tabs();
+        actions::move_file(&mut state, agent(), Path::new("b.rs"), Dock::Bottom, None);
+        actions::open_file(&mut state, agent(), PathBuf::from("a.rs"), None);
+        let after_side = state.ui.active_files_dock(agent());
+
+        actions::open_file(&mut state, agent(), PathBuf::from("b.rs"), Some(3));
+        actions::set_view_mode(&mut state, agent(), ViewMode::Diff);
+
+        assert_eq!(after_side, Dock::Side);
+        assert_eq!(state.ui.active_files_dock(agent()), Dock::Bottom);
+        let bottom = state.ui.file_view_in(agent(), Dock::Bottom).unwrap();
+        assert_eq!((bottom.line, bottom.mode), (Some(3), ViewMode::Diff));
+        assert_eq!(shown(&state, Dock::Side).as_deref(), Some("a.rs"));
+    }
+
+    #[test]
+    fn a_file_moved_back_to_the_side_leaves_the_bottom_dock_closed() {
+        let mut state = with_tabs();
+        actions::move_file(&mut state, agent(), Path::new("b.rs"), Dock::Bottom, None);
+
+        actions::move_file(
+            &mut state,
+            agent(),
+            Path::new("b.rs"),
+            Dock::Side,
+            Some(&file("a.rs")),
+        );
+
+        assert!(state.ui.file_view_in(agent(), Dock::Bottom).is_none());
+        assert_eq!(
+            files_in(&state, Dock::Side),
+            ["b.rs", "a.rs", "c.rs", "d.rs"]
+        );
+        assert!(!state.ui.bottom_picks_file.contains(&agent()));
+    }
+
+    #[test]
+    fn closing_the_bottom_dock_closes_its_files_and_leaves_the_sides() {
+        let mut state = with_tabs();
+        actions::move_file(&mut state, agent(), Path::new("b.rs"), Dock::Bottom, None);
+
+        actions::close_bottom_dock(&mut state, agent());
+
+        assert!(state.ui.file_view_in(agent(), Dock::Bottom).is_none());
+        assert_eq!(files_in(&state, Dock::Side), ["a.rs", "c.rs", "d.rs"]);
+        assert_eq!(state.ui.active_files_dock(agent()), Dock::Side);
     }
 
     fn file(name: &str) -> TabKey {

@@ -133,7 +133,7 @@ pub fn open(
     y: i32,
     origin: TabMenuOrigin,
 ) {
-    let Some(view) = state.ui.file_views.get_mut(&agent) else {
+    let Some(view) = state.ui.file_view_mut(agent) else {
         return;
     };
     view.menu = Some(path.to_owned());
@@ -149,7 +149,7 @@ pub fn open(
 pub fn close_menu(state: &mut AppState) {
     if let Some(Popover::TabMenu { agent, .. }) = state.ui.popover {
         state.ui.close_popover();
-        if let Some(view) = state.ui.file_views.get_mut(&agent) {
+        if let Some(view) = state.ui.file_view_mut(agent) {
             view.menu = None;
         }
     }
@@ -304,6 +304,7 @@ mod tests {
     use cockpit_protocol::AgentStatus;
 
     use super::*;
+    use crate::state::docks::Dock;
     use crate::state::{state_with, summary};
 
     fn agent() -> AgentId {
@@ -535,7 +536,7 @@ mod tests {
             TabMenuOrigin::Tabs,
         );
 
-        actions::close_file_view(&mut state, agent());
+        actions::close_file_view(&mut state, agent(), Dock::Side);
 
         assert_eq!(state.ui.popover, None);
     }

@@ -9,6 +9,7 @@ use cockpit_protocol::AgentId;
 
 use super::actions::{self, Direction};
 use super::app_state::AppState;
+use super::docks::Dock;
 use super::drafts::{Drafts, FileListDraft};
 use super::ui_state::{Popover, TabMenuOrigin};
 use super::{docks, tab_menu, terminals};
@@ -22,7 +23,7 @@ pub fn rows(state: &AppState, drafts: &Drafts, agent: AgentId) -> Vec<PathBuf> {
     };
     let query = drafts.file_list.query.to_lowercase();
     let folder = &entry.summary.folder;
-    docks::file_tabs(state, agent)
+    docks::file_tabs_in(state, agent, Dock::Side)
         .into_iter()
         .filter(|tab| shown_text(folder, tab).to_lowercase().contains(&query))
         .collect()
@@ -47,7 +48,7 @@ pub fn toggle(state: &mut AppState, drafts: &mut Drafts, agent: AgentId) {
         state.ui.popover = None;
         return;
     }
-    if state.ui.file_view(agent).is_none() {
+    if state.ui.file_view_in(agent, Dock::Side).is_none() {
         return;
     }
     state.ui.popover = Some(Popover::FileList);
@@ -101,7 +102,7 @@ pub fn close(state: &mut AppState, drafts: &mut Drafts, agent: AgentId, index: O
 /// After a close: the list stays open while the file view holds a file. The highlight goes to
 /// `path`'s row while it is there, else it stays on the same row, or the last one.
 pub fn after_close(state: &mut AppState, drafts: &mut Drafts, agent: AgentId, path: &Path) {
-    if state.ui.file_view(agent).is_none() {
+    if state.ui.file_view_in(agent, Dock::Side).is_none() {
         state.ui.popover = None;
         return;
     }
@@ -145,6 +146,7 @@ mod tests {
     use cockpit_protocol::AgentStatus;
 
     use super::*;
+    use crate::state::docks::Dock;
     use crate::state::{state_with, summary};
 
     const AGENT_ID: u32 = 1;
@@ -264,7 +266,7 @@ mod tests {
         let (mut state, mut drafts) = opened(&["a.rs"]);
         toggle(&mut state, &mut drafts, agent());
 
-        actions::close_file_view(&mut state, agent());
+        actions::close_file_view(&mut state, agent(), Dock::Side);
 
         assert_eq!(state.ui.popover, None);
     }

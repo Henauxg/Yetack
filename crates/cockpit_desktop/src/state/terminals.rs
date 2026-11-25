@@ -12,6 +12,8 @@ use cockpit_protocol::{
 };
 
 use super::app_state::AppState;
+use strum::VariantArray;
+
 use super::docks::{self, Dock, TabKey};
 use super::requests::{Outgoing, Purpose};
 use super::ui_state::{MenuSide, Popover};
@@ -192,9 +194,11 @@ pub fn on_screen(state: &AppState) -> bool {
 }
 
 fn on_screen_for(state: &AppState, agent: AgentId) -> bool {
-    bottom_open(state, agent)
+    bottom_terminal(state, agent).is_some()
         || side_terminal(state, agent).is_some()
-        || (docks::terminals_shown(state, agent, Dock::Side) && waits_in(state, agent, Dock::Side))
+        || Dock::VARIANTS
+            .iter()
+            .any(|&dock| docks::terminals_shown(state, agent, dock) && waits_in(state, agent, dock))
 }
 
 /// Whether `dock` waits for a terminal: the agent's are being listed, or one opens there.
@@ -209,17 +213,29 @@ fn waits_in(state: &AppState, agent: AgentId, dock: Dock) -> bool {
     terminals.listing != Listing::Listed && dock == docks::default_dock(state, agent)
 }
 
-/// Whether the bottom dock shows for `agent`: its terminals show, and it has one or waits for
-/// one.
+/// Whether the bottom dock shows for `agent`: with files open, or when its terminals show and it
+/// has one or waits for one.
 pub fn bottom_open(state: &AppState, agent: AgentId) -> bool {
+    state.ui.file_view_in(agent, Dock::Bottom).is_some() || bottom_terminals_open(state, agent)
+}
+
+fn bottom_terminals_open(state: &AppState, agent: AgentId) -> bool {
     docks::terminals_shown(state, agent, Dock::Bottom)
         && (!docks::terminals_in(state, agent, Dock::Bottom).is_empty()
             || waits_in(state, agent, Dock::Bottom))
 }
 
-/// The terminal the bottom dock shows: the one picked last, else its first tab.
+/// Whether the bottom dock shows its file: the user picked a file tab there last, or no terminal
+/// of the dock shows.
+pub fn bottom_shows_file(state: &AppState, agent: AgentId) -> bool {
+    state.ui.file_view_in(agent, Dock::Bottom).is_some()
+        && (state.ui.bottom_picks_file.contains(&agent) || !bottom_terminals_open(state, agent))
+}
+
+/// The terminal the bottom dock shows, unless its file shows: the one picked last, else its first
+/// terminal.
 pub fn bottom_terminal(state: &AppState, agent: AgentId) -> Option<TerminalId> {
-    if !docks::terminals_shown(state, agent, Dock::Bottom) {
+    if !docks::terminals_shown(state, agent, Dock::Bottom) || bottom_shows_file(state, agent) {
         return None;
     }
     let picked = state.agents.get(&agent)?.terminals.shown;
@@ -246,24 +262,26 @@ pub fn side_terminal(state: &AppState, agent: AgentId) -> Option<TerminalId> {
         .get(&agent)
         .copied()
         .filter(|picked| tabs.contains(&TabKey::Terminal(*picked)));
-    if state.ui.file_view(agent).is_some() {
+    if state.ui.file_view_in(agent, Dock::Side).is_some() {
         picked
     } else {
         picked.or_else(|| first_terminal(&tabs))
     }
 }
 
-/// The file `agent`'s side dock shows, unless a terminal is over it.
+/// The file shown in the dock the file actions act on, unless a terminal covers it.
 pub fn shown_file(state: &AppState, agent: AgentId) -> Option<&Path> {
     let view = state.ui.file_view(agent)?;
-    side_terminal(state, agent)
-        .is_none()
-        .then_some(view.path.as_path())
+    let covered = match state.ui.active_files_dock(agent) {
+        Dock::Side => side_terminal(state, agent).is_some(),
+        Dock::Bottom => !bottom_shows_file(state, agent),
+    };
+    (!covered).then_some(view.path.as_path())
 }
 
 /// Whether `agent`'s side dock shows: with a file open, or with a terminal that shows there.
 pub fn side_open(state: &AppState, agent: AgentId) -> bool {
-    state.ui.file_view(agent).is_some()
+    state.ui.file_view_in(agent, Dock::Side).is_some()
         || (docks::terminals_shown(state, agent, Dock::Side)
             && (!docks::terminals_in(state, agent, Dock::Side).is_empty()
                 || waits_in(state, agent, Dock::Side)))
@@ -275,6 +293,7 @@ pub fn show(state: &mut AppState, agent: AgentId, terminal: TerminalId) {
     state.ui.terminal_docks.insert((agent, dock));
     match dock {
         Dock::Bottom => {
+            state.ui.bottom_picks_file.remove(&agent);
             if let Some(terminals) = terminals_mut(state, agent) {
                 terminals.shown = Some(terminal);
             }
@@ -293,7 +312,9 @@ pub fn hide_dock(state: &mut AppState, agent: AgentId, dock: Dock) {
         if dock == Dock::Side {
             state.ui.side_terminal.remove(&agent);
         }
-        if !on_screen_for(state, agent) {
+        if !on_screen_for(state, agent)
+            && docks::terminals_in(state, agent, dock.other()).is_empty()
+        {
             state.ui.terminal_docks.remove(&(agent, dock.other()));
             state.ui.side_terminal_wanted.remove(&agent);
         }
@@ -338,6 +359,10 @@ pub fn toggle_pane(state: &mut AppState) -> Vec<Outgoing> {
         .or_else(|| side.first().copied());
     if let Some(terminal) = shown {
         state.ui.side_terminal.insert(agent, terminal);
+    }
+    // A bottom dock that holds terminals shows one over its file.
+    if !docks::terminals_in(state, agent, Dock::Bottom).is_empty() {
+        state.ui.bottom_picks_file.remove(&agent);
     }
     let listed = state
         .agents
@@ -1420,7 +1445,7 @@ mod tests {
     #[test]
     fn going_back_to_the_file_under_the_terminal_shows_it_as_it_was() {
         let mut state = in_file_view_with_two_files();
-        if let Some(view) = state.ui.file_views.get_mut(&agent()) {
+        if let Some(view) = state.ui.file_view_mut(agent()) {
             view.line = Some(4);
         }
         toggle_pane(&mut state);
@@ -1677,6 +1702,66 @@ mod tests {
                 TabKey::File(PathBuf::from("b.rs")),
             ]
         );
+    }
+
+    /// Both files of `in_file_view_with_two_files` in the bottom dock, the terminal over the side.
+    fn files_at_the_bottom_terminal_at_the_side() -> AppState {
+        let mut state = in_file_view_with_two_files();
+        toggle_pane(&mut state);
+        actions::move_file(&mut state, agent(), Path::new("b.rs"), Dock::Bottom, None);
+        actions::move_file(&mut state, agent(), Path::new("a.rs"), Dock::Bottom, None);
+        state
+    }
+
+    #[test]
+    fn the_side_terminal_shows_once_its_files_moved_to_the_bottom() {
+        let mut state = files_at_the_bottom_terminal_at_the_side();
+        state.ui.side_terminal.clear();
+
+        assert_eq!(side_terminal(&state, agent()), Some(TerminalId::new(1)));
+    }
+
+    #[test]
+    fn back_in_the_bottom_dock_goes_back_there_while_the_side_shows_a_terminal() {
+        let mut state = files_at_the_bottom_terminal_at_the_side();
+        state.ui.pressed_dock.insert(agent(), Dock::Bottom);
+
+        actions::travel_files(&mut state, agent(), Travel::Back);
+
+        let bottom = state.ui.file_view_in(agent(), Dock::Bottom).unwrap();
+        assert_eq!(bottom.path, PathBuf::from("b.rs"));
+        assert_eq!(side_terminal(&state, agent()), Some(TerminalId::new(1)));
+    }
+
+    #[test]
+    fn ctrl_f_in_the_bottom_file_finds_there_while_the_side_shows_a_terminal() {
+        let mut state = files_at_the_bottom_terminal_at_the_side();
+        state.ui.pressed_dock.insert(agent(), Dock::Bottom);
+
+        find::open(&mut state, &mut Drafts::default(), FindPane::File, "");
+
+        assert!(state.ui.file_view_in(agent(), Dock::Bottom).unwrap().find);
+        assert!(find::is_open(&state, FindPane::File, agent()));
+        assert!(!state.ui.chat_finds.contains(&agent()));
+    }
+
+    #[test]
+    fn the_shortcut_brings_the_bottom_terminal_over_its_file() {
+        let mut state = state_with(vec![summary(1, AgentStatus::Idle)]);
+        state.ui.selected = Some(agent());
+        listed(&mut state, agent(), Some(vec![tab(1)]), Vec::new());
+        toggle_pane(&mut state);
+        actions::open_file(&mut state, agent(), PathBuf::from("a.rs"), None);
+        actions::move_file(&mut state, agent(), Path::new("a.rs"), Dock::Bottom, None);
+        let covered = bottom_terminal(&state, agent());
+
+        hide_dock(&mut state, agent(), Dock::Side);
+        let kept = docks::terminals_shown(&state, agent(), Dock::Bottom);
+        toggle_pane(&mut state);
+
+        assert_eq!(covered, None);
+        assert!(kept, "hiding the side leaves the bottom's terminals");
+        assert_eq!(bottom_terminal(&state, agent()), Some(TerminalId::new(1)));
     }
 
     #[test]

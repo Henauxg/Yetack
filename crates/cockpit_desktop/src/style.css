@@ -8108,6 +8108,12 @@ html.splitting * {
   background: var(--well);
 }
 
+/* The bottom dock's file view fills the dock under its tabs. */
+.file-view.in-bottom {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
 .file-tabs {
   flex: none;
   display: flex;
@@ -8230,12 +8236,12 @@ html.splitting * {
   align-self: center;
 }
 
-/* The area a closed dock shows while a terminal's tab is dragged, which opens the dock. */
+/* The area a closed dock shows while a tab is dragged, which opens the dock. */
 .dock-zone {
   display: none;
 }
 
-.dragging-tab:not(.dragging-fixed-tab) .dock-zone {
+.dragging-tab .dock-zone {
   position: absolute;
   z-index: 45;
   display: flex;

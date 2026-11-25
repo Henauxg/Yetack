@@ -350,7 +350,7 @@ pub fn needed_requests(state: &mut AppState) -> Vec<Outgoing> {
     };
     let files_pane_open = file_tree::pane_open(state, agent);
     let cleared = file_tree::cleared(state, agent).cloned();
-    let open_file = state.ui.file_view(agent).map(|view| view.path.clone());
+    let open_files = state.ui.shown_files(agent);
     let Some(entry) = state.agents.get_mut(&agent) else {
         return requests;
     };
@@ -366,17 +366,17 @@ pub fn needed_requests(state: &mut AppState) -> Vec<Outgoing> {
             to: MachineId::THIS,
         });
     }
-    if let Some(path) = open_file {
+    for path in open_files {
         let text = entry.files.entry(path.clone()).or_default();
+        let freshness = entry.file_freshness.entry(path.clone()).or_default();
         let first = *text == Loadable::NotRequested;
         // A read again keeps the text on screen until the new one arrives.
-        let again =
-            matches!(text, Loadable::Loaded(_)) && entry.file_freshness.reread == Reread::Wanted;
+        let again = matches!(text, Loadable::Loaded(_)) && freshness.reread == Reread::Wanted;
         if first {
             *text = Loadable::Loading;
         }
         if again {
-            entry.file_freshness.reread = Reread::Reading { again: false };
+            freshness.reread = Reread::Reading { again: false };
         }
         if first || again {
             requests.push(Outgoing {
@@ -797,7 +797,7 @@ pub fn apply_response(
             };
             if let Some(held) = entry.files.get_mut(&path) {
                 *held = read;
-                entry.file_freshness.reread = Reread::Idle;
+                entry.file_freshness.entry(path).or_default().reread = Reread::Idle;
             }
         }
         Purpose::Accounts => match result {
@@ -1046,10 +1046,13 @@ fn reread_failed(state: &mut AppState, agent: AgentId, path: &Path, failure: &Fa
         return false;
     };
     let shown = matches!(entry.files.get(path), Some(Loadable::Loaded(_)));
-    if !shown || !matches!(entry.file_freshness.reread, Reread::Reading { .. }) {
+    let Some(freshness) = entry.file_freshness.get_mut(path) else {
+        return false;
+    };
+    if !shown || !matches!(freshness.reread, Reread::Reading { .. }) {
         return false;
     }
-    entry.file_freshness.reread = Reread::Idle;
+    freshness.reread = Reread::Idle;
     state.ui.report(format!(
         "Cannot read {} again: {}",
         path_style::shown(path),
@@ -1160,6 +1163,7 @@ mod tests {
     use crate::prefs::CommentPlacement;
     use crate::state::app_state::ConnectionState;
     use crate::state::app_state::tests::{state_with, summary};
+    use crate::state::docks::Dock;
     use crate::state::folder_field;
     use crate::state::quotes::{self, Passage, QuoteAnchor};
     use crate::state::ui_state::{Block, FileView};
@@ -1451,7 +1455,7 @@ mod tests {
             entry.files[&path],
             Loadable::Loaded(FileRead::Missing("notes.md does not exist".to_owned()))
         );
-        assert_eq!(entry.file_freshness.reread, Reread::Idle);
+        assert_eq!(entry.file_freshness[&path].reread, Reread::Idle);
     }
 
     #[test]
@@ -1459,7 +1463,7 @@ mod tests {
         let mut state = connected_with_selection();
         let agent = AgentId::new(1);
         state.ui.file_views.insert(
-            agent,
+            (agent, Dock::Side),
             FileView::new(PathBuf::from("src/main.rs"), Some(3), Default::default()),
         );
 

@@ -43,8 +43,13 @@ use crate::ui::terminal_pane::{
 use crate::ui::zoom::ZoomImage;
 use crate::{bridge, browser, format, page_files};
 
-/// The shown tab's id, which keeps it in view in a long row of tabs.
-const SHOWN_TAB_ID: &str = "file-tab-shown";
+/// The id of the file tab `dock` shows, which keeps it in view in a long row of tabs.
+fn shown_tab_id(dock: Dock) -> &'static str {
+    match dock {
+        Dock::Side => "file-tab-shown-side",
+        Dock::Bottom => "file-tab-shown-bottom",
+    }
+}
 
 /// With Ctrl, closes the shown tab, or the highlighted file in the list of open files.
 pub const CLOSE_TAB_KEY: &str = "w";
@@ -99,39 +104,15 @@ pub fn FileViewPanel() -> Element {
     if !terminals::side_open(&state, agent) {
         return rsx! {};
     }
-    let view = state.ui.file_view(agent);
+    let view = state.ui.file_view_in(agent, Dock::Side);
     let side_terminal = terminals::side_terminal(&state, agent);
-    let folder = entry.summary.folder.clone();
-    let keys = docks::tabs(&state, agent, Dock::Side);
-    let files: Vec<PathBuf> = keys
-        .iter()
-        .filter_map(|key| match key {
-            TabKey::File(path) => Some(path.clone()),
-            TabKey::Terminal(_) => None,
-        })
-        .collect();
-    let mut labels = tab_labels(PathStyle::of(&folder), &files).into_iter();
-    let tabs: Vec<SideTab> = keys
-        .iter()
-        .filter_map(|key| match key {
-            TabKey::File(path) => Some(SideTab::File {
-                path: path.clone(),
-                label: labels.next().unwrap_or_default(),
-                pinned: docks::is_pinned(&state, agent, key),
-            }),
-            TabKey::Terminal(terminal) => {
-                terminal_pane::tab_view(&state, agent, &entry.terminals, *terminal, side_terminal)
-                    .map(SideTab::Terminal)
-            }
-        })
-        .collect();
-    let tab_count = files.len();
+    let tab_count = docks::file_tabs_in(&state, agent, Dock::Side).len();
     let has_files = view.is_some();
     // The file whose tab is selected, which Ctrl+W closes. In the terminal, Ctrl+W is the shell's.
     let shown = view
         .filter(|_| side_terminal.is_none())
         .map(|view| view.path.clone());
-    let closed_by_key = shown.clone();
+    let active = state.ui.active_files_dock(agent) == Dock::Side;
     let list_menu = matches!(
         state.ui.popover,
         Some(Popover::TabMenu {
@@ -146,52 +127,14 @@ pub fn FileViewPanel() -> Element {
             id: FILE_VIEW_ID,
             class: "file-view",
             aria_label: "File view",
+            "data-file-view": "",
+            "data-active": active.then_some(""),
             // Focusable, so that a click in the view lets Ctrl+W close its tab.
             tabindex: -1,
-            onkeydown: move |event| {
-                let Some(shown) = closed_by_key.clone() else {
-                    return;
-                };
-                let command = event.modifiers().ctrl() || event.modifiers().meta();
-                if command && event.key() == Key::Character(CLOSE_TAB_KEY.to_owned()) {
-                    event.prevent_default();
-                    cockpit.update(|state| actions::close_tab(state, agent, &shown));
-                }
-            },
+            onpointerdown: move |_| focus_files(cockpit, agent, Dock::Side, active),
+            onkeydown: move |event| close_by_key(cockpit, agent, shown.clone(), &event),
             div { class: "file-tabs",
-                div {
-                    class: "tab-list scroll-x",
-                    role: "tablist",
-                    aria_label: "Files changed by this agent, and terminals",
-                    "data-dock": <&str>::from(Dock::Side),
-                    "data-agent": "{agent.get()}",
-                    for tab in tabs {
-                        match tab {
-                            SideTab::File { path, label, pinned } => rsx! {
-                                FileTab {
-                                    key: "file-{path.display()}",
-                                    agent,
-                                    pinned,
-                                    selected: shown.as_ref() == Some(&path),
-                                    full: full_path(&folder, &path),
-                                    path,
-                                    label,
-                                }
-                            },
-                            SideTab::Terminal(tab) => rsx! {
-                                TerminalTabView {
-                                    key: "terminal-{tab.terminal.get()}",
-                                    agent: tab.agent,
-                                    terminal: tab.terminal,
-                                    title: tab.title,
-                                    exited: tab.exited,
-                                    selected: tab.selected,
-                                    pinned: tab.pinned,
-                                }
-                            },
-                        }
-                    }
-                }
+                DockTabRow { agent, dock: Dock::Side }
                 NewTerminal { agent, dock: Dock::Side }
                 if has_files {
                     FileListButton { agent, count: tab_count, open: list_open, covered: list_menu }
@@ -211,14 +154,136 @@ pub fn FileViewPanel() -> Element {
                     TerminalScreen { agent, terminal: Some(terminal), dock: Dock::Side }
                 }
             } else {
-                FileShown { agent }
+                FileShown { agent, dock: Dock::Side }
             }
         }
     }
 }
 
-/// A tab of the side dock.
-enum SideTab {
+/// A press in `dock`'s files makes it the dock the file actions act on, before the press's click
+/// runs. `already` says whether it is that dock already.
+pub fn focus_files(cockpit: Cockpit, agent: AgentId, dock: Dock, already: bool) {
+    if !already {
+        cockpit.update(|state| {
+            if state.ui.file_view_in(agent, dock).is_some() {
+                state.ui.pressed_dock.insert(agent, dock);
+            }
+        });
+    }
+}
+
+/// Ctrl+W in a dock closes the tab of the file it shows, `shown`.
+pub fn close_by_key(
+    cockpit: Cockpit,
+    agent: AgentId,
+    shown: Option<PathBuf>,
+    event: &KeyboardEvent,
+) {
+    let Some(shown) = shown else {
+        return;
+    };
+    let command = event.modifiers().ctrl() || event.modifiers().meta();
+    if command && event.key() == Key::Character(CLOSE_TAB_KEY.to_owned()) {
+        event.prevent_default();
+        cockpit.update(|state| actions::close_tab(state, agent, &shown));
+    }
+}
+
+/// A dock's row of tabs: its files and its terminals, in the dock's order.
+#[component]
+pub fn DockTabRow(agent: AgentId, dock: Dock) -> Element {
+    let cockpit: Cockpit = use_context();
+    let state = cockpit.state.read();
+    let Some(entry) = state.agents.get(&agent) else {
+        return rsx! {};
+    };
+    let (shown_file, shown_terminal) = match dock {
+        Dock::Side => {
+            let terminal = terminals::side_terminal(&state, agent);
+            let file = state
+                .ui
+                .file_view_in(agent, dock)
+                .filter(|_| terminal.is_none());
+            (file, terminal)
+        }
+        Dock::Bottom => {
+            let file = state
+                .ui
+                .file_view_in(agent, dock)
+                .filter(|_| terminals::bottom_shows_file(&state, agent));
+            (file, terminals::bottom_terminal(&state, agent))
+        }
+    };
+    let shown_file = shown_file.map(|view| view.path.clone());
+    let folder = entry.summary.folder.clone();
+    let keys = docks::tabs(&state, agent, dock);
+    let files: Vec<PathBuf> = keys
+        .iter()
+        .filter_map(|key| match key {
+            TabKey::File(path) => Some(path.clone()),
+            TabKey::Terminal(_) => None,
+        })
+        .collect();
+    let mut labels = tab_labels(PathStyle::of(&folder), &files).into_iter();
+    let tabs: Vec<DockTab> = keys
+        .iter()
+        .filter_map(|key| match key {
+            TabKey::File(path) => Some(DockTab::File {
+                path: path.clone(),
+                label: labels.next().unwrap_or_default(),
+                pinned: docks::is_pinned(&state, agent, key),
+            }),
+            TabKey::Terminal(terminal) => {
+                terminal_pane::tab_view(&state, agent, &entry.terminals, *terminal, shown_terminal)
+                    .map(DockTab::Terminal)
+            }
+        })
+        .collect();
+    drop(state);
+    let label = match dock {
+        Dock::Side => "Files changed by this agent, and terminals",
+        Dock::Bottom => "Terminals and files",
+    };
+    rsx! {
+        div {
+            class: "tab-list scroll-x",
+            role: "tablist",
+            aria_label: label,
+            "data-dock": <&str>::from(dock),
+            "data-agent": "{agent.get()}",
+            for tab in tabs {
+                match tab {
+                    DockTab::File { path, label, pinned } => rsx! {
+                        FileTab {
+                            key: "file-{path.display()}",
+                            agent,
+                            dock,
+                            pinned,
+                            selected: shown_file.as_ref() == Some(&path),
+                            full: full_path(&folder, &path),
+                            path,
+                            label,
+                        }
+                    },
+                    DockTab::Terminal(tab) => rsx! {
+                        TerminalTabView {
+                            key: "terminal-{tab.terminal.get()}",
+                            agent: tab.agent,
+                            terminal: tab.terminal,
+                            title: tab.title,
+                            exited: tab.exited,
+                            selected: tab.selected,
+                            pinned: tab.pinned,
+                        }
+                    },
+                }
+            }
+        }
+    }
+}
+
+/// A tab of a dock.
+enum DockTab {
     File {
         path: PathBuf,
         label: String,
@@ -227,13 +292,15 @@ enum SideTab {
     Terminal(TerminalTabViewProps),
 }
 
-/// The shown file: its bar, its text and its foot.
+/// The file `dock` shows: its bar, its text and its foot.
 #[component]
-fn FileShown(agent: AgentId) -> Element {
+pub fn FileShown(agent: AgentId, dock: Dock) -> Element {
     let cockpit: Cockpit = use_context();
     let state = cockpit.state.read();
-    let (Some(entry), Some(view)) = (state.agents.get(&agent), state.ui.file_view(agent).cloned())
-    else {
+    let (Some(entry), Some(view)) = (
+        state.agents.get(&agent),
+        state.ui.file_view_in(agent, dock).cloned(),
+    ) else {
         return rsx! {};
     };
     let folder = &entry.summary.folder;
@@ -262,15 +329,20 @@ fn FileShown(agent: AgentId) -> Element {
             .and_then(|file| file.commits.get(hash).cloned())
             .unwrap_or(Loadable::Loading)
     });
-    let history_open = matches!(
-        state.ui.popover,
-        Some(Popover::FileHistory { agent: shown, .. }) if shown == agent
-    );
+    let history_open = state.ui.active_files_dock(agent) == dock
+        && matches!(
+            state.ui.popover,
+            Some(Popover::FileHistory { agent: shown, .. }) if shown == agent
+        );
     let history_button = file_git::history_button(
         &base,
         matches!(text, Loadable::Loaded(FileRead::Text { .. })),
     );
-    let freshness = entry.file_freshness.clone();
+    let freshness = entry
+        .file_freshness
+        .get(&view.path)
+        .cloned()
+        .unwrap_or_default();
     let update = freshness.update.clone();
     let short = ShortPath::new(folder, &view.path);
     let full = full_path(folder, &view.path);
@@ -338,7 +410,8 @@ fn FileShown(agent: AgentId) -> Element {
         .is_some_and(|machine| machine.daemon.place != DaemonPlace::Ssh);
     let reading_page = state.page_copies.is_reading(agent, &full);
     let wrap = state.prefs.file_view.wrap;
-    let find_open = view.find;
+    // Only the dock the file actions act on finds: the find box has one id.
+    let find_open = view.find && state.ui.active_files_dock(agent) == dock;
     let body_layout = match (preview, wrap) {
         (true, _) => "scroll file-preview",
         (false, true) => "scroll mono wrap",
@@ -624,6 +697,7 @@ pub fn use_page_copies(cockpit: Cockpit) {
 #[component]
 fn FileTab(
     agent: AgentId,
+    dock: Dock,
     path: PathBuf,
     label: String,
     full: String,
@@ -646,22 +720,21 @@ fn FileTab(
     };
     let close_on_middle = close.clone();
     let menu_path = path.clone();
-    use_effect(use_reactive!(|selected| {
+    use_effect(use_reactive!(|selected, dock| {
         if selected {
-            bridge::reveal(SHOWN_TAB_ID);
+            bridge::reveal(shown_tab_id(dock));
         }
     }));
     rsx! {
         div {
-            id: selected.then_some(SHOWN_TAB_ID),
+            id: selected.then(|| shown_tab_id(dock)),
             class: if selected { "file-tab selected" } else { "file-tab" },
             role: "tab",
             aria_selected: selected,
             title: "{full}",
             "data-tab": "{page_key}",
             "data-pinned": pinned.then_some(""),
-            // A file stays in the side dock.
-            "data-tab-fixed": "",
+            onpointerdown: move |_| focus_files(cockpit, agent, dock, false),
             onauxclick: move |event| {
                 if event.trigger_button() == Some(MouseButton::Auxiliary) {
                     event.prevent_default();

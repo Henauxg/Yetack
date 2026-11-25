@@ -17,6 +17,15 @@ pub const APP_ID: &str = "app";
 
 pub const FILE_VIEW_ID: &str = "file-view";
 
+/// The id of the bottom dock's file view. The side dock's is `FILE_VIEW_ID`.
+pub const BOTTOM_FILE_VIEW_ID: &str = "file-view-bottom";
+
+/// On both file views, which the page's scripts find them by.
+pub const FILE_VIEW_ATTRIBUTE: &str = "data-file-view";
+
+/// On the file view the file actions act on.
+pub const ACTIVE_ATTRIBUTE: &str = "data-active";
+
 pub const SIDEBAR_ID: &str = "sidebar";
 
 pub const FILES_PANE_ID: &str = "files-pane";

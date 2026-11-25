@@ -19,9 +19,7 @@ use cockpit_protocol::{
 };
 use strum::VariantArray;
 
-use super::app_state::{
-    self, AgentEntry, AppState, FileFreshness, FileRead, Loadable, MachineState,
-};
+use super::app_state::{self, AgentEntry, AppState, FileRead, Loadable, MachineState};
 use super::apply::forget_agent;
 use super::docks::{Dock, TabKey};
 use super::drafts::{Drafts, NewAgentDraft, Palette, QuestionDraft, SlashWord, SwitcherDraft};
@@ -1574,11 +1572,17 @@ pub fn open_file(state: &mut AppState, agent: AgentId, path: PathBuf, line: Opti
 /// mode it had, with the commit it showed. A file whose tab was closed opens again. The terminal
 /// is no place: Back over it shows the file under it.
 pub fn travel_files(state: &mut AppState, agent: AgentId, travel: Travel) {
-    if travel == Travel::Back && terminals::side_terminal(state, agent).is_some() {
-        state.ui.side_terminal.remove(&agent);
+    let dock = state.ui.active_files_dock(agent);
+    let covered = match dock {
+        Dock::Side => terminals::side_terminal(state, agent).is_some(),
+        Dock::Bottom => !terminals::bottom_shows_file(state, agent),
+    };
+    if travel == Travel::Back && covered {
+        uncover_file(state, agent, dock);
         return;
     }
-    let Some(view) = state.ui.file_views.get_mut(&agent) else {
+    let elsewhere = docks::file_tabs_in(state, agent, dock.other());
+    let Some(view) = state.ui.file_view_in_mut(agent, dock) else {
         return;
     };
     let here = view.to_place();
@@ -1586,6 +1590,8 @@ pub fn travel_files(state: &mut AppState, agent: AgentId, travel: Travel) {
         Travel::Back => (&mut view.back, &mut view.forward),
         Travel::Forward => (&mut view.forward, &mut view.back),
     };
+    // A file whose tab is in the other dock is no step of this one.
+    from.retain(|place| !elsewhere.contains(&place.path));
     let Some(place) = from.pop() else {
         return;
     };
@@ -1597,7 +1603,7 @@ pub fn travel_files(state: &mut AppState, agent: AgentId, travel: Travel) {
             view.mode_settled = true;
         }
         view.take_place_commit(place.commit);
-        state.ui.side_terminal.remove(&agent);
+        uncover_file(state, agent, dock);
         state.ui.popover = None;
         state.ui.badge = None;
         return;
@@ -1609,8 +1615,20 @@ pub fn travel_files(state: &mut AppState, agent: AgentId, travel: Travel) {
         place.line,
         Arrival::Travelled(place.mode),
     );
-    if let Some(view) = state.ui.file_views.get_mut(&agent) {
+    if let Some(view) = state.ui.file_view_mut(agent) {
         view.take_place_commit(place.commit);
+    }
+}
+
+/// Shows the file of `dock` over the terminal there.
+fn uncover_file(state: &mut AppState, agent: AgentId, dock: Dock) {
+    match dock {
+        Dock::Side => {
+            state.ui.side_terminal.remove(&agent);
+        }
+        Dock::Bottom => {
+            state.ui.bottom_picks_file.insert(agent);
+        }
     }
 }
 
@@ -1630,7 +1648,8 @@ enum Arrival {
     Travelled(Option<ViewMode>),
 }
 
-/// As [`open_file`], for a place that comes as `arrival` says.
+/// As [`open_file`], for a place that comes as `arrival` says. A file opens in the dock that holds
+/// its tab, else in the side dock. Back and Forward stay in the dock they act on.
 fn open_place(
     state: &mut AppState,
     agent: AgentId,
@@ -1638,29 +1657,61 @@ fn open_place(
     line: Option<u32>,
     arrival: Arrival,
 ) {
-    let Some(entry) = state.agents.get_mut(&agent) else {
+    let Some(entry) = state.agents.get(&agent) else {
         return;
     };
     let path = file_edits::relative_path(&entry.summary.folder, &path);
-    let changed_paths = entry.changed_paths();
+    let dock = match arrival {
+        Arrival::Opened => docks::dock_of_file(state, agent, &path),
+        Arrival::Travelled(_) => state.ui.active_files_dock(agent),
+    };
+    open_place_in(state, agent, path, line, arrival, dock);
+}
+
+/// Opens `path` in `dock`'s file view, and creates the view when the dock has none. The side
+/// dock's file tabs include the changed files. The bottom dock's hold only the files opened there.
+fn open_place_in(
+    state: &mut AppState,
+    agent: AgentId,
+    path: PathBuf,
+    line: Option<u32>,
+    arrival: Arrival,
+    dock: Dock,
+) {
+    let other = state
+        .ui
+        .file_view_in(agent, dock.other())
+        .map(|view| view.path.clone());
+    let Some(entry) = state.agents.get_mut(&agent) else {
+        return;
+    };
+    let changed_paths = match dock {
+        Dock::Side => entry.changed_paths(),
+        Dock::Bottom => Vec::new(),
+    };
     // The changed files cover the whole session, and the loaded messages an edit that just
     // finished.
     let changed = entry.has_changed(&path)
         || !file_edits::edits_for(&entry.transcript, &entry.summary.folder, &path).is_empty();
-    let shown_mode = state.ui.file_views.get(&agent).map(|view| view.mode);
+    let shown_mode = state.ui.file_view_in(agent, dock).map(|view| view.mode);
     let mode = match arrival {
         Arrival::Travelled(Some(mode)) => mode,
         Arrival::Travelled(None) | Arrival::Opened => {
             opening_mode(&path, line, changed, shown_mode)
         }
     };
-    entry.files.clear();
+    // Keep the text of the file the other dock shows. Drop the text this dock showed.
+    entry.files.retain(|kept, _| Some(kept) == other.as_ref());
+    entry
+        .file_freshness
+        .retain(|kept, _| Some(kept) == other.as_ref());
     entry.files.insert(path.clone(), Loadable::NotRequested);
-    entry.file_freshness = FileFreshness::default();
-    let shown = state.ui.file_views.contains_key(&agent);
-    let view = state.ui.file_views.entry(agent).or_insert_with(|| {
+    let shown = state.ui.file_views.contains_key(&(agent, dock));
+    let view = state.ui.file_views.entry((agent, dock)).or_insert_with(|| {
         let mut view = FileView::new(path.clone(), line, mode);
-        view.closed = state.ui.closed_files.remove(&agent).unwrap_or_default();
+        if dock == Dock::Side {
+            view.closed = state.ui.closed_files.remove(&agent).unwrap_or_default();
+        }
         view
     });
     if shown && arrival == Arrival::Opened && (view.path != path || view.line != line) {
@@ -1674,7 +1725,8 @@ fn open_place(
     view.line = line;
     view.mode = mode;
     view.mode_settled = matches!(arrival, Arrival::Travelled(Some(_)));
-    state.ui.side_terminal.remove(&agent);
+    state.ui.pressed_dock.insert(agent, dock);
+    uncover_file(state, agent, dock);
     state.ui.popover = None;
     state.ui.badge = None;
     // A link in the agent map opens the file view, which the map would cover.
@@ -1687,12 +1739,14 @@ fn open_place(
 /// A file's tab, or its row in the list of open files. The file under the terminal's tab shows
 /// as it was: opening it again would read it again and reset its mode, its line and its scroll.
 pub fn show_file(state: &mut AppState, agent: AgentId, path: PathBuf) {
+    let dock = docks::dock_of_file(state, agent, &path);
     if state
         .ui
-        .file_view(agent)
+        .file_view_in(agent, dock)
         .is_some_and(|view| view.path == path)
     {
-        state.ui.side_terminal.remove(&agent);
+        state.ui.pressed_dock.insert(agent, dock);
+        uncover_file(state, agent, dock);
         state.ui.popover = None;
     } else {
         open_file(state, agent, path, None);
@@ -1730,12 +1784,12 @@ pub fn pick_file(
     choice: PathBuf,
     line: Option<u32>,
 ) {
-    if let Some(view) = state.ui.file_views.get_mut(&agent) {
+    if let Some(view) = state.ui.file_view_mut(agent) {
         view.opened.retain(|opened| opened != name);
     }
     open_file(state, agent, choice, line);
     // The list of choices is no place to go back to.
-    if let Some(view) = state.ui.file_views.get_mut(&agent)
+    if let Some(view) = state.ui.file_view_mut(agent)
         && view.back.last().is_some_and(|place| place.path == name)
     {
         view.back.pop();
@@ -1749,32 +1803,99 @@ pub fn close_tab(state: &mut AppState, agent: AgentId, path: &Path) {
         return;
     };
     let changed = entry.changed_paths();
-    let tabs = docks::file_tabs(state, agent);
+    let dock = docks::dock_of_file(state, agent, path);
+    let tabs = docks::file_tabs_in(state, agent, dock);
     let Some(index) = tabs.iter().position(|tab| tab == path) else {
         return;
     };
     docks::forget_tab(state, agent, &TabKey::File(path.to_owned()));
-    let Some(view) = state.ui.file_views.get_mut(&agent) else {
+    // A changed file stays closed in the side dock, which holds the changed files, wherever its
+    // tab was.
+    if changed.iter().any(|changed| changed == path) {
+        match state.ui.file_view_in_mut(agent, Dock::Side) {
+            Some(side) => side.closed.insert(path.to_owned()),
+            None => state
+                .ui
+                .closed_files
+                .entry(agent)
+                .or_default()
+                .insert(path.to_owned()),
+        };
+    }
+    let Some(view) = state.ui.file_view_in_mut(agent, dock) else {
         return;
     };
     view.opened.retain(|opened| opened != path);
-    if changed.iter().any(|changed| changed == path) {
-        view.closed.insert(path.to_owned());
-    }
     if view.path != path {
         return;
     }
     let after = tabs.get(index + 1);
     let before = index.checked_sub(1).and_then(|before| tabs.get(before));
-    let terminal_shown = state.ui.side_terminal.get(&agent).copied();
+    let side_terminal = state.ui.side_terminal.get(&agent).copied();
+    let picks_file = state.ui.bottom_picks_file.contains(&agent);
     match after.or(before) {
-        Some(next) => open_file(state, agent, next.clone(), None),
-        None => close_file_view(state, agent),
+        Some(next) => open_place_in(state, agent, next.clone(), None, Arrival::Opened, dock),
+        None => close_file_view(state, agent, dock),
     }
     // A file closed behind a terminal's tab leaves the terminal shown.
-    if let Some(terminal) = terminal_shown {
+    if let Some(terminal) = side_terminal {
         state.ui.side_terminal.insert(agent, terminal);
     }
+    if !picks_file {
+        state.ui.bottom_picks_file.remove(&agent);
+    }
+}
+
+/// Moves the tab of `path` to `to`, before the tab `before` or at the end, and shows it there. When
+/// `to` is the other dock, the file leaves its old dock. A changed file then stays closed in the
+/// side dock while its tab is in the bottom dock.
+pub fn move_file(
+    state: &mut AppState,
+    agent: AgentId,
+    path: &Path,
+    to: Dock,
+    before: Option<&TabKey>,
+) {
+    let tab = TabKey::File(path.to_owned());
+    let from = docks::dock_of_file(state, agent, path);
+    if from != to {
+        let pinned = docks::is_pinned(state, agent, &tab);
+        // A file shown when it moves keeps its place, its mode and its text.
+        let shown = state
+            .ui
+            .file_view_in(agent, from)
+            .filter(|view| view.path == path)
+            .map(|view| (view.line, view.mode, view.mode_settled));
+        let text = state.agents.get(&agent).and_then(|entry| {
+            let text = entry.files.get(path).cloned()?;
+            Some((text, entry.file_freshness.get(path).cloned()))
+        });
+        close_tab(state, agent, path);
+        if let Some(view) = state.ui.file_view_in_mut(agent, from) {
+            view.back.retain(|place| place.path != path);
+            view.forward.retain(|place| place.path != path);
+        }
+        let line = shown.and_then(|(line, _, _)| line);
+        open_place_in(state, agent, path.to_owned(), line, Arrival::Opened, to);
+        if let Some((_, mode, settled)) = shown
+            && let Some(view) = state.ui.file_view_in_mut(agent, to)
+        {
+            view.mode = mode;
+            view.mode_settled = settled;
+        }
+        if let Some((Loadable::Loaded(read), freshness)) = text
+            && let Some(entry) = state.agents.get_mut(&agent)
+        {
+            entry.files.insert(path.to_owned(), Loadable::Loaded(read));
+            if let Some(freshness) = freshness {
+                entry.file_freshness.insert(path.to_owned(), freshness);
+            }
+        }
+        if pinned {
+            docks::toggle_pin(state, agent, &tab);
+        }
+    }
+    docks::move_tab(state, agent, &tab, to, before);
 }
 
 /// Shows the text the daemon read for `requested` at `found`. When the daemon looked a name up and
@@ -1793,12 +1914,18 @@ pub fn show_read_file(
     let Some(old) = entry.files.remove(requested) else {
         return;
     };
-    file_reread::arrived(&mut entry.file_freshness, old.loaded(), &read, now);
+    let mut freshness = entry.file_freshness.remove(requested).unwrap_or_default();
+    file_reread::arrived(&mut freshness, old.loaded(), &read, now);
     let folder = &entry.summary.folder;
     let found = file_edits::relative_path(folder, found);
-    if let Some(view) = state.ui.file_views.get_mut(&agent)
-        && view.path == requested
-    {
+    entry.file_freshness.insert(found.clone(), freshness);
+    let view = state
+        .ui
+        .file_views
+        .iter_mut()
+        .find(|((owner, _), view)| *owner == agent && view.path == requested)
+        .map(|(_, view)| view);
+    if let Some(view) = view {
         // A read again keeps the mode the user may have chosen since the first, and so does a
         // place whose mode settled.
         let first = old.loaded().is_none();
@@ -1825,16 +1952,22 @@ pub fn show_read_file(
     entry.files.insert(found, Loadable::Loaded(read));
 }
 
-/// Closes the agent's files. The changed ones stay closed when the view opens again.
-pub fn close_file_view(state: &mut AppState, agent: AgentId) {
-    if let Some(view) = state.ui.file_views.remove(&agent) {
+/// Closes the files of `agent`'s `dock`. The changed ones stay closed when the side dock's view
+/// opens again.
+pub fn close_file_view(state: &mut AppState, agent: AgentId, dock: Dock) {
+    if let Some(view) = state.ui.file_views.remove(&(agent, dock))
+        && dock == Dock::Side
+    {
         let mut closed = view.closed;
         if let Some(entry) = state.agents.get(&agent) {
             closed.extend(entry.changed_paths());
         }
         state.ui.closed_files.insert(agent, closed);
     }
-    docks::forget_files(state, agent);
+    if dock == Dock::Bottom {
+        state.ui.bottom_picks_file.remove(&agent);
+    }
+    docks::forget_files(state, agent, dock);
     state.ui.badge = None;
     state.ui.popover.take_if(|popover| match popover {
         Popover::FileList => true,
@@ -1843,21 +1976,35 @@ pub fn close_file_view(state: &mut AppState, agent: AgentId) {
         }
         _ => false,
     });
+    let other = state
+        .ui
+        .file_view_in(agent, dock.other())
+        .map(|view| view.path.clone());
     if let Some(entry) = state.agents.get_mut(&agent) {
-        entry.files.clear();
-        entry.file_freshness = FileFreshness::default();
-        entry.git.forget_files();
+        entry.files.retain(|kept, _| Some(kept) == other.as_ref());
+        entry
+            .file_freshness
+            .retain(|kept, _| Some(kept) == other.as_ref());
+        if other.is_none() {
+            entry.git.forget_files();
+        }
     }
 }
 
 /// The side dock's "×": closes its files, and hides its terminals.
 pub fn close_file_panel(state: &mut AppState, agent: AgentId) {
     terminals::hide_dock(state, agent, Dock::Side);
-    close_file_view(state, agent);
+    close_file_view(state, agent, Dock::Side);
+}
+
+/// The bottom dock's "×": closes its files, and hides its terminals.
+pub fn close_bottom_dock(state: &mut AppState, agent: AgentId) {
+    terminals::hide_dock(state, agent, Dock::Bottom);
+    close_file_view(state, agent, Dock::Bottom);
 }
 
 pub fn set_view_mode(state: &mut AppState, agent: AgentId, mode: ViewMode) {
-    if let Some(view) = state.ui.file_views.get_mut(&agent) {
+    if let Some(view) = state.ui.file_view_mut(agent) {
         let left_commit = view.shown_commit().is_some();
         view.mode = mode;
         view.mode_settled = true;
@@ -5576,7 +5723,7 @@ mod tests {
         open_file(&mut state, agent(), PathBuf::from("a.rs"), None);
         git::show_commit(&mut state, agent(), Some(hash.clone()));
         open_file(&mut state, agent(), PathBuf::from("b.rs"), None);
-        if let Some(view) = state.ui.file_views.get_mut(&agent()) {
+        if let Some(view) = state.ui.file_view_mut(agent()) {
             view.commit = None;
         }
 
@@ -5841,7 +5988,7 @@ mod tests {
         let held: Vec<PathBuf> = state.agents[&agent()].files.keys().cloned().collect();
         assert_eq!(held, [PathBuf::from("b.rs")]);
 
-        close_file_view(&mut state, agent());
+        close_file_view(&mut state, agent(), Dock::Side);
         assert!(state.agents[&agent()].files.is_empty());
     }
 

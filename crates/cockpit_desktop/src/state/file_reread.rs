@@ -1,4 +1,4 @@
-//! Reading the file view's shown file again, so that it follows the file's changes:
+//! Reading the files the file views show again, so that they follow the files' changes:
 //!
 //! - when the file comes back on screen: its agent selected again, the window back in front;
 //! - when its agent finishes an edit of it while it shows;
@@ -8,6 +8,7 @@
 //! kept for the view to highlight.
 
 use std::collections::BTreeSet;
+use std::path::{Path, PathBuf};
 
 use cockpit_protocol::{AgentId, ItemBody, Timestamp, ToolCallStatus, TranscriptItem};
 
@@ -16,21 +17,25 @@ use super::file_edits;
 use crate::path_style::PathStyle;
 use crate::render;
 
-/// Reads `agent`'s shown file again. A file that did not read reads from the start. A name that
-/// several files end with keeps its list to pick from.
+/// Reads the files `agent`'s views show again.
 pub fn reread(state: &mut AppState, agent: AgentId) {
-    let Some(path) = state.ui.file_view(agent).map(|view| view.path.clone()) else {
-        return;
-    };
+    for path in state.ui.shown_files(agent) {
+        reread_path(state, agent, &path);
+    }
+}
+
+/// Reads `path` again. A file that did not read reads from the start. A name that several files
+/// end with keeps its list to pick from.
+fn reread_path(state: &mut AppState, agent: AgentId, path: &Path) {
     let Some(entry) = state.agents.get_mut(&agent) else {
         return;
     };
-    let Some(held) = entry.files.get_mut(&path) else {
+    let Some(held) = entry.files.get_mut(path) else {
         return;
     };
+    let freshness = entry.file_freshness.entry(path.to_owned()).or_default();
     match held {
         Loadable::Loaded(FileRead::Text { .. } | FileRead::Image(_) | FileRead::Pdf(_)) => {
-            let freshness = &mut entry.file_freshness;
             freshness.reread = match freshness.reread {
                 Reread::Idle | Reread::Wanted => Reread::Wanted,
                 Reread::Reading { .. } => Reread::Reading { again: true },
@@ -40,12 +45,12 @@ pub fn reread(state: &mut AppState, agent: AgentId) {
             *held = Loadable::NotRequested;
         }
         // The answer on its way may predate the change: one more read follows it.
-        Loadable::Loading => entry.file_freshness.reread = Reread::Reading { again: true },
+        Loadable::Loading => freshness.reread = Reread::Reading { again: true },
         Loadable::Loaded(FileRead::Choices(_)) | Loadable::NotRequested => {}
     }
 }
 
-/// `agent` finished `item`. An edit of the file its file view shows reads the file again while
+/// `agent` finished `item`. An edit of a file one of its views shows reads the file again while
 /// it is on screen: the agent is the selected one. Off screen, coming back reads it.
 pub fn item_finished(state: &mut AppState, agent: AgentId, item: &TranscriptItem) {
     if state.ui.selected != Some(agent) {
@@ -61,13 +66,20 @@ pub fn item_finished(state: &mut AppState, agent: AgentId, item: &TranscriptItem
     else {
         return;
     };
-    let (Some(view), Some(entry)) = (state.ui.file_view(agent), state.agents.get(&agent)) else {
+    let Some(entry) = state.agents.get(&agent) else {
         return;
     };
     let folder = &entry.summary.folder;
     let edited = file_edits::relative_path(folder, &edit.path);
-    if PathStyle::of(folder).same_path(&edited.to_string_lossy(), &view.path.to_string_lossy()) {
-        reread(state, agent);
+    let style = PathStyle::of(folder);
+    let shown: Vec<PathBuf> = state
+        .ui
+        .shown_files(agent)
+        .into_iter()
+        .filter(|path| style.same_path(&edited.to_string_lossy(), &path.to_string_lossy()))
+        .collect();
+    for path in shown {
+        reread_path(state, agent, &path);
     }
 }
 
@@ -155,8 +167,10 @@ mod tests {
         state
     }
 
-    fn freshness(state: &AppState) -> &FileFreshness {
-        &state.agents[&agent()].file_freshness
+    fn freshness(state: &AppState) -> FileFreshness {
+        let path = &state.ui.file_view(agent()).unwrap().path;
+        let entry = &state.agents[&agent()];
+        entry.file_freshness.get(path).cloned().unwrap_or_default()
     }
 
     fn edit_of(path: &str, status: ToolCallStatus) -> TranscriptItem {
@@ -230,7 +244,7 @@ mod tests {
 
         assert_eq!(reads, 1);
         assert_eq!(held, Loadable::Loaded(pdf(b"%PDF-1")));
-        let update = freshness(&state).update.as_ref().unwrap();
+        let update = freshness(&state).update.unwrap();
         assert_eq!(update.at, Timestamp::from_unix_millis(2_000));
         assert!(update.lines.is_empty(), "{:?}", update.lines);
     }

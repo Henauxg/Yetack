@@ -3,16 +3,16 @@
 //! The page's script follows the pointer: a lifted copy of the tab moves with it, and a line
 //! between two tabs shows where the tab will land. While a tab is dragged, a closed dock shows an
 //! area to drop it on, which opens the dock. Rust hears of it once, on release. A pinned tab
-//! lands among the pinned tabs, and another tab after them. A file's tab stays in its row. A press
-//! that moves less than `THRESHOLD_PX` stays a click, which shows the tab.
+//! lands among the pinned tabs, and another tab after them. A press that moves less than
+//! `THRESHOLD_PX` stays a click, which shows the tab.
 
 use cockpit_protocol::AgentId;
 use dioxus::prelude::*;
 use serde::{Deserialize, Serialize};
 
 use crate::connection::Cockpit;
-use crate::state::docks::{self, Dock, TabKey};
-use crate::state::terminals;
+use crate::state::docks::{Dock, TabKey};
+use crate::state::{actions, terminals};
 
 /// The attribute a row of tabs carries, which names its dock.
 pub const DOCK_ATTRIBUTE: &str = "data-dock";
@@ -22,9 +22,6 @@ pub const TAB_ATTRIBUTE: &str = "data-tab";
 
 /// On a pinned tab.
 pub const PINNED_ATTRIBUTE: &str = "data-pinned";
-
-/// On a tab that cannot leave its row.
-pub const FIXED_ATTRIBUTE: &str = "data-tab-fixed";
 
 /// On the area a closed dock shows while a tab is dragged. It carries the dock's attribute too.
 pub const ZONE_ATTRIBUTE: &str = "data-dock-zone";
@@ -65,11 +62,7 @@ const follow = () => {
   }
   drag.ghost.style.left = `${Math.round(drag.x - drag.grabX)}px`;
   drag.ghost.style.top = `${Math.round(drag.y - drag.grabY)}px`;
-  let row = rowAt(drag.x, drag.y);
-  // A tab that cannot leave its row drops in it alone.
-  if (row !== null && drag.fixed && row !== rowOf(drag.tab)) {
-    row = null;
-  }
+  const row = rowAt(drag.x, drag.y);
   drag.target = null;
   for (const zone of document.querySelectorAll(`[${settings.zone_attribute}]`)) {
     zone.classList.toggle(settings.zone_target_class, zone === row);
@@ -144,7 +137,6 @@ const start = (event) => {
     pointer: event.pointerId,
     tab,
     pinned: pinned(tab),
-    fixed: tab.hasAttribute(settings.fixed_attribute),
     line,
     ghost,
     grabX: x - rect.left,
@@ -155,7 +147,6 @@ const start = (event) => {
   };
   tab.setAttribute(settings.dragged_attribute, "");
   document.documentElement.classList.add(settings.dragging_class);
-  document.documentElement.classList.toggle(settings.dragging_fixed_class, drag.fixed);
   follow();
 };
 const stop = () => {
@@ -167,7 +158,7 @@ const stop = () => {
   drag.tab.removeAttribute(settings.dragged_attribute);
   drag.line.remove();
   drag.ghost.remove();
-  document.documentElement.classList.remove(settings.dragging_class, settings.dragging_fixed_class);
+  document.documentElement.classList.remove(settings.dragging_class);
   released = drag.pointer;
   drag = null;
 };
@@ -251,7 +242,6 @@ struct Settings {
     agent_attribute: &'static str,
     tab_attribute: &'static str,
     pinned_attribute: &'static str,
-    fixed_attribute: &'static str,
     zone_attribute: &'static str,
     /// On the drop area under the pointer.
     zone_target_class: &'static str,
@@ -263,8 +253,6 @@ struct Settings {
     ghost_class: &'static str,
     /// On the page's root while a tab is dragged.
     dragging_class: &'static str,
-    /// On the page's root too while the tab dragged cannot leave its row.
-    dragging_fixed_class: &'static str,
     drop_line_class: &'static str,
     threshold_px: u32,
     edge_px: u32,
@@ -279,14 +267,12 @@ impl Settings {
             agent_attribute: "data-agent",
             tab_attribute: TAB_ATTRIBUTE,
             pinned_attribute: PINNED_ATTRIBUTE,
-            fixed_attribute: FIXED_ATTRIBUTE,
             zone_attribute: ZONE_ATTRIBUTE,
             zone_target_class: "drop-target",
             button_selector: ".file-tab-close",
             dragged_attribute: "data-dragged",
             ghost_class: "tab-ghost",
             dragging_class: "dragging-tab",
-            dragging_fixed_class: "dragging-fixed-tab",
             drop_line_class: "tab-drop-line",
             threshold_px: THRESHOLD_PX,
             edge_px: EDGE_PX,
@@ -339,11 +325,13 @@ fn drop_tab(cockpit: Cockpit, dropped: &Dropped) {
         if state.ui.selected != Some(agent) {
             return;
         }
-        match tab {
+        match &tab {
             TabKey::Terminal(terminal) => {
-                terminals::move_terminal(state, agent, terminal, dropped.dock, before.as_ref());
+                terminals::move_terminal(state, agent, *terminal, dropped.dock, before.as_ref());
             }
-            TabKey::File(_) => docks::move_tab(state, agent, &tab, dropped.dock, before.as_ref()),
+            TabKey::File(path) => {
+                actions::move_file(state, agent, path, dropped.dock, before.as_ref());
+            }
         }
     });
 }
@@ -365,14 +353,12 @@ mod tests {
                 "agent_attribute": "data-agent",
                 "tab_attribute": "data-tab",
                 "pinned_attribute": "data-pinned",
-                "fixed_attribute": "data-tab-fixed",
                 "zone_attribute": "data-dock-zone",
                 "zone_target_class": "drop-target",
                 "button_selector": ".file-tab-close",
                 "dragged_attribute": "data-dragged",
                 "ghost_class": "tab-ghost",
                 "dragging_class": "dragging-tab",
-                "dragging_fixed_class": "dragging-fixed-tab",
                 "drop_line_class": "tab-drop-line",
                 "threshold_px": 4,
                 "edge_px": 28,

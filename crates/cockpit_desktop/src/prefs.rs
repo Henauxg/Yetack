@@ -981,6 +981,7 @@ impl TerminalPrefs {
     Serialize,
     Deserialize,
     IntoStaticStr,
+    VariantArray,
 )]
 #[serde(rename_all = "snake_case")]
 #[strum(serialize_all = "snake_case")]
@@ -1245,6 +1246,20 @@ pub struct SavedFiles {
     /// Its docks: where its terminals sit, and the order and the pins of the tabs.
     #[serde(skip_serializing_if = "AgentLayout::is_empty")]
     pub layout: AgentLayout,
+    /// The bottom dock's file view, while it shows files.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bottom: Option<SavedView>,
+}
+
+/// The bottom dock's files, as the preferences keep them.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SavedView {
+    pub shown: PathBuf,
+    #[serde(default)]
+    pub mode: ViewMode,
+    /// Its files, in the order they opened.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub opened: Vec<PathBuf>,
 }
 
 impl SavedFiles {
@@ -1254,6 +1269,7 @@ impl SavedFiles {
             && self.opened.is_empty()
             && self.closed.is_empty()
             && self.layout.is_empty()
+            && self.bottom.is_none()
     }
 }
 
@@ -1535,6 +1551,13 @@ mod tests {
             "terminals": {
               "2": "side"
             }
+          },
+          "bottom": {
+            "shown": "tests/lexer.rs",
+            "mode": "whole_file",
+            "opened": [
+              "tests/lexer.rs"
+            ]
           }
         }
       }
@@ -1683,6 +1706,11 @@ mod tests {
                                     terminals: BTreeMap::from([(TerminalId::new(2), Dock::Side)]),
                                     ..AgentLayout::default()
                                 },
+                                bottom: Some(SavedView {
+                                    shown: PathBuf::from("tests/lexer.rs"),
+                                    mode: ViewMode::WholeFile,
+                                    opened: vec![PathBuf::from("tests/lexer.rs")],
+                                }),
                             },
                         )]),
                     )]),
@@ -2329,6 +2357,7 @@ mod tests {
                                 terminals: BTreeMap::from([(TerminalId::new(2), Dock::Side)]),
                                 ..AgentLayout::default()
                             },
+                            bottom: None,
                         },
                     )]),
                 )]),

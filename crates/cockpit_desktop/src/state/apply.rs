@@ -244,7 +244,15 @@ pub fn apply_catchup(
     state
         .ui
         .file_views
+        .retain(|(agent, _), _| agents.contains_key(agent));
+    state
+        .ui
+        .pressed_dock
         .retain(|agent, _| agents.contains_key(agent));
+    state
+        .ui
+        .bottom_picks_file
+        .retain(|agent| agents.contains_key(agent));
     state
         .ui
         .closed_files
@@ -517,7 +525,9 @@ pub fn forget_agent(
         .ui
         .mcp_sign_ins
         .retain(|(owner, _), _| *owner != agent);
-    state.ui.file_views.remove(&agent);
+    state.ui.file_views.retain(|(owner, _), _| *owner != agent);
+    state.ui.pressed_dock.remove(&agent);
+    state.ui.bottom_picks_file.remove(&agent);
     state.ui.closed_files.remove(&agent);
     state.ui.layouts.remove(&agent);
     state.ui.terminal_docks.retain(|(shown, _)| *shown != agent);

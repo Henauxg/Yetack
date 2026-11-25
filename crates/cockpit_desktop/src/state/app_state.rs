@@ -170,8 +170,8 @@ pub struct AgentEntry {
     pub context_loading: bool,
     /// The file view's texts, by the path the view uses.
     pub files: BTreeMap<PathBuf, Loadable<FileRead>>,
-    /// When the file view read its shown file, and what reading it again changed.
-    pub file_freshness: FileFreshness,
+    /// When the file views read the files they show, and what reading them again changed, by path.
+    pub file_freshness: BTreeMap<PathBuf, FileFreshness>,
     /// When the app saw each running tool call start, for the timer on its card. A call already
     /// running when the app connected has none.
     pub calls_running_since: BTreeMap<ItemId, Instant>,
@@ -339,7 +339,7 @@ impl AgentEntry {
             early_details: Vec::new(),
             context_loading: false,
             files: BTreeMap::new(),
-            file_freshness: FileFreshness::default(),
+            file_freshness: BTreeMap::new(),
             calls_running_since: BTreeMap::new(),
             commands: Vec::new(),
             commands_requested: false,

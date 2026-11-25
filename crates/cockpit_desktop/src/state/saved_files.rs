@@ -7,9 +7,10 @@ use std::collections::BTreeSet;
 use cockpit_protocol::AgentId;
 
 use super::app_state::AppState;
+use super::docks::Dock;
 use super::ui_state::FileView;
 use crate::machine::MachineId;
-use crate::prefs::SavedFiles;
+use crate::prefs::{SavedFiles, SavedView};
 
 /// Writes each agent's files into the preferences, where they differ.
 pub fn save(state: &mut AppState) {
@@ -41,16 +42,26 @@ pub fn save(state: &mut AppState) {
 
 fn saved_now(state: &AppState, agent: AgentId) -> SavedFiles {
     let layout = state.ui.layouts.get(&agent).cloned().unwrap_or_default();
-    match state.ui.file_view(agent) {
+    let bottom = state
+        .ui
+        .file_view_in(agent, Dock::Bottom)
+        .map(|view| SavedView {
+            shown: view.path.clone(),
+            mode: view.mode,
+            opened: view.opened.clone(),
+        });
+    match state.ui.file_view_in(agent, Dock::Side) {
         Some(view) => SavedFiles {
             shown: Some(view.path.clone()),
             mode: view.mode,
             opened: view.opened.clone(),
             closed: view.closed.clone(),
             layout,
+            bottom,
         },
         None => SavedFiles {
             layout,
+            bottom,
             closed: state
                 .ui
                 .closed_files
@@ -62,8 +73,8 @@ fn saved_now(state: &AppState, agent: AgentId) -> SavedFiles {
     }
 }
 
-/// Opens the files the preferences keep for an agent the app has just listed, unless its view is
-/// open already.
+/// Opens the files the preferences keep for an agent the app has just listed, in each dock whose
+/// view is not open already.
 pub fn restore(state: &mut AppState, agent: AgentId) {
     let Some(saved) = state.daemon_machine(agent).and_then(|machine| {
         state
@@ -77,7 +88,15 @@ pub fn restore(state: &mut AppState, agent: AgentId) {
     if !state.ui.layouts.contains_key(&agent) && !saved.layout.is_empty() {
         state.ui.layouts.insert(agent, saved.layout);
     }
-    if state.ui.file_views.contains_key(&agent) {
+    if let Some(bottom) = saved.bottom
+        && !state.ui.file_views.contains_key(&(agent, Dock::Bottom))
+    {
+        let mut view = FileView::new(bottom.shown, None, bottom.mode);
+        view.opened = bottom.opened;
+        view.mode_settled = true;
+        state.ui.file_views.insert((agent, Dock::Bottom), view);
+    }
+    if state.ui.file_views.contains_key(&(agent, Dock::Side)) {
         return;
     }
     let Some(path) = saved.shown else {
@@ -88,7 +107,7 @@ pub fn restore(state: &mut AppState, agent: AgentId) {
     view.opened = saved.opened;
     view.closed = saved.closed;
     view.mode_settled = true;
-    state.ui.file_views.insert(agent, view);
+    state.ui.file_views.insert((agent, Dock::Side), view);
 }
 
 /// Keeps the files of the agents a snapshot of `machine` holds: the others closed while the app
@@ -214,7 +233,7 @@ mod tests {
         let mut state = state();
         actions::open_file(&mut state, agent(), PathBuf::from("src/cart.rs"), None);
 
-        actions::close_file_view(&mut state, agent());
+        actions::close_file_view(&mut state, agent(), Dock::Side);
         actions::open_file(&mut state, agent(), PathBuf::from("notes.md"), None);
 
         assert_eq!(tabs(&state), [PathBuf::from("notes.md")]);
@@ -224,7 +243,7 @@ mod tests {
     fn a_closed_view_stays_closed_and_its_files_too_after_a_restart() {
         let mut state = state();
         actions::open_file(&mut state, agent(), PathBuf::from("src/cart.rs"), None);
-        actions::close_file_view(&mut state, agent());
+        actions::close_file_view(&mut state, agent(), Dock::Side);
 
         let mut restarted = restarted(&mut state);
         let reopened = restarted.ui.file_view(agent()).is_some();
@@ -232,6 +251,33 @@ mod tests {
 
         assert!(!reopened);
         assert_eq!(tabs(&restarted), [PathBuf::from("notes.md")]);
+    }
+
+    #[test]
+    fn the_bottom_docks_files_open_again_after_a_restart() {
+        let mut state = state();
+        actions::open_file(&mut state, agent(), PathBuf::from("notes.md"), None);
+        actions::open_file(&mut state, agent(), PathBuf::from("plan.md"), None);
+        actions::move_file(
+            &mut state,
+            agent(),
+            Path::new("plan.md"),
+            Dock::Bottom,
+            None,
+        );
+
+        let restarted = restarted(&mut state);
+
+        let bottom = restarted.ui.file_view_in(agent(), Dock::Bottom).unwrap();
+        assert_eq!(bottom.path, PathBuf::from("plan.md"));
+        assert_eq!(bottom.opened, [PathBuf::from("plan.md")]);
+        assert_eq!(
+            restarted
+                .ui
+                .file_view_in(agent(), Dock::Side)
+                .map(|view| view.path.clone()),
+            Some(PathBuf::from("notes.md"))
+        );
     }
 
     #[test]

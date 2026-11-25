@@ -24,8 +24,10 @@ use crate::state::terminal_menu::{self, MenuSpot, TerminalLink};
 use crate::state::terminals::AgentTerminals;
 use crate::state::{AppState, Popover, actions, terminal_tab_menu, terminals};
 use crate::terminal_feed::FeedReceiver;
+use crate::ui::file_view::{DockTabRow, FileShown, close_by_key, focus_files};
 use crate::ui::icons::{Icon, IconKind};
 use crate::ui::shell_menu::ShellButton;
+use crate::ui::splitter::BOTTOM_FILE_VIEW_ID;
 
 /// ghostty-web 0.4.0, an ES module that holds its WebAssembly inline. See
 /// `assets/ghostty-web/README.md`.
@@ -1313,7 +1315,7 @@ fn receive(cockpit: Cockpit, script: document::Eval, message: FromPage) {
 pub fn TerminalPane(leaving: bool) -> Element {
     let cockpit: Cockpit = use_context();
     let state = cockpit.state.read();
-    let Some((agent, terminals)) = terminals::selected(&state) else {
+    let Some((agent, _)) = terminals::selected(&state) else {
         return rsx! {};
     };
     let machine = state
@@ -1329,29 +1331,23 @@ pub fn TerminalPane(leaving: bool) -> Element {
     };
     let style = format!("height: {}px", height.unwrap_or(DEFAULT_TERMINAL_HEIGHT));
     let shown = terminals::bottom_terminal(&state, agent);
-    let tabs = tab_views(&state, agent, terminals, Dock::Bottom, shown);
+    let shows_file = terminals::bottom_shows_file(&state, agent);
+    let shown_file = state
+        .ui
+        .file_view_in(agent, Dock::Bottom)
+        .filter(|_| shows_file)
+        .map(|view| view.path.clone());
+    let active = state.ui.active_files_dock(agent) == Dock::Bottom;
     drop(state);
     rsx! {
-        section { class, style, aria_label: "Terminal", inert: leaving.then_some(true),
+        section {
+            class,
+            style,
+            aria_label: "Bottom dock",
+            inert: leaving.then_some(true),
             div { class: "terminal-grip", "data-terminal-grip": "bottom", aria_hidden: true }
             div { class: "terminal-bar",
-                div {
-                    class: "tab-list terminal-tabs scroll-x",
-                    role: "tablist",
-                    "data-dock": <&str>::from(Dock::Bottom),
-                    "data-agent": "{agent.get()}",
-                    for tab in tabs {
-                        TerminalTabView {
-                            key: "{tab.terminal.get()}",
-                            agent: tab.agent,
-                            terminal: tab.terminal,
-                            title: tab.title,
-                            exited: tab.exited,
-                            selected: tab.selected,
-                            pinned: tab.pinned,
-                        }
-                    }
-                }
+                DockTabRow { agent, dock: Dock::Bottom }
                 NewTerminal { agent, dock: Dock::Bottom }
                 div { class: "terminal-controls",
                     if !machine.is_empty() {
@@ -1359,33 +1355,30 @@ pub fn TerminalPane(leaving: bool) -> Element {
                     }
                     button {
                         class: "icon-button",
-                        aria_label: "Hide the terminal",
-                        title: "Hide the terminal: its shells keep running",
-                        onclick: move |_| cockpit.update(|state| terminals::hide_dock(state, agent, Dock::Bottom)),
+                        aria_label: "Close the bottom panel",
+                        title: "Close the files here, and hide the terminals: their shells keep running",
+                        onclick: move |_| cockpit.update(|state| actions::close_bottom_dock(state, agent)),
                         Icon { kind: IconKind::Close, size: 13 }
                     }
                 }
             }
-            TerminalScreen { agent, terminal: shown, dock: Dock::Bottom, leaving }
+            if shows_file {
+                section {
+                    id: (!leaving).then_some(BOTTOM_FILE_VIEW_ID),
+                    class: "file-view in-bottom",
+                    aria_label: "File view",
+                    "data-file-view": "",
+                    "data-active": active.then_some(""),
+                    tabindex: -1,
+                    onpointerdown: move |_| focus_files(cockpit, agent, Dock::Bottom, active),
+                    onkeydown: move |event| close_by_key(cockpit, agent, shown_file.clone(), &event),
+                    FileShown { agent, dock: Dock::Bottom }
+                }
+            } else {
+                TerminalScreen { agent, terminal: shown, dock: Dock::Bottom, leaving }
+            }
         }
     }
-}
-
-/// What a terminal's tab shows, for each terminal of `dock`.
-pub fn tab_views(
-    state: &AppState,
-    agent: AgentId,
-    terminals: &AgentTerminals,
-    dock: Dock,
-    shown: Option<TerminalId>,
-) -> Vec<TerminalTabViewProps> {
-    docks::tabs(state, agent, dock)
-        .iter()
-        .filter_map(|tab| match tab {
-            TabKey::Terminal(terminal) => tab_view(state, agent, terminals, *terminal, shown),
-            TabKey::File(_) => None,
-        })
-        .collect()
 }
 
 /// What the tab of `terminal` shows.
