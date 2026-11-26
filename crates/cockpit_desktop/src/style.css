@@ -535,7 +535,11 @@ button:disabled {
   font-size: 12px;
 }
 
-/* The scrollbar stands 6px off the panels, and takes 4px of the sidebar's right padding. */
+/* The list reaches 4px into the sidebar's right padding, left of the splitter's grip. Its 6px
+   gutter stays when the list fits, so the panels keep their width when it starts to scroll.
+   `.scroll` sets `scrollbar-width`, which gives an overlay scrollbar in WebKitGTK that paints over
+   a row's menu. Set back to `auto`, the `::-webkit-scrollbar` style applies, which paints under
+   it. */
 .agent-list {
   flex: 1 1 auto;
   min-height: 0;
@@ -543,7 +547,19 @@ button:disabled {
   flex-direction: column;
   gap: 1px;
   margin-right: -4px;
-  padding-right: 6px;
+  scrollbar-gutter: stable;
+  scrollbar-width: auto;
+  scrollbar-color: auto;
+}
+
+.agent-list::-webkit-scrollbar {
+  width: 6px;
+}
+
+/* A transparent border keeps the thumb 3px off the panels, and the pointer still takes it. */
+.agent-list::-webkit-scrollbar-thumb {
+  border-left: 3px solid transparent;
+  background-clip: padding-box;
 }
 
 /* With several machines, each is a panel of its own: its edge, not a coloured dot, sets it
