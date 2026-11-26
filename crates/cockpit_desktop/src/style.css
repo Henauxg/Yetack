@@ -8660,9 +8660,11 @@ html.splitting * {
   overflow-wrap: anywhere;
 }
 
-/* A rendered markdown file, as a document: larger headings, and lines short enough to read. */
+/* A rendered markdown file, as a document: larger headings, and lines that follow the pane up to
+   about 120 characters of its 14 px text. In rem, so a larger heading gets the same edge as the
+   text under it, where ch would grow with its font. */
 .file-preview {
-  --prose-width: 76ch;
+  --prose-width: 63rem;
   padding: 18px 28px 28px;
   font-size: 14px;
   line-height: 1.6;
