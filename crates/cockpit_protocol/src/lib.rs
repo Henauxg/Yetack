@@ -90,9 +90,10 @@ pub use session::{
 pub use settings::Settings;
 pub use stored_bool::{FromStoredBool, enum_or_stored_bool};
 pub use terminal::{
-    ShellChoice, TerminalChange, TerminalExit, TerminalId, TerminalInfo, TerminalInputParams,
-    TerminalOpenParams, TerminalParams, TerminalResizeParams, TerminalSize, TerminalSizeAt,
-    TerminalUpdate,
+    MAX_TEXT_LINES, SHARE_LABEL, ShellChoice, TERMINAL_WORD, TerminalChange, TerminalExit,
+    TerminalId, TerminalInfo, TerminalInputParams, TerminalOpenParams, TerminalParams,
+    TerminalReadParams, TerminalRenameParams, TerminalResizeParams, TerminalShareParams,
+    TerminalSize, TerminalSizeAt, TerminalUpdate,
 };
 pub use time::Timestamp;
 pub use transcript::{

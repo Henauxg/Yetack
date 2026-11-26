@@ -5,10 +5,14 @@ mod bridge;
 mod cli;
 mod client;
 
+#[cfg(unix)]
+use std::ffi::OsString;
+#[cfg(unix)]
+use std::path::Path;
 use std::process::ExitCode;
 
 #[cfg(unix)]
-use cockpit_daemon::{DaemonConfig, HOME_ENV};
+use cockpit_daemon::{DaemonConfig, HOME_ENV, MCP_SUBCOMMAND, McpCommand, STATE_DIR_FLAG};
 use tokio::runtime::Runtime;
 use tracing_subscriber::EnvFilter;
 
@@ -47,7 +51,7 @@ fn main() -> ExitCode {
         }
     };
     #[cfg(unix)]
-    let bridging = matches!(cli.command, Command::Bridge);
+    let bridging = matches!(cli.command, Command::Bridge | Command::Mcp);
     #[cfg(windows)]
     let bridging = false;
     let result = runtime.block_on(run(cli));
@@ -77,13 +81,52 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
             }
             let config = DaemonConfig::from_env(cli.target.state_dir.clone())
                 .with_context(|| format!("{HOME_ENV} is not set"))?;
-            cockpit_daemon::serve(config, shutdown_signal()?).await?;
+            match mcp_command(&config.state_dir) {
+                Some(mcp) => {
+                    cockpit_daemon::serve_with_agent_tools(config, mcp, shutdown_signal()?).await?;
+                }
+                None => cockpit_daemon::serve(config, shutdown_signal()?).await?,
+            }
             Ok(())
         }
         #[cfg(unix)]
         Command::Bridge => bridge::run(&cli.target.local_socket()?).await,
+        #[cfg(unix)]
+        Command::Mcp => {
+            if cli.target.is_remote() {
+                anyhow::bail!(
+                    "mcp serves an agent of the daemon on this machine: --{SSH_FLAG} does not apply"
+                );
+            }
+            let agent = cockpit_mcp::agent_from_env()?;
+            cockpit_mcp::serve(cli.target.transport()?, agent).await?;
+            Ok(())
+        }
         command => client::run(&cli.target, command).await,
     }
+}
+
+/// This program's `--state-dir <state_dir> mcp`, which serves the agents of the daemon of
+/// `state_dir`. `None` when the program or the folder has no path that `claude` can run.
+#[cfg(unix)]
+fn mcp_command(state_dir: &Path) -> Option<McpCommand> {
+    let program = std::env::current_exe()
+        .inspect_err(|error| {
+            tracing::warn!(%error, "cannot find this program: agents cannot read terminals");
+        })
+        .ok()?;
+    // The server runs in the agent's folder.
+    let state_dir = std::path::absolute(state_dir)
+        .inspect_err(|error| {
+            tracing::warn!(%error, "cannot resolve the state folder: agents cannot read terminals");
+        })
+        .ok()?;
+    let args = vec![
+        OsString::from(format!("--{STATE_DIR_FLAG}")),
+        state_dir.into_os_string(),
+        OsString::from(MCP_SUBCOMMAND),
+    ];
+    Some(McpCommand { program, args })
 }
 
 /// Completes on SIGTERM, as systemd stops a service, or on Ctrl+C.
@@ -100,4 +143,29 @@ fn shutdown_signal() -> anyhow::Result<impl Future<Output = ()>> {
             _ = interrupt.recv() => {}
         }
     })
+}
+
+#[cfg(test)]
+#[cfg(unix)]
+mod tests {
+    use super::*;
+
+    /// `claude` runs the server in the agent's folder, where a relative state folder means
+    /// another folder.
+    #[test]
+    fn the_mcp_command_names_the_state_folder_from_the_root() {
+        let command = mcp_command(Path::new("state")).unwrap();
+
+        let state = command.args.get(1).map(Path::new).unwrap();
+        assert!(state.is_absolute(), "{state:?}");
+        assert!(state.ends_with("state"));
+        assert_eq!(
+            command.args.first().and_then(|arg| arg.to_str()),
+            Some("--state-dir")
+        );
+        assert_eq!(
+            command.args.last().and_then(|arg| arg.to_str()),
+            Some("mcp")
+        );
+    }
 }

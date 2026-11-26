@@ -7,8 +7,8 @@ use std::path::{Path, PathBuf};
 
 use cockpit_protocol::{
     AgentId, AgentParams, Request, ShellChoice, TerminalChange, TerminalExit, TerminalId,
-    TerminalInfo, TerminalInputParams, TerminalOpenParams, TerminalParams, TerminalResizeParams,
-    TerminalSize, TerminalSizeAt, TerminalUpdate,
+    TerminalInfo, TerminalInputParams, TerminalOpenParams, TerminalParams, TerminalRenameParams,
+    TerminalResizeParams, TerminalShareParams, TerminalSize, TerminalSizeAt, TerminalUpdate,
 };
 
 use super::app_state::AppState;
@@ -61,6 +61,17 @@ pub struct TerminalTab {
     pub title: String,
     /// `Some` once the shell ended.
     pub exited: Option<TerminalExit>,
+    /// Whether the agent may read it, as the daemon says.
+    pub shared: bool,
+    /// The name the user gave the tab, which shows in place of `title`.
+    pub name: Option<String>,
+}
+
+impl TerminalTab {
+    /// What the tab shows: the user's name for it, else the shell's title.
+    pub fn shown_title(&self) -> &str {
+        self.name.as_deref().unwrap_or(&self.title)
+    }
 }
 
 /// Whether the app knows an agent's terminals.
@@ -114,6 +125,8 @@ impl AgentTerminals {
                 terminal,
                 title,
                 exited: None,
+                shared: false,
+                name: None,
             });
         }
     }
@@ -578,6 +591,8 @@ pub fn pick_shell(
 
 /// Drops a terminal that closed from the layout and from the side dock it showed in.
 fn forget_terminal(state: &mut AppState, agent: AgentId, terminal: TerminalId) {
+    let gone = TerminalParams { agent, terminal };
+    state.ui.terminal_rename.take_if(|renamed| *renamed == gone);
     docks::forget_tab(state, agent, &TabKey::Terminal(terminal));
     if state.ui.side_terminal.get(&agent) == Some(&terminal) {
         state.ui.side_terminal.remove(&agent);
@@ -624,6 +639,8 @@ pub fn listed(
         terminals.add(info.terminal, info.title);
         if let Some(tab) = terminals.tab_mut(info.terminal) {
             tab.exited = info.exited;
+            tab.shared = info.shared;
+            tab.name = info.name;
         }
     }
     if terminals.shown.is_none() {
@@ -676,6 +693,16 @@ pub fn apply_update(state: &mut AppState, update: TerminalUpdate) {
         TerminalChange::Exited { code } => {
             if let Some(tab) = terminals.tab_mut(update.terminal) {
                 tab.exited = Some(TerminalExit { code });
+            }
+        }
+        TerminalChange::Shared { shared } => {
+            if let Some(tab) = terminals.tab_mut(update.terminal) {
+                tab.shared = shared;
+            }
+        }
+        TerminalChange::Renamed { name } => {
+            if let Some(tab) = terminals.tab_mut(update.terminal) {
+                tab.name = name;
             }
         }
         TerminalChange::Closed => {
@@ -737,6 +764,13 @@ pub fn connected(state: &mut AppState, machine: MachineId) {
     }
     terminal_menu::close_if(state, |spot| MachineId::of(spot.agent) == machine);
     close_shell_menu(state, |agent| MachineId::of(agent) == machine);
+    state
+        .ui
+        .terminal_rename
+        .take_if(|renamed| MachineId::of(renamed.agent) == machine);
+    state.ui.popover.take_if(|popover| {
+        matches!(popover, Popover::TerminalTabMenu { agent, .. } if MachineId::of(*agent) == machine)
+    });
 }
 
 /// A tab's "×": ends its shell.
@@ -755,6 +789,65 @@ pub fn close(state: &mut AppState, agent: AgentId, terminal: TerminalId) -> Vec<
         Request::TerminalClose(TerminalParams { agent, terminal }),
         Purpose::Action,
     )]
+}
+
+/// Lets the agent read the terminal, or stops it. The tab's marker follows the daemon's answer to
+/// every window, this one included.
+pub fn share(agent: AgentId, terminal: TerminalId, shared: bool) -> Outgoing {
+    outgoing(
+        Request::TerminalShare(TerminalShareParams {
+            agent,
+            terminal,
+            shared,
+        }),
+        Purpose::Action,
+    )
+}
+
+/// Puts the tab's title in a field, from its menu or a double-click on it.
+pub fn start_rename(state: &mut AppState, agent: AgentId, terminal: TerminalId) {
+    let exists =
+        terminals_mut(state, agent).is_some_and(|terminals| terminals.tab(terminal).is_some());
+    if exists {
+        state.ui.popover = None;
+        state.ui.terminal_rename = Some(TerminalParams { agent, terminal });
+    }
+}
+
+/// Saves the name typed in the tab's field, when it differs from `opened_with`, the text the field
+/// opened with. An empty name gives the tab back the shell's own title.
+pub fn finish_rename(
+    state: &mut AppState,
+    agent: AgentId,
+    terminal: TerminalId,
+    opened_with: &str,
+    typed: &str,
+) -> Vec<Outgoing> {
+    if state.ui.terminal_rename != Some(TerminalParams { agent, terminal }) {
+        return Vec::new();
+    }
+    state.ui.terminal_rename = None;
+    let Some(tab) = terminals_mut(state, agent).and_then(|terminals| terminals.tab(terminal))
+    else {
+        return Vec::new();
+    };
+    let typed = typed.trim();
+    let name = (!typed.is_empty()).then(|| typed.to_owned());
+    if typed == opened_with.trim() || (name.is_none() && tab.name.is_none()) {
+        return Vec::new();
+    }
+    vec![outgoing(
+        Request::TerminalRename(TerminalRenameParams {
+            agent,
+            terminal,
+            name,
+        }),
+        Purpose::Action,
+    )]
+}
+
+pub fn cancel_rename(state: &mut AppState) {
+    state.ui.terminal_rename = None;
 }
 
 /// The shell's title, as the page reads it from the terminal.
@@ -818,6 +911,7 @@ mod tests {
     use crate::state::{
         Block, Drafts, TabMenuOrigin, Travel, actions, apply_response,
         apply_update as apply_session_update, connected_update, git, state_with, summary,
+        terminal_tab_menu,
     };
 
     fn agent() -> AgentId {
@@ -829,6 +923,8 @@ mod tests {
             terminal: TerminalId::new(terminal),
             title: "zsh".to_owned(),
             exited: None,
+            shared: false,
+            name: None,
         }
     }
 
@@ -1783,5 +1879,190 @@ mod tests {
             find::is_open(&state, FindPane::File, agent()),
             "it finds again"
         );
+    }
+
+    /// Agent 1 with terminal 5, "zsh", listed shared and named "tests" by the daemon, and
+    /// terminal 6, plain.
+    fn named_and_shared() -> AppState {
+        let mut state = state_with(vec![summary(1, AgentStatus::Idle)]);
+        let named = TerminalInfo {
+            shared: true,
+            name: Some("tests".to_owned()),
+            ..tab(5)
+        };
+        listed(&mut state, agent(), Some(vec![named, tab(6)]), Vec::new());
+        state
+    }
+
+    fn terminal_tab(state: &AppState, terminal: u32) -> TerminalTab {
+        state.agents[&agent()]
+            .terminals
+            .tab(TerminalId::new(terminal))
+            .cloned()
+            .unwrap()
+    }
+
+    fn requests(sent: Vec<Outgoing>) -> Vec<Request> {
+        sent.into_iter().map(|outgoing| outgoing.request).collect()
+    }
+
+    fn renamed(terminal: u32, name: Option<&str>) -> Request {
+        Request::TerminalRename(TerminalRenameParams {
+            agent: agent(),
+            terminal: TerminalId::new(terminal),
+            name: name.map(str::to_owned),
+        })
+    }
+
+    #[test]
+    fn the_listing_and_the_updates_carry_the_share_and_the_name() {
+        let mut state = named_and_shared();
+        let listed_named = terminal_tab(&state, 5);
+        let update = |change| TerminalUpdate {
+            agent: agent(),
+            terminal: TerminalId::new(6),
+            change,
+        };
+
+        apply_update(&mut state, update(TerminalChange::Shared { shared: true }));
+        apply_update(
+            &mut state,
+            update(TerminalChange::Renamed {
+                name: Some("build".to_owned()),
+            }),
+        );
+        let changed = terminal_tab(&state, 6);
+        apply_update(&mut state, update(TerminalChange::Shared { shared: false }));
+        apply_update(&mut state, update(TerminalChange::Renamed { name: None }));
+        let back = terminal_tab(&state, 6);
+
+        assert!(listed_named.shared);
+        assert_eq!(listed_named.shown_title(), "tests");
+        assert!(changed.shared);
+        assert_eq!(changed.shown_title(), "build");
+        assert!(!back.shared);
+        assert_eq!(back.shown_title(), "zsh");
+    }
+
+    /// Enter and a blur both finish the edit; the second finish of one edit sends nothing.
+    #[test]
+    fn a_rename_sends_the_new_name_once_and_ends_the_edit() {
+        let mut state = named_and_shared();
+
+        start_rename(&mut state, agent(), TerminalId::new(6));
+        let editing = state.ui.terminal_rename;
+        let sent = finish_rename(&mut state, agent(), TerminalId::new(6), "zsh", "  build ");
+        let blurred_after = finish_rename(&mut state, agent(), TerminalId::new(6), "zsh", "other");
+
+        assert_eq!(
+            editing,
+            Some(TerminalParams {
+                agent: agent(),
+                terminal: TerminalId::new(6),
+            })
+        );
+        assert_eq!(requests(sent), [renamed(6, Some("build"))]);
+        assert_eq!(state.ui.terminal_rename, None);
+        assert!(blurred_after.is_empty());
+    }
+
+    #[test]
+    fn an_empty_name_gives_back_the_shells_title_and_an_unchanged_one_sends_nothing() {
+        let mut state = named_and_shared();
+
+        start_rename(&mut state, agent(), TerminalId::new(5));
+        let emptied = finish_rename(&mut state, agent(), TerminalId::new(5), "tests", "   ");
+        start_rename(&mut state, agent(), TerminalId::new(5));
+        let same = finish_rename(&mut state, agent(), TerminalId::new(5), "tests", "tests");
+        start_rename(&mut state, agent(), TerminalId::new(6));
+        let unnamed_and_empty = finish_rename(&mut state, agent(), TerminalId::new(6), "zsh", "");
+        start_rename(&mut state, agent(), TerminalId::new(6));
+        let shell_title = finish_rename(&mut state, agent(), TerminalId::new(6), "zsh", "zsh");
+
+        assert_eq!(requests(emptied), [renamed(5, None)]);
+        assert!(same.is_empty());
+        assert!(unnamed_and_empty.is_empty());
+        assert!(shell_title.is_empty());
+    }
+
+    /// The field keeps the text it opened with while the shell sets another title, and shows
+    /// "shell" for a shell without one: an untouched field names the tab with neither.
+    #[test]
+    fn an_untouched_field_sends_nothing_once_the_shells_title_changed() {
+        let mut state = named_and_shared();
+        set_title(&mut state, agent(), TerminalId::new(5), String::new());
+
+        start_rename(&mut state, agent(), TerminalId::new(6));
+        set_title(&mut state, agent(), TerminalId::new(6), "vim".to_owned());
+        let retitled = finish_rename(&mut state, agent(), TerminalId::new(6), "zsh", "zsh");
+        start_rename(&mut state, agent(), TerminalId::new(5));
+        cancel_rename(&mut state);
+        apply_update(
+            &mut state,
+            TerminalUpdate {
+                agent: agent(),
+                terminal: TerminalId::new(5),
+                change: TerminalChange::Renamed { name: None },
+            },
+        );
+        start_rename(&mut state, agent(), TerminalId::new(5));
+        let untitled = finish_rename(&mut state, agent(), TerminalId::new(5), "shell", "shell");
+
+        assert!(retitled.is_empty());
+        assert!(untitled.is_empty());
+    }
+
+    /// Esc cancels: the blur that follows as the field leaves saves nothing. Esc reaches the
+    /// overlays too, which also end the edit.
+    #[test]
+    fn escape_cancels_the_rename() {
+        let mut state = named_and_shared();
+
+        start_rename(&mut state, agent(), TerminalId::new(6));
+        cancel_rename(&mut state);
+        let blurred = finish_rename(&mut state, agent(), TerminalId::new(6), "zsh", "build");
+        start_rename(&mut state, agent(), TerminalId::new(6));
+        let closed = state.ui.close_overlays();
+
+        assert!(blurred.is_empty());
+        assert!(closed);
+        assert_eq!(state.ui.terminal_rename, None);
+    }
+
+    /// After a reconnection the tabs are listed again, and a new daemon reuses the ids: a field
+    /// or a tab's menu left open would come back on another terminal's tab, whose menu would then
+    /// share a terminal the user did not pick.
+    #[test]
+    fn a_reconnection_ends_the_rename_and_closes_the_tabs_menu() {
+        let mut state = named_and_shared();
+
+        start_rename(&mut state, agent(), TerminalId::new(6));
+        connected(&mut state, MachineId::THIS);
+        let renamed = state.ui.terminal_rename;
+        terminal_tab_menu::open(&mut state, agent(), TerminalId::new(5), 10, 20);
+        connected(&mut state, MachineId::THIS);
+
+        assert_eq!(renamed, None);
+        assert_eq!(state.ui.popover, None);
+    }
+
+    #[test]
+    fn a_closed_terminal_ends_its_rename_and_a_gone_one_starts_none() {
+        let mut state = named_and_shared();
+
+        start_rename(&mut state, agent(), TerminalId::new(9));
+        let gone = state.ui.terminal_rename;
+        start_rename(&mut state, agent(), TerminalId::new(6));
+        apply_update(
+            &mut state,
+            TerminalUpdate {
+                agent: agent(),
+                terminal: TerminalId::new(6),
+                change: TerminalChange::Closed,
+            },
+        );
+
+        assert_eq!(gone, None);
+        assert_eq!(state.ui.terminal_rename, None);
     }
 }

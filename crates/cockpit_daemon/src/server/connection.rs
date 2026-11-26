@@ -1,18 +1,28 @@
 //! One client's session: `Hello`, `Welcome` with its catch-up, then requests, responses and live
 //! events.
+//!
+//! A process under the daemon, as an agent's MCP server (`yetack mcp`), gets an agent's session
+//! instead: a welcome that replays nothing, no event, and only the agent's reads of its own shared
+//! terminals. The agent is the one whose `claude` the process descends from, whatever the requests
+//! name, so a command an agent runs can read no more than the agent's own MCP server.
 
 use std::io;
 use std::time::Duration;
 
+#[cfg(unix)]
+use cockpit_protocol::ProcessId;
 use cockpit_protocol::{
-    Catchup, ClientMessage, ErrorBody, ErrorCode, Frame, FrameError, FrameReader, PROTOCOL_VERSION,
-    ReleaseVersion, RequestId, ResponseResult, Seq, ServerMessage, Snapshot,
+    AgentId, Catchup, ClientMessage, ErrorBody, ErrorCode, Frame, FrameError, FrameReader,
+    PROTOCOL_VERSION, ReleaseVersion, Request, RequestId, ResponseResult, Seq, ServerMessage,
+    Snapshot,
 };
 use tokio::io::{AsyncRead, AsyncWrite, BufReader};
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinSet;
 
 use crate::build_commit::{RELEASE_VERSION, build_commit};
+#[cfg(unix)]
+use crate::hub::AgentSession;
 use crate::hub::{HubInput, Joined, Registration};
 use crate::store::{ReplayRead, read_replay};
 
@@ -77,6 +87,7 @@ where
         replayed_through,
         replay,
         live,
+        agent_tools,
     } = join(hub, last_seq).await?;
     let welcome = ServerMessage::Welcome {
         protocol_version: PROTOCOL_VERSION,
@@ -84,12 +95,100 @@ where
         daemon_commit: build_commit(),
         catchup,
         replayed_through,
+        agent_tools,
+        agent_session: None,
     };
     send(writer, &welcome).await?;
     for frame in replay {
         write(writer, &frame).await?;
     }
-    serve_requests(reader, writer, hub, live).await
+    serve_requests(reader, writer, hub, live, None).await
+}
+
+/// Serves a process under the daemon, which descends from the daemon's child `child`: an agent's
+/// session when `child` is an agent's `claude`, else a refusal.
+#[cfg(unix)]
+pub(crate) async fn serve_agent<R, W>(
+    read: R,
+    mut writer: W,
+    hub: mpsc::Sender<HubInput>,
+    child: ProcessId,
+) where
+    R: AsyncRead + Unpin,
+    W: AsyncWrite + Unpin,
+{
+    let mut reader = FrameReader::new(BufReader::new(read));
+    match run_agent(&mut reader, &mut writer, &hub, child).await {
+        Ok(()) | Err(End::Closed) => tracing::debug!("an agent's client left"),
+        Err(end) => tracing::info!(%end, "closed an agent's connection"),
+    }
+}
+
+#[cfg(unix)]
+async fn run_agent<R, W>(
+    reader: &mut Reader<R>,
+    writer: &mut W,
+    hub: &mpsc::Sender<HubInput>,
+    child: ProcessId,
+) -> Result<(), End>
+where
+    R: AsyncRead + Unpin,
+    W: AsyncWrite + Unpin,
+{
+    hello(reader, writer).await?;
+    let (reply, answer) = oneshot::channel();
+    hub.send(HubInput::AgentOfProcess {
+        process: child,
+        reply,
+    })
+    .await
+    .map_err(|_| End::HubGone)?;
+    let Some(AgentSession { agent, agent_tools }) = answer.await.map_err(|_| End::HubGone)? else {
+        let refused = ServerMessage::Refused {
+            reason: format!(
+                "process {} under the daemon is no agent's claude: only an agent and what it runs may connect from under the daemon",
+                child.get()
+            ),
+            daemon_version: Some(ReleaseVersion::new(RELEASE_VERSION.to_owned())),
+            daemon_commit: build_commit(),
+        };
+        send(writer, &refused).await?;
+        return Err(End::Refused);
+    };
+    let welcome = ServerMessage::Welcome {
+        protocol_version: PROTOCOL_VERSION,
+        daemon_version: ReleaseVersion::new(RELEASE_VERSION.to_owned()),
+        daemon_commit: build_commit(),
+        catchup: Catchup::Replay,
+        replayed_through: None,
+        agent_tools,
+        agent_session: Some(agent),
+    };
+    send(writer, &welcome).await?;
+    // Open and never sent to: the connection gets no event.
+    let (_no_events, live) = mpsc::channel(1);
+    serve_requests(reader, writer, hub, live, Some(agent)).await
+}
+
+/// Refuses a request of an agent's session other than the agent's reads of its own terminals.
+fn check_agent_request(request: &Request, agent: AgentId) -> Result<(), String> {
+    let named = match request {
+        Request::TerminalListShared(params) => params.agent,
+        Request::TerminalReadText(params) => params.agent,
+        other => {
+            return Err(format!(
+                "a process under the daemon may only read its agent's shared terminals, not send `{}`",
+                other.method()
+            ));
+        }
+    };
+    if named != agent {
+        return Err(format!(
+            "an agent reads only its own terminals: this connection is agent {}'s",
+            agent.get()
+        ));
+    }
+    Ok(())
 }
 
 /// What a client gets after its hello: the welcome's catch-up, the replay's frames, then the live
@@ -101,15 +200,17 @@ struct Joining {
     /// Empty with a snapshot.
     replay: Vec<Vec<u8>>,
     live: mpsc::Receiver<Frame>,
+    agent_tools: bool,
 }
 
 impl Joining {
-    fn snapshot(snapshot: Snapshot, live: mpsc::Receiver<Frame>) -> Self {
+    fn snapshot(snapshot: Snapshot, live: mpsc::Receiver<Frame>, agent_tools: bool) -> Self {
         Self {
             catchup: Catchup::Snapshot(snapshot),
             replayed_through: None,
             replay: Vec::new(),
             live,
+            agent_tools,
         }
     }
 }
@@ -151,9 +252,13 @@ where
 /// Registers with the hub and reads the replay from the logs. A replay too large to send becomes
 /// a snapshot.
 async fn join(hub: &mpsc::Sender<HubInput>, last_seq: Option<Seq>) -> Result<Joining, End> {
-    let Registration { joined, frames } = register(hub, last_seq).await?;
+    let Registration {
+        joined,
+        frames,
+        agent_tools,
+    } = register(hub, last_seq).await?;
     let (after, upto, events, details) = match joined {
-        Joined::Snapshot(snapshot) => return Ok(Joining::snapshot(*snapshot, frames)),
+        Joined::Snapshot(snapshot) => return Ok(Joining::snapshot(*snapshot, frames, agent_tools)),
         Joined::Replay {
             after,
             upto,
@@ -172,6 +277,7 @@ async fn join(hub: &mpsc::Sender<HubInput>, last_seq: Option<Seq>) -> Result<Joi
                 replayed_through: upto,
                 replay,
                 live: frames,
+                agent_tools,
             });
         }
         Ok(Ok(ReplayRead::TooLarge)) => tracing::info!("a replay is too large: sending a snapshot"),
@@ -182,9 +288,13 @@ async fn join(hub: &mpsc::Sender<HubInput>, last_seq: Option<Seq>) -> Result<Joi
     }
     // Leaves the hub's clients, so no event reaches the client twice.
     drop(frames);
-    let Registration { joined, frames } = register(hub, None).await?;
+    let Registration {
+        joined,
+        frames,
+        agent_tools,
+    } = register(hub, None).await?;
     match joined {
-        Joined::Snapshot(snapshot) => Ok(Joining::snapshot(*snapshot, frames)),
+        Joined::Snapshot(snapshot) => Ok(Joining::snapshot(*snapshot, frames, agent_tools)),
         Joined::Replay { .. } => Err(End::HubGone),
     }
 }
@@ -205,6 +315,7 @@ async fn serve_requests<R, W>(
     writer: &mut W,
     hub: &mpsc::Sender<HubInput>,
     mut frames: mpsc::Receiver<Frame>,
+    agent: Option<AgentId>,
 ) -> Result<(), End>
 where
     R: AsyncRead + Unpin,
@@ -218,6 +329,13 @@ where
             {
                 match message {
                     Ok(Some(ClientMessage::Request { id, request })) => {
+                        if let Some(agent) = agent
+                            && let Err(message) = check_agent_request(&request, agent)
+                        {
+                            respond(writer, id, failure(ErrorCode::InvalidRequest, message))
+                                .await?;
+                            continue;
+                        }
                         let (reply, answer) = oneshot::channel();
                         hub.send(HubInput::Request { request, reply })
                             .await
@@ -432,6 +550,108 @@ mod tests {
             "an empty replay"
         );
         assert_eq!(current.next_event().await.seq, live);
+        daemon.stop_hub();
+    }
+
+    /// The app hides the sharing where the daemon gives its agents no MCP server.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn the_welcome_says_whether_the_agents_get_the_terminal_tools() {
+        use std::ffi::OsString;
+
+        use crate::agent_tools::{AgentTools, McpCommand};
+
+        let agent_tools = |welcome: &ServerMessage| match welcome {
+            ServerMessage::Welcome { agent_tools, .. } => *agent_tools,
+            other => panic!("expected a welcome, got {other:?}"),
+        };
+        let temp = tempfile::tempdir().unwrap();
+        let without = start(temp.path());
+        let (_client, without_welcome) = Client::join(without.inputs(), None).await;
+        without.stop_hub();
+        let other = tempfile::tempdir().unwrap();
+        let mut prepared = Daemon::prepare(DaemonConfig {
+            state_dir: other.path().join("state"),
+            claude_program: other.path().join("no-claude"),
+            claude_config_dir: other.path().join("claude"),
+        })
+        .unwrap();
+        let command = McpCommand {
+            program: "/opt/yetack/bin/yetack".into(),
+            args: vec![OsString::from("mcp")],
+        };
+        prepared.offer_agent_tools(AgentTools::new(command).unwrap());
+        let with = prepared.start();
+        let (_client, with_welcome) = Client::join(with.inputs(), None).await;
+        with.stop_hub();
+
+        assert!(!agent_tools(&without_welcome));
+        assert!(agent_tools(&with_welcome));
+    }
+
+    #[test]
+    fn an_agents_session_takes_only_its_own_reads() {
+        use cockpit_protocol::{AgentParams, TerminalId, TerminalParams, TerminalReadParams};
+
+        let agent = AgentId::new(4);
+        let other = AgentId::new(5);
+        let read = |agent| {
+            Request::TerminalReadText(TerminalReadParams {
+                agent,
+                terminal: TerminalId::new(2),
+                lines: 200,
+            })
+        };
+
+        let list = check_agent_request(&Request::TerminalListShared(AgentParams { agent }), agent);
+        let own = check_agent_request(&read(agent), agent);
+        let others = check_agent_request(&read(other), agent);
+        let typing = check_agent_request(
+            &Request::TerminalAttach(TerminalParams {
+                agent,
+                terminal: TerminalId::new(2),
+            }),
+            agent,
+        );
+
+        assert_eq!(list, Ok(()));
+        assert_eq!(own, Ok(()));
+        assert!(others.unwrap_err().contains("only its own terminals"));
+        assert!(typing.unwrap_err().contains("`terminal.attach`"));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_process_under_the_daemon_that_is_no_agents_is_refused() {
+        let temp = tempfile::tempdir().unwrap();
+        let daemon = start(temp.path());
+        let (ours, theirs) = tokio::io::duplex(64 * 1024);
+        let (read, write) = tokio::io::split(theirs);
+        tokio::spawn(serve_agent(
+            read,
+            write,
+            daemon.inputs().clone(),
+            ProcessId::new(4_000_000),
+        ));
+        let (read, write) = tokio::io::split(ours);
+        let mut reader = FrameReader::new(BufReader::new(read));
+        let mut writer = FrameWriter::new(write);
+
+        let hello = ClientMessage::Hello {
+            protocol_version: PROTOCOL_VERSION,
+            last_seq: None,
+        };
+        writer.send(&hello).await.unwrap();
+        let answer: ServerMessage = tokio::time::timeout(WAIT, reader.next_message())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+
+        let ServerMessage::Refused { reason, .. } = answer else {
+            panic!("expected a refusal, got {answer:?}");
+        };
+        assert!(reason.contains("no agent's claude"), "{reason}");
         daemon.stop_hub();
     }
 }

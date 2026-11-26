@@ -17,9 +17,12 @@ use tokio::sync::mpsc;
 use tokio::sync::oneshot;
 use tokio::time::MissedTickBehavior;
 
+use crate::agent_tools::AgentTools;
 use crate::daemon_config::DaemonConfig;
 use crate::hub::closed_choices::ClosedChoices;
 use crate::hub::folders::{ForkCopy, PendingMove};
+#[cfg(unix)]
+use crate::hub::input::AgentSession;
 use crate::hub::input::{ControlPurpose, HubInput, Joined, Registration};
 use crate::hub::restore::Restored;
 use crate::hub::start::StartingAgent;
@@ -49,6 +52,9 @@ const DETAILS_SPACING: Duration = Duration::from_millis(200);
 pub(crate) struct Hub {
     pub(super) state: StateDir,
     pub(super) config: DaemonConfig,
+    /// The daemon's MCP server each agent's `claude` gets. `None` when the daemon's caller gave
+    /// none.
+    pub(super) agent_tools: Option<AgentTools>,
     pub(super) agents: BTreeMap<AgentId, Agent>,
     pub(super) next_agent: AgentId,
     pub(super) replay_floor: Option<Seq>,
@@ -199,6 +205,7 @@ impl Hub {
     pub(crate) fn new(
         state: StateDir,
         config: DaemonConfig,
+        agent_tools: Option<AgentTools>,
         restored: Restored,
         inputs: mpsc::Sender<HubInput>,
     ) -> Self {
@@ -232,6 +239,7 @@ impl Hub {
         Self {
             state,
             config,
+            agent_tools,
             agents,
             next_agent: restored.next_agent,
             replay_floor: restored.replay_floor,
@@ -294,6 +302,15 @@ impl Hub {
                 let _ = reply.send(registration);
             }
             HubInput::Request { request, reply } => self.request(request, reply),
+            #[cfg(unix)]
+            HubInput::AgentOfProcess { process, reply } => {
+                // The connection may have closed meanwhile.
+                let session = self.agent_of_process(process).map(|agent| AgentSession {
+                    agent,
+                    agent_tools: self.agent_tools.is_some(),
+                });
+                let _ = reply.send(session);
+            }
             HubInput::Process {
                 agent,
                 generation,
@@ -365,7 +382,11 @@ impl Hub {
             Some(_) | None => Joined::Snapshot(Box::new(self.snapshot())),
         };
         self.clients.push(sender);
-        Registration { joined, frames }
+        Registration {
+            joined,
+            frames,
+            agent_tools: self.agent_tools.is_some(),
+        }
     }
 
     /// Whether the logs hold every event after `after`.
@@ -593,7 +614,7 @@ impl Hub {
             claude_config_dir: folder.join("claude"),
         };
         let (inputs, received) = mpsc::channel(16);
-        (Self::new(state, config, restored, inputs), received)
+        (Self::new(state, config, None, restored, inputs), received)
     }
 
     /// Hands the hub what its tasks send it until `answered` has its answer.

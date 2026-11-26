@@ -101,6 +101,8 @@ impl TestDaemon {
             daemon_commit: Some(daemon_commit()),
             catchup,
             replayed_through: None,
+            agent_tools: false,
+            agent_session: None,
         })
         .await;
         (peer, last_seq)

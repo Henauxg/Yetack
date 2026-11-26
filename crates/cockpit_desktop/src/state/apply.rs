@@ -76,8 +76,11 @@ fn apply_session_update(
             daemon_commit,
             catchup,
             replayed_through,
+            agent_tools,
+            agent_session: _,
         }) => {
             known.connection = ConnectionState::Connected;
+            known.agent_tools = agent_tools;
             known.daemon_version = Some(daemon_version);
             known.daemon_commit = daemon_commit;
             known.replayed_through = match catchup {
@@ -237,6 +240,10 @@ pub fn apply_catchup(
         .ui
         .mcp_sign_ins
         .retain(|(agent, _), _| agents.contains_key(agent));
+    state
+        .ui
+        .mcp
+        .retain_agents(|agent| agents.contains_key(&agent));
     state
         .ui
         .title_edit
@@ -525,6 +532,7 @@ pub fn forget_agent(
         .ui
         .mcp_sign_ins
         .retain(|(owner, _), _| *owner != agent);
+    state.ui.mcp.retain_agents(|owner| owner != agent);
     state.ui.file_views.retain(|(owner, _), _| *owner != agent);
     state.ui.pressed_dock.remove(&agent);
     state.ui.bottom_picks_file.remove(&agent);
@@ -540,6 +548,7 @@ pub fn forget_agent(
     state.ui.chat_finds.remove(&agent);
     drafts.retain_agents(|kept| kept != agent);
     state.ui.title_edit.take_if(|edit| edit.agent == agent);
+    state.ui.terminal_rename.take_if(|edit| edit.agent == agent);
     // A card left open makes the next row show its card at once, without waiting for a rest.
     state.ui.branch_card.take_if(|card| card.agent == agent);
     project_menu::prune(state);
@@ -700,7 +709,8 @@ mod tests {
     use cockpit_protocol::{
         AgentDetails, Approval, ApprovalAnswer, ApprovalDecision, Base64, BuildCommit, CostUsd,
         Image, ImageMediaType, ItemId, NoticeKind, PendingId, PlanUsage, Question, ReleaseVersion,
-        Seq, Settings, TaskProgress, TokenUsage, TranscriptItem, TurnEnd, TurnOutcome,
+        Seq, Settings, TaskProgress, TerminalId, TerminalParams, TokenUsage, TranscriptItem,
+        TurnEnd, TurnOutcome,
     };
 
     use super::*;
@@ -712,7 +722,9 @@ mod tests {
     use crate::state::find::{self, FindPane};
     use crate::state::projects::ProjectKey;
     use crate::state::transcript::KEPT_ITEMS_AWAY;
-    use crate::state::ui_state::{Block, Dialog, PaletteOrigin, Popover, TitleEdit, TitlePlace};
+    use crate::state::ui_state::{
+        Block, Dialog, McpTab, PaletteOrigin, Popover, TitleEdit, TitlePlace,
+    };
     use crate::state::{Loadable, MachineState, agent_map, chat_images, mcp_reconnect, page_copy};
 
     #[test]
@@ -1301,6 +1313,26 @@ mod tests {
         assert_eq!(kinds(&released), [AlertKind::Finished]);
     }
 
+    /// A daemon restarted without the terminal tools, as the app's own, takes the sharing away.
+    #[test]
+    fn each_welcome_says_whether_the_agents_read_terminals() {
+        let mut state = state_with(vec![summary(1, AgentStatus::Idle)]);
+        let mut with_tools = connected_update(Catchup::Replay);
+        if let SessionUpdate::Connected(welcome) = &mut with_tools {
+            welcome.agent_tools = true;
+        }
+
+        let before = state.agent_reads_terminals(AgentId::new(1));
+        connect(&mut state, with_tools);
+        let with = state.agent_reads_terminals(AgentId::new(1));
+        connect(&mut state, connected_update(Catchup::Replay));
+        let without = state.agent_reads_terminals(AgentId::new(1));
+
+        assert!(!before, "no sharing before the daemon says");
+        assert!(with);
+        assert!(!without);
+    }
+
     #[test]
     fn a_replay_that_does_not_say_where_it_ends_raises_alerts() {
         let mut state = state_with(vec![summary(1, AgentStatus::Working)]);
@@ -1810,6 +1842,26 @@ mod tests {
         assert!(!state.agents.contains_key(&AgentId::new(3)));
     }
 
+    #[test]
+    fn a_removed_agent_forgets_its_server_tabs() {
+        let mut state = state_with(vec![
+            summary(1, AgentStatus::Idle),
+            summary(2, AgentStatus::Working),
+        ]);
+        let (removed, kept) = (AgentId::new(1), AgentId::new(2));
+        for agent in [removed, kept] {
+            state
+                .ui
+                .mcp
+                .set_tab(agent, "search".to_owned(), McpTab::Details);
+        }
+
+        forget_agent(&mut state, &mut Drafts::default(), removed);
+
+        assert_eq!(state.ui.mcp.tab(removed, "search"), McpTab::Tools);
+        assert_eq!(state.ui.mcp.tab(kept, "search"), McpTab::Details);
+    }
+
     /// The palette typed in the removed agent's composer would stay open over the next agent's,
     /// and Enter there would pick a command instead of sending.
     #[test]
@@ -1927,6 +1979,38 @@ mod tests {
         assert_eq!(removed.ui.title_edit, None);
         assert_eq!(dropped.ui.title_edit, None);
         assert_eq!(other.ui.title_edit, Some(renamed(2)));
+        assert!(!removed.ui.close_overlays(), "nothing is left open for Esc");
+    }
+
+    /// A terminal rename left open for a removed agent shows in no tab, and would take the first
+    /// Esc meant to stop the next agent.
+    #[test]
+    fn removing_the_agent_whose_terminal_is_renamed_ends_the_rename() {
+        let renamed = |agent: u32| TerminalParams {
+            agent: AgentId::new(agent),
+            terminal: TerminalId::new(3),
+        };
+        let mut removed = state_with(vec![
+            summary(1, AgentStatus::Idle),
+            summary(2, AgentStatus::Working),
+        ]);
+        removed.ui.terminal_rename = Some(renamed(1));
+        let mut other = removed.clone();
+        other.ui.terminal_rename = Some(renamed(2));
+
+        for state in [&mut removed, &mut other] {
+            apply(
+                state,
+                &mut Drafts::default(),
+                record(Event::AgentRemoved {
+                    agent: AgentId::new(1),
+                }),
+                MachineId::THIS,
+            );
+        }
+
+        assert_eq!(removed.ui.terminal_rename, None);
+        assert_eq!(other.ui.terminal_rename, Some(renamed(2)));
         assert!(!removed.ui.close_overlays(), "nothing is left open for Esc");
     }
 

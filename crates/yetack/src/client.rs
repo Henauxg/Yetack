@@ -7,7 +7,7 @@ use std::path::PathBuf;
 use anyhow::bail;
 #[cfg(unix)]
 use cockpit_client::BRIDGE_SUBCOMMAND;
-use cockpit_client::{Backoff, Connection, Session, SessionUpdate, Transport};
+use cockpit_client::{Backoff, Connection, Session, SessionUpdate, Transport, Welcome};
 use cockpit_protocol::{
     AccountAddParams, AccountChangeParams, AccountParams, AccountState, AgentId, AgentParams,
     Answer, AnswerParams, ApprovalAnswer, ApprovalDecision, Catchup, CredentialSource, Effort,
@@ -20,6 +20,7 @@ use serde_json::Value;
 #[cfg(unix)]
 use crate::cli::SERVE_SUBCOMMAND;
 use crate::cli::{AccountCommand, AnswerCommand, Command, PROGRAM, SSH_FLAG, Target};
+use cockpit_daemon::MCP_SUBCOMMAND;
 
 /// The argument that makes a command read its text from stdin.
 const STDIN_ARG: &str = "-";
@@ -43,8 +44,8 @@ pub(crate) async fn run(target: &Target, command: Command) -> anyhow::Result<()>
         Command::Tail { agent } => return tail(transport, agent).await,
         Command::Account { command } => return account(&transport, command).await,
         #[cfg(unix)]
-        Command::Serve | Command::Bridge => {
-            bail!("{SERVE_SUBCOMMAND} and {BRIDGE_SUBCOMMAND} run on their own")
+        Command::Serve | Command::Bridge | Command::Mcp => {
+            bail!("{SERVE_SUBCOMMAND}, {BRIDGE_SUBCOMMAND} and {MCP_SUBCOMMAND} run on their own")
         }
         Command::Start {
             folder,
@@ -91,7 +92,7 @@ pub(crate) async fn run(target: &Target, command: Command) -> anyhow::Result<()>
         Command::Rename { agent, title } => Request::AgentRename(RenameParams { agent, title }),
         Command::Move { agent, before } => Request::AgentMove(MoveParams { agent, before }),
     };
-    let (connection, _) = Connection::connect(&transport, None).await?;
+    let (connection, _) = connect(&transport).await?;
     match connection.request(request).await? {
         ResponseBody::AgentStarted { agent } => {
             print_line(&agent.get().to_string())?;
@@ -104,8 +105,27 @@ pub(crate) async fn run(target: &Target, command: Command) -> anyhow::Result<()>
     Ok(())
 }
 
+/// Connects as a client that drives the daemon.
+async fn connect(transport: &Transport) -> anyhow::Result<(Connection, Welcome)> {
+    let (connection, welcome) = Connection::connect(transport, None).await?;
+    refuse_agent_session(&welcome)?;
+    Ok((connection, welcome))
+}
+
+/// Fails when the daemon took this command for one of an agent's, which may only read the
+/// terminals the user shares with that agent.
+fn refuse_agent_session(welcome: &Welcome) -> anyhow::Result<()> {
+    if let Some(agent) = welcome.agent_session {
+        bail!(
+            "this command runs under agent {}: a command under an agent can only read that agent's shared terminals (through `{PROGRAM} {MCP_SUBCOMMAND}`), not drive the daemon",
+            agent.get()
+        );
+    }
+    Ok(())
+}
+
 async fn list(transport: &Transport) -> anyhow::Result<()> {
-    let (_, welcome) = Connection::connect(transport, None).await?;
+    let (_, welcome) = connect(transport).await?;
     let Catchup::Snapshot(snapshot) = welcome.catchup else {
         bail!("the daemon sent no snapshot");
     };
@@ -162,7 +182,7 @@ async fn account(transport: &Transport, command: AccountCommand) -> anyhow::Resu
         }),
         AccountCommand::Remove { account } => Request::AccountsRemove(AccountParams { account }),
     };
-    let (connection, _) = Connection::connect(transport, None).await?;
+    let (connection, _) = connect(transport).await?;
     let accounts = match connection.request(request).await? {
         ResponseBody::Accounts { accounts, .. } => accounts,
         ResponseBody::Account(state) => vec![state],
@@ -233,10 +253,9 @@ async fn tail(transport: Transport, agent: Option<AgentId>) -> anyhow::Result<()
             SessionUpdate::Disconnected { error, retry_in } => {
                 eprintln!("{PROGRAM}: disconnected ({error}); retrying in {retry_in:?}");
             }
+            SessionUpdate::Connected(welcome) => refuse_agent_session(&welcome)?,
             // A terminal's output is not an event of the log.
-            SessionUpdate::Connecting { .. }
-            | SessionUpdate::Connected(_)
-            | SessionUpdate::Terminal(_) => {}
+            SessionUpdate::Connecting { .. } | SessionUpdate::Terminal(_) => {}
         }
     }
     Ok(())

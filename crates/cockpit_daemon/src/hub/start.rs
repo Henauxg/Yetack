@@ -240,6 +240,11 @@ impl Hub {
             resume_as: record.resume_as,
             interrupted_turn,
             env: ClaudeEnv::new(&account),
+            agent_tools: self
+                .agent_tools
+                .as_ref()
+                .map(|tools| tools.claude_args(record.id))
+                .unwrap_or_default(),
         })
     }
 
@@ -607,6 +612,7 @@ mod tests {
             resume_as: ResumeAs::Same,
             interrupted_turn: InterruptedTurn::Leave,
             env: ClaudeEnv::for_tests(),
+            agent_tools: Vec::new(),
         };
         let (inputs, _received) = mpsc::channel(16);
         let pid_file = folder.join("claude.pid");

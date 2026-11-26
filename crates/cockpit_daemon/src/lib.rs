@@ -5,6 +5,7 @@
 //! same process.
 
 mod accounts;
+mod agent_tools;
 mod blocking;
 mod browse;
 mod build_commit;
@@ -35,6 +36,9 @@ mod windows_files;
 mod windows_path;
 
 pub use accounts::{API_KEY_ENV, AUTH_TOKEN_ENV, ENVIRONMENT_CREDENTIALS_ENV};
+pub use agent_tools::{
+    AGENT_ENV, LIST_TERMINALS_TOOL, MCP_SERVER_NAME, MCP_SUBCOMMAND, McpCommand, READ_TERMINAL_TOOL,
+};
 pub use build_commit::{RELEASE_VERSION, build_commit, version_text};
 pub use daemon_config::{
     CLAUDE_CONFIG_DIR_ENV, CLAUDE_HOME_FOLDER, CLAUDE_PROGRAM_ENV, DaemonConfig, HOME_ENV,
@@ -48,9 +52,9 @@ pub use lock_holder::{
 };
 pub use process::ProcessError;
 pub use scheduled_jobs::may_hold_scheduled_job;
-#[cfg(unix)]
-pub use serve::serve;
 pub use serve::{START_TASK, ServeError};
+#[cfg(unix)]
+pub use serve::{serve, serve_with_agent_tools};
 #[cfg(unix)]
 pub use server::{PeerError, UserId};
 pub use store::{StoreError, default_state_dir, socket_path};

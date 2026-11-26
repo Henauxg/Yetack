@@ -1,12 +1,12 @@
-//! The menu a right-click on a terminal's tab opens at the pointer: pin or unpin the tab, move the
-//! terminal to the other dock, or close it.
+//! The menu a right-click on a terminal's tab opens at the pointer, under the terminal's id: let
+//! the agent read the terminal or stop it, rename the tab, copy the id, pin or unpin the tab, move
+//! the terminal to the other dock, or close it.
 
 use dioxus::prelude::*;
 
+use crate::bridge;
 use crate::connection::Cockpit;
-use crate::state::docks::{self, TabKey};
 use crate::state::terminal_tab_menu::{self, TerminalTabItem, TerminalTabTarget};
-use crate::state::terminals;
 use crate::ui::menu::{FlatMenu, FlatRow};
 use crate::ui::presence::use_presence;
 
@@ -29,12 +29,14 @@ pub fn TerminalTabMenu() -> Element {
     let rows: Vec<FlatRow> = menu
         .items
         .iter()
-        .map(|item| FlatRow {
+        .enumerate()
+        .map(|(index, item)| FlatRow {
             label: item.label(),
             key: item.key(),
             enabled: true,
-            title: String::new(),
-            divided: *item == TerminalTabItem::Close,
+            title: item.title().to_owned(),
+            // The sharing row stands apart from the tab's own rows, and Close from them all.
+            divided: index > 0 && matches!(item, TerminalTabItem::Rename | TerminalTabItem::Close),
             danger: *item == TerminalTabItem::Close,
         })
         .collect();
@@ -49,6 +51,7 @@ pub fn TerminalTabMenu() -> Element {
                     y: menu.y,
                     rows: rows.clone(),
                     focus_back: None,
+                    heading: terminal_tab_menu::heading(menu.terminal),
                     on_pick: {
                         let menu = menu.clone();
                         move |index: usize| {
@@ -65,18 +68,8 @@ pub fn TerminalTabMenu() -> Element {
 
 fn run(cockpit: Cockpit, menu: &TerminalTabTarget, item: TerminalTabItem) {
     let (agent, terminal) = (menu.agent, menu.terminal);
-    match item {
-        TerminalTabItem::Pin | TerminalTabItem::Unpin => cockpit.update(|state| {
-            state.ui.popover = None;
-            docks::toggle_pin(state, agent, &TabKey::Terminal(terminal));
-        }),
-        TerminalTabItem::MoveTo(dock) => cockpit.update(|state| {
-            state.ui.popover = None;
-            terminals::move_terminal(state, agent, terminal, dock, None);
-        }),
-        TerminalTabItem::Close => cockpit.change(|state| {
-            state.ui.popover = None;
-            terminals::close(state, agent, terminal)
-        }),
+    if item == TerminalTabItem::CopyId {
+        bridge::copy_to_clipboard(terminal_tab_menu::id_text(terminal));
     }
+    cockpit.change(|state| terminal_tab_menu::run(state, agent, terminal, item));
 }

@@ -33,11 +33,16 @@ struct Daemon {
 
 impl Daemon {
     fn start() -> Self {
+        Self::start_with_claude(|_| "#!/bin/sh\nexec cat\n".to_owned())
+    }
+
+    /// A daemon whose `claude` is the script that `script` writes for the test's folder.
+    fn start_with_claude(script: impl FnOnce(&Path) -> String) -> Self {
         use std::os::unix::fs::PermissionsExt;
 
         let temp = tempfile::tempdir().unwrap();
         let claude = temp.path().join("echo-claude");
-        std::fs::write(&claude, "#!/bin/sh\nexec cat\n").unwrap();
+        std::fs::write(&claude, script(temp.path())).unwrap();
         std::fs::set_permissions(&claude, Permissions::from_mode(0o755)).unwrap();
         wait_until_it_runs(&claude);
         std::fs::create_dir(temp.path().join("work")).unwrap();
@@ -398,4 +403,50 @@ fn the_bridge_says_when_no_daemon_runs() {
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("is `yetack serve` running?"), "{stderr}");
+}
+
+/// An agent's command reaches the daemon as a process under it, which may only read the agent's
+/// shared terminals.
+#[test]
+fn a_command_under_an_agent_says_it_cannot_drive_the_daemon() {
+    let daemon = Daemon::start_with_claude(|temp| {
+        let state = temp.join("state");
+        let out = temp.join("under-agent.txt");
+        let (state, out) = (state.display(), out.display());
+        // The hub knows the agent's `claude` once it runs, a moment after the script starts. The
+        // script runs with no argument first, to check that it can run.
+        format!(
+            r#"#!/bin/sh
+[ $# -gt 0 ] || exit 0
+for try in $(seq 50); do
+    "{BINARY}" --state-dir "{state}" list > "{out}.new" 2>&1
+    grep -q "no agent's claude" "{out}.new" || break
+    sleep 0.2
+done
+"{BINARY}" --state-dir "{state}" stop 1 >> "{out}.new" 2>&1
+mv "{out}.new" "{out}"
+exec cat
+"#
+        )
+    });
+    let out = daemon.temp.path().join("under-agent.txt");
+
+    daemon.ok(&["start", folder_arg(&daemon.work())]);
+    let deadline = Instant::now() + WAIT;
+    let said = loop {
+        if let Ok(said) = std::fs::read_to_string(&out) {
+            break said;
+        }
+        assert!(Instant::now() < deadline, "the agent's commands never ran");
+        std::thread::sleep(Duration::from_millis(50));
+    };
+
+    let lines: Vec<&str> = said.lines().collect();
+    assert_eq!(lines.len(), 2, "one error for each command: {said}");
+    for line in lines {
+        assert!(
+            line.contains("can only read that agent's shared terminals"),
+            "{said}"
+        );
+    }
 }

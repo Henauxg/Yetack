@@ -120,7 +120,7 @@ pub struct FlatRow {
 
 /// A menu without submenus. A pick by the pointer, Enter or a letter gives the focus back, then
 /// calls `on_pick` with the row's index, which may move the focus elsewhere. `class` adds to the
-/// frame's classes.
+/// frame's classes, and `heading` is a line above the rows that names what the menu acts on.
 #[component]
 pub fn FlatMenu(
     x: i32,
@@ -129,6 +129,7 @@ pub fn FlatMenu(
     focus_back: Option<&'static str>,
     on_pick: EventHandler<usize>,
     class: Option<&'static str>,
+    heading: Option<String>,
 ) -> Element {
     let mut highlighted = use_signal(|| None::<usize>);
     let keyed: Vec<KeyedRow> = rows
@@ -158,6 +159,9 @@ pub fn FlatMenu(
                     pick(index);
                 }
             },
+            if let Some(heading) = heading {
+                div { class: "menu-title flat-menu-title", "{heading}" }
+            }
             for (index, row) in rows.into_iter().enumerate() {
                 if row.divided {
                     div { class: "menu-divider" }

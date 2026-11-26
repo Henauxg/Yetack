@@ -1,9 +1,11 @@
-//! Who may connect: a process of the daemon's user that does not descend from the daemon, so a
-//! command an agent runs cannot drive the daemon.
+//! Who may connect: a process of the daemon's user. One that descends from the daemon, as an
+//! agent's `claude`, its MCP servers and the commands it runs do, gets only an agent's reads of
+//! its shared terminals (see `connection`), so a command an agent runs cannot drive the daemon.
 //!
-//! The parent chain stops a process that simply connects. A process that detaches on purpose
-//! (double fork, `setsid`) gets a new parent and passes: Claude Code's sandbox is what keeps the
-//! agents' commands out of the state folder.
+//! The parent chain stops a process that simply connects, `setsid` alone included, since it keeps
+//! its parent. A process that leaves the tree on purpose passes: a double fork, `systemd-run
+//! --user`, or a process of another user in the chain, as `sudo`. Claude Code's sandbox is what
+//! keeps the agents' commands out of the state folder.
 //!
 //! The walk up the chain stops, and accepts, at a process of another user or one that `/proc`
 //! hides (`hidepid=1` or `2`), such as root's `sshd` above the SSH bridge. The daemon's
@@ -44,8 +46,8 @@ pub enum PeerError {
     NoPid,
     #[error("the peer runs as user {}, not as the daemon's user", .uid.get())]
     OtherUser { uid: UserId },
-    #[error("process {} descends from the daemon", .peer.get())]
-    DescendsFromDaemon { peer: ProcessId },
+    #[error("process {} is the daemon itself", .peer.get())]
+    IsDaemon { peer: ProcessId },
     #[error("cannot read the parent of process {}", .pid.get())]
     Proc {
         pid: ProcessId,
@@ -56,6 +58,16 @@ pub enum PeerError {
     MalformedStat { pid: ProcessId },
     #[error("the parent chain of process {} does not end", .peer.get())]
     ChainTooLong { peer: ProcessId },
+}
+
+/// Who a peer that passed the check is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Peer {
+    /// A process that does not descend from the daemon, such as the SSH bridge or the app.
+    Outside,
+    /// A process under `child`, the daemon's child it descends from: an agent's `claude` when it
+    /// is one of the agent's own processes.
+    UnderDaemon { child: ProcessId },
 }
 
 /// The daemon's own user and process.
@@ -84,7 +96,7 @@ struct ProcEntry {
 }
 
 /// Runs before any byte of the connection is read.
-pub(crate) fn check(stream: &UnixStream, daemon: DaemonIdentity) -> Result<(), PeerError> {
+pub(crate) fn check(stream: &UnixStream, daemon: DaemonIdentity) -> Result<Peer, PeerError> {
     let credentials = stream.peer_cred().map_err(PeerError::Credentials)?;
     let uid = UserId::new(credentials.uid());
     if uid != daemon.uid {
@@ -99,20 +111,23 @@ pub(crate) fn check(stream: &UnixStream, daemon: DaemonIdentity) -> Result<(), P
     check_ancestry(pid, daemon, read_proc_entry)
 }
 
-/// Walks from `peer` up its parents, read by `read_entry`, and refuses it when one is the daemon.
+/// Walks from `peer` up its parents, read by `read_entry`, and says whether one is the daemon.
 fn check_ancestry(
     peer: ProcessId,
     daemon: DaemonIdentity,
     read_entry: impl Fn(ProcessId) -> io::Result<ProcEntry>,
-) -> Result<(), PeerError> {
+) -> Result<Peer, PeerError> {
     let mut pid = peer;
+    let mut below = None;
     for _ in 0..MAX_CHAIN {
         if pid == daemon.pid {
-            return Err(PeerError::DescendsFromDaemon { peer });
+            return below
+                .map(|child| Peer::UnderDaemon { child })
+                .ok_or(PeerError::IsDaemon { peer });
         }
         // 1 is init; 0 is the kernel, the parent of init.
         if pid.get() <= 1 {
-            return Ok(());
+            return Ok(Peer::Outside);
         }
         let entry = match read_entry(pid) {
             Ok(entry) => entry,
@@ -123,13 +138,14 @@ fn check_ancestry(
                     io::ErrorKind::NotFound | io::ErrorKind::PermissionDenied
                 ) =>
             {
-                return Ok(());
+                return Ok(Peer::Outside);
             }
             Err(source) => return Err(PeerError::Proc { pid, source }),
         };
         if entry.owner != daemon.uid {
-            return Ok(());
+            return Ok(Peer::Outside);
         }
+        below = Some(pid);
         pid = parent(&entry.stat).ok_or(PeerError::MalformedStat { pid })?;
     }
     Err(PeerError::ChainTooLong { peer })
@@ -204,24 +220,23 @@ mod tests {
     }
 
     #[test]
-    fn a_descendant_of_the_daemon_is_refused_and_others_pass() {
+    fn a_descendant_of_the_daemon_is_named_by_the_daemons_child_and_others_pass() {
         let proc = processes(entry(ROOT, "40 (sshd) S 1 40 40"));
 
         let bridge = check_ancestry(ProcessId::new(41), DAEMON, &proc);
         let agent_shell = check_ancestry(ProcessId::new(70), DAEMON, &proc);
         let daemon_itself = check_ancestry(ProcessId::new(50), DAEMON, &proc);
 
-        assert!(bridge.is_ok(), "{bridge:?}");
-        assert!(
-            matches!(
-                agent_shell,
-                Err(PeerError::DescendsFromDaemon { peer }) if peer == ProcessId::new(70)
-            ),
-            "{agent_shell:?}"
+        assert_eq!(bridge.unwrap(), Peer::Outside);
+        assert_eq!(
+            agent_shell.unwrap(),
+            Peer::UnderDaemon {
+                child: ProcessId::new(60)
+            }
         );
         assert!(matches!(
             daemon_itself,
-            Err(PeerError::DescendsFromDaemon { peer }) if peer == ProcessId::new(50)
+            Err(PeerError::IsDaemon { peer }) if peer == ProcessId::new(50)
         ));
     }
 
@@ -241,13 +256,13 @@ mod tests {
             let bridge = check_ancestry(ProcessId::new(41), DAEMON, &proc);
             let agent_shell = check_ancestry(ProcessId::new(70), DAEMON, &proc);
 
-            assert!(bridge.is_ok(), "{shown}: {bridge:?}");
-            assert!(
-                matches!(
-                    agent_shell,
-                    Err(PeerError::DescendsFromDaemon { peer }) if peer == ProcessId::new(70)
-                ),
-                "{shown}: {agent_shell:?}"
+            assert_eq!(bridge.unwrap(), Peer::Outside, "{shown}");
+            assert_eq!(
+                agent_shell.unwrap(),
+                Peer::UnderDaemon {
+                    child: ProcessId::new(60)
+                },
+                "{shown}"
             );
         }
     }
@@ -293,11 +308,8 @@ mod tests {
         let from_itself = check_ancestry(me.pid, me, read_proc_entry);
         let from_another = check_ancestry(me.pid, another, read_proc_entry);
 
-        assert!(matches!(
-            from_itself,
-            Err(PeerError::DescendsFromDaemon { .. })
-        ));
-        assert!(from_another.is_ok(), "{from_another:?}");
+        assert!(matches!(from_itself, Err(PeerError::IsDaemon { .. })));
+        assert_eq!(from_another.unwrap(), Peer::Outside);
     }
 
     #[test]
@@ -331,9 +343,9 @@ mod tests {
         let _ = Command::new("kill").arg(sleep.to_string()).status();
         let _ = child.wait();
         assert!(
-            matches!(from_me, Err(PeerError::DescendsFromDaemon { .. })),
+            matches!(from_me, Ok(Peer::UnderDaemon { .. })),
             "{from_me:?}"
         );
-        assert!(from_another.is_ok(), "{from_another:?}");
+        assert_eq!(from_another.unwrap(), Peer::Outside);
     }
 }

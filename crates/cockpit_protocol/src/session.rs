@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 use crate::account::Account;
 use crate::agent::AgentSummary;
 use crate::event::EventRecord;
-use crate::ids::{RequestId, Seq};
+use crate::ids::{AgentId, RequestId, Seq};
 use crate::request::Request;
 use crate::response::ResponseResult;
 use crate::settings::Settings;
@@ -19,7 +19,7 @@ use crate::terminal::TerminalUpdate;
 use crate::usage::{AccountPlanUsage, PlanUsage};
 
 /// Changes whenever a message changes shape. Client and daemon speak only the same version.
-pub const PROTOCOL_VERSION: u16 = 14;
+pub const PROTOCOL_VERSION: u16 = 15;
 
 /// How many characters of a commit id git shows in its short form.
 const SHORT_COMMIT_CHARS: usize = 7;
@@ -107,6 +107,16 @@ pub enum ServerMessage {
         /// daemon of this protocol.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         replayed_through: Option<Seq>,
+        /// Whether each agent's `claude` gets the daemon's MCP server, which reads the terminals
+        /// the user shares with the agent. An older daemon of this protocol leaves it out, which
+        /// reads as no.
+        #[serde(default)]
+        agent_tools: bool,
+        /// Set in an agent's session, which a process under the daemon gets: the agent whose
+        /// shared terminals it may read, and nothing else. An older daemon of this protocol
+        /// leaves it out.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        agent_session: Option<AgentId>,
     },
     /// The daemon closes the connection after it. Its shape stays the same in every protocol, so
     /// that a client of another protocol reads it.

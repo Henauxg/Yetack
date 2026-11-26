@@ -16,6 +16,9 @@
 //!   not run, then answers "Edited.".
 //! - `usage <utilization>`: reports that utilization of the five-hour window, then answers.
 //! - `nologin`: fails as Claude Code does when its folder holds no login.
+//! - `peer <socket> <agent>`: connects to the daemon's socket, as its MCP servers do, and answers
+//!   "Peer: " and what the daemon answered, an error code or "ok", to three requests: the shared
+//!   terminals of `<agent>`, then those of the next agent, then a stop of `<agent>`.
 //! - anything else: answers "Echo: <prompt>".
 //!
 //! Its `get_settings` answer applies the `--effort` it was given, or else a default that depends
@@ -366,6 +369,11 @@ impl<W: Write> Fake<W> {
                 self.say(&format!("Started child {}", child.id()))?;
                 self.end_turn()
             }
+            "peer" => {
+                let words: Vec<&str> = prompt.split_whitespace().skip(1).collect();
+                self.say(&format!("Peer: {}", peer(&words)?))?;
+                self.end_turn()
+            }
             "garbage" => {
                 writeln!(self.out, "this is not json")?;
                 self.emit(&json!({"type": "brand_new_type", "value": 1}))?;
@@ -619,6 +627,74 @@ impl<W: Write> Fake<W> {
         writeln!(self.out, "{message}")?;
         self.out.flush()
     }
+}
+
+/// The script `peer`: the daemon's answers, joined by ", ".
+#[cfg(unix)]
+fn peer(words: &[&str]) -> io::Result<String> {
+    use std::io::{BufRead, BufReader};
+    use std::os::unix::net::UnixStream;
+
+    use cockpit_protocol::{
+        AgentId, AgentParams, ClientMessage, Frame, PROTOCOL_VERSION, Request, RequestId,
+        ResponseResult, ServerMessage,
+    };
+
+    let [socket, agent] = words else {
+        return Err(io::Error::other("usage: peer <socket> <agent>"));
+    };
+    let agent: u32 = agent.parse().map_err(io::Error::other)?;
+    let mut writer = UnixStream::connect(socket)?;
+    let mut reader = BufReader::new(writer.try_clone()?);
+    let mut exchange = |message: &ClientMessage| -> io::Result<ServerMessage> {
+        let frame = Frame::encode(message).map_err(io::Error::other)?;
+        writer.write_all(frame.as_bytes())?;
+        let mut line = String::new();
+        reader.read_line(&mut line)?;
+        serde_json::from_str(&line).map_err(io::Error::other)
+    };
+    let hello = ClientMessage::Hello {
+        protocol_version: PROTOCOL_VERSION,
+        last_seq: None,
+    };
+    if let ServerMessage::Refused { reason, .. } = exchange(&hello)? {
+        return Ok(format!("refused: {reason}"));
+    }
+    let requests = [
+        Request::TerminalListShared(AgentParams {
+            agent: AgentId::new(agent),
+        }),
+        Request::TerminalListShared(AgentParams {
+            agent: AgentId::new(agent + 1),
+        }),
+        Request::AgentStop(AgentParams {
+            agent: AgentId::new(agent),
+        }),
+    ];
+    let mut answers = Vec::new();
+    for (id, request) in (1..).zip(requests) {
+        let request = ClientMessage::Request {
+            id: RequestId::new(id),
+            request,
+        };
+        answers.push(match exchange(&request)? {
+            ServerMessage::Response {
+                result: ResponseResult::Ok(_),
+                ..
+            } => "ok".to_owned(),
+            ServerMessage::Response {
+                result: ResponseResult::Error(error),
+                ..
+            } => format!("{:?}", error.code),
+            other => format!("{other:?}"),
+        });
+    }
+    Ok(answers.join(", "))
+}
+
+#[cfg(not(unix))]
+fn peer(_words: &[&str]) -> io::Result<String> {
+    Ok("no socket on this platform".to_owned())
 }
 
 /// Where the name `/rename` gave a session is kept, when `FAKE_CLAUDE_SESSION_NAMES` is set.

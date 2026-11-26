@@ -274,6 +274,8 @@ pub fn DockTabRow(agent: AgentId, dock: Dock) -> Element {
                             exited: tab.exited,
                             selected: tab.selected,
                             pinned: tab.pinned,
+                            shared: tab.shared,
+                            renaming: tab.renaming,
                         }
                     },
                 }

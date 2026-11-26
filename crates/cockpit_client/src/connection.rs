@@ -4,9 +4,9 @@ use std::collections::HashMap;
 use std::time::Duration;
 
 use cockpit_protocol::{
-    BuildCommit, Catchup, ClientMessage, EventRecord, Frame, FrameError, FrameReader, FrameWriter,
-    PROTOCOL_VERSION, ReleaseVersion, Request, RequestId, ResponseBody, Seq, ServerMessage,
-    TerminalUpdate,
+    AgentId, BuildCommit, Catchup, ClientMessage, EventRecord, Frame, FrameError, FrameReader,
+    FrameWriter, PROTOCOL_VERSION, ReleaseVersion, Request, RequestId, ResponseBody, Seq,
+    ServerMessage, TerminalUpdate,
 };
 use tokio::io::{AsyncBufRead, AsyncRead, AsyncWrite, BufReader};
 use tokio::sync::{mpsc, oneshot};
@@ -52,6 +52,12 @@ pub struct Welcome {
     /// happened while the client was away. `None` with a snapshot, and from a daemon that does
     /// not say.
     pub replayed_through: Option<Seq>,
+    /// Whether each agent's `claude` gets the daemon's MCP server, which reads the terminals
+    /// the user shares with the agent. `false` from a daemon that does not say.
+    pub agent_tools: bool,
+    /// Set when the daemon gave this connection an agent's session, as it does a process under
+    /// it: the agent whose shared terminals the connection may read, and nothing else.
+    pub agent_session: Option<AgentId>,
 }
 
 type Reply = oneshot::Sender<Result<ResponseBody, RequestError>>;
@@ -196,6 +202,8 @@ where
             daemon_commit,
             catchup,
             replayed_through,
+            agent_tools,
+            agent_session,
         }) => {
             if protocol_version == PROTOCOL_VERSION {
                 Ok(Welcome {
@@ -203,6 +211,8 @@ where
                     daemon_commit,
                     catchup,
                     replayed_through,
+                    agent_tools,
+                    agent_session,
                 })
             } else {
                 Err(ConnectError::VersionMismatch {
@@ -437,6 +447,8 @@ mod tests {
                 daemon_commit: Some(test_daemon::daemon_commit()),
                 catchup: Catchup::Snapshot(test_daemon::snapshot(Some(9))),
                 replayed_through: None,
+                agent_tools: false,
+                agent_session: None,
             }
         );
     }
@@ -454,6 +466,8 @@ mod tests {
                 daemon_commit: None,
                 catchup: Catchup::Replay,
                 replayed_through: Some(Seq::new(8)),
+                agent_tools: false,
+                agent_session: None,
             })
             .await;
             peer
@@ -516,6 +530,8 @@ mod tests {
                 daemon_commit: None,
                 catchup: Catchup::Replay,
                 replayed_through: None,
+                agent_tools: false,
+                agent_session: None,
             })
             .await;
             peer

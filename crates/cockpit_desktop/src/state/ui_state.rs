@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use cockpit_protocol::{
     AccountId, AgentId, AgentSummary, ClaudeSessionId, CommitHash, DirListing, Effort, Image,
-    ItemId, PermissionMode, TerminalId,
+    ItemId, PermissionMode, TerminalId, TerminalParams,
 };
 use serde::{Deserialize, Serialize};
 use strum::{EnumString, IntoStaticStr, VariantArray};
@@ -674,12 +674,43 @@ pub enum ToolFilter {
     Used,
 }
 
+/// The tabs of an MCP server's page.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum McpTab {
+    #[default]
+    Tools,
+    Details,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct McpView {
     /// The server whose detail is open.
     pub detail: Option<String>,
     pub show_hidden: bool,
     pub filter: ToolFilter,
+    /// The tab each agent's server page shows, when it is not the tools.
+    tabs: BTreeMap<(AgentId, String), McpTab>,
+}
+
+impl McpView {
+    pub fn tab(&self, agent: AgentId, server: &str) -> McpTab {
+        self.tabs
+            .get(&(agent, server.to_owned()))
+            .copied()
+            .unwrap_or_default()
+    }
+
+    pub fn set_tab(&mut self, agent: AgentId, server: String, tab: McpTab) {
+        if tab == McpTab::default() {
+            self.tabs.remove(&(agent, server));
+        } else {
+            self.tabs.insert((agent, server), tab);
+        }
+    }
+
+    pub fn retain_agents(&mut self, mut keep: impl FnMut(AgentId) -> bool) {
+        self.tabs.retain(|(agent, _), _| keep(*agent));
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -743,6 +774,8 @@ pub struct UiState {
     pub project_menu: Option<ProjectKey>,
     /// The kept project whose name the sidebar's header holds in a field.
     pub project_rename: Option<ProjectId>,
+    /// The terminal whose tab holds its name in a field.
+    pub terminal_rename: Option<TerminalParams>,
     /// The project picked in the new agent dialog for a started agent whose summary has not
     /// arrived yet.
     pub picked_projects: BTreeMap<AgentId, ProjectKey>,
@@ -827,6 +860,7 @@ impl Default for UiState {
             folded_machines: BTreeSet::new(),
             project_menu: None,
             project_rename: None,
+            terminal_rename: None,
             picked_projects: BTreeMap::new(),
             window_focused: true,
             focus_returns: 0,
@@ -1121,12 +1155,14 @@ impl UiState {
             || self.dialog.is_some()
             || self.badge.is_some()
             || self.title_edit.is_some()
-            || self.project_rename.is_some();
+            || self.project_rename.is_some()
+            || self.terminal_rename.is_some();
         self.popover = None;
         self.close_dialog();
         self.badge = None;
         self.title_edit = None;
         self.project_rename = None;
+        self.terminal_rename = None;
         open
     }
 
@@ -1241,6 +1277,24 @@ mod tests {
 
         assert!(ui.close_overlays());
         assert_eq!(ui.dialog, None);
+    }
+
+    #[test]
+    fn a_server_page_keeps_its_tab_per_agent_and_server() {
+        let mut ui = UiState::default();
+        let (first, second) = (AgentId::new(1), AgentId::new(2));
+        ui.selected = Some(first);
+        assert_eq!(ui.mcp.tab(first, "search"), McpTab::Tools);
+
+        ui.mcp.set_tab(first, "search".to_owned(), McpTab::Details);
+        ui.leave_agent();
+
+        assert_eq!(ui.mcp.tab(first, "search"), McpTab::Details);
+        assert_eq!(ui.mcp.tab(first, "tickets"), McpTab::Tools);
+        assert_eq!(ui.mcp.tab(second, "search"), McpTab::Tools);
+
+        ui.mcp.set_tab(first, "search".to_owned(), McpTab::Tools);
+        assert_eq!(ui.mcp.tab(first, "search"), McpTab::Tools);
     }
 
     #[test]

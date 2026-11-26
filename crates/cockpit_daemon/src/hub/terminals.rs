@@ -7,30 +7,36 @@
 //! Three threads serve each shell, since the PTY's reads, writes and wait block: one reads its
 //! output, one writes what the user types, and one waits for it to end. The first and the last
 //! report to the hub, which keeps the recent output and sends every client what comes.
+//!
+//! The user may share a terminal with its agent, which then reads the kept output as text
+//! (`terminal.read_text`, module `terminal_text`), and may give its tab a name.
 
 use std::collections::{BTreeMap, VecDeque};
 use std::io::{Read, Write};
 use std::path::Path;
-use std::sync::mpsc as std_mpsc;
+use std::sync::{Arc, mpsc as std_mpsc};
 
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
+#[cfg(unix)]
+use cockpit_protocol::ProcessId;
 use cockpit_protocol::{
-    AgentId, ErrorBody, ErrorCode, Frame, ResponseBody, ServerMessage, ShellChoice, TerminalChange,
-    TerminalExit, TerminalId, TerminalInfo, TerminalInputParams, TerminalOpenParams,
-    TerminalParams, TerminalResizeParams, TerminalSize, TerminalSizeAt, TerminalUpdate,
+    AgentId, ErrorBody, ErrorCode, Frame, MAX_TEXT_LINES, ResponseBody, SHARE_LABEL, ServerMessage,
+    ShellChoice, TerminalChange, TerminalExit, TerminalId, TerminalInfo, TerminalInputParams,
+    TerminalOpenParams, TerminalParams, TerminalReadParams, TerminalRenameParams,
+    TerminalResizeParams, TerminalShareParams, TerminalSize, TerminalSizeAt, TerminalUpdate,
 };
 use portable_pty::{Child, ChildKiller, CommandBuilder, MasterPty, PtySize, native_pty_system};
-use tokio::sync::mpsc;
 use tokio::sync::mpsc::error::TrySendError;
+use tokio::sync::{Semaphore, mpsc};
 use tokio::time;
 
 use crate::blocking::{self, Scope};
-use crate::hub::agents::respond;
+use crate::hub::agents::{self, respond};
 use crate::hub::input::{HubInput, Reply};
 use crate::hub::shells::{self, Shell};
 use crate::hub::state::{CLIENT_QUEUE, Hub};
-use crate::hub::{errors, start};
+use crate::hub::{errors, start, terminal_text};
 
 /// The output a terminal keeps for a client that shows it again: a few screens of a busy build.
 const RECENT_BYTES: usize = 512 * 1024;
@@ -41,6 +47,10 @@ const MAX_SIZES: usize = 256;
 
 /// What one read of a shell's output takes at most.
 const READ_BYTES: usize = 64 * 1024;
+
+/// The most `terminal.read_text` renders at once, across the daemon. One takes 40 ms to 1.5 s of a
+/// core for 512 KB, so agents that read in a loop would otherwise take every core.
+const MAX_RENDERS: usize = 4;
 
 /// The output a terminal keeps, as `terminal.attach` answers it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -53,10 +63,21 @@ pub(super) struct Screen {
     pub(super) sizes: Vec<TerminalSizeAt>,
 }
 
-#[derive(Default)]
 pub(super) struct Terminals {
     last: Option<TerminalId>,
     open: BTreeMap<TerminalId, Terminal>,
+    /// The text renders that may run at once, each on a blocking thread of its own.
+    renders: Arc<Semaphore>,
+}
+
+impl Default for Terminals {
+    fn default() -> Self {
+        Self {
+            last: None,
+            open: BTreeMap::new(),
+            renders: Arc::new(Semaphore::new(MAX_RENDERS)),
+        }
+    }
 }
 
 struct Terminal {
@@ -75,9 +96,43 @@ struct Terminal {
     sizes: VecDeque<TerminalSizeAt>,
     /// `Some` once the shell ended.
     exited: Option<TerminalExit>,
+    /// Whether the agent may read it.
+    shared: bool,
+    /// The name the user gave its tab.
+    name: Option<String>,
+}
+
+/// The kept output of a terminal, with where it starts in all the shell wrote and the sizes the
+/// PTY took over it.
+struct KeptOutput {
+    start: u64,
+    bytes: Vec<u8>,
+    sizes: Vec<TerminalSizeAt>,
 }
 
 impl Terminal {
+    fn info(&self, terminal: TerminalId) -> TerminalInfo {
+        TerminalInfo {
+            terminal,
+            title: self.title.clone(),
+            exited: self.exited,
+            shared: self.shared,
+            name: self.name.clone(),
+        }
+    }
+
+    fn kept(&self) -> KeptOutput {
+        let (front, back) = self.recent.as_slices();
+        let mut bytes = Vec::with_capacity(self.recent.len());
+        bytes.extend_from_slice(front);
+        bytes.extend_from_slice(back);
+        KeptOutput {
+            start: self.written - bytes.len() as u64,
+            bytes,
+            sizes: self.sizes.iter().copied().collect(),
+        }
+    }
+
     /// Notes that the PTY took `size` after the output so far. A size taken before any more
     /// output replaces the one before it.
     fn note_size(&mut self, size: TerminalSize) {
@@ -179,6 +234,8 @@ impl Terminals {
                     size: taken(size),
                 }]),
                 exited: None,
+                shared: false,
+                name: None,
             },
         );
         Ok(title)
@@ -189,12 +246,60 @@ impl Terminals {
         self.open
             .iter()
             .filter(|(_, open)| open.agent == agent)
-            .map(|(terminal, open)| TerminalInfo {
-                terminal: *terminal,
-                title: open.title.clone(),
-                exited: open.exited,
-            })
+            .map(|(terminal, open)| open.info(*terminal))
             .collect()
+    }
+
+    /// The agent's terminals that it may read, oldest first.
+    pub(super) fn list_shared(&self, agent: AgentId) -> Vec<TerminalInfo> {
+        self.open
+            .iter()
+            .filter(|(_, open)| open.agent == agent && open.shared)
+            .map(|(terminal, open)| open.info(*terminal))
+            .collect()
+    }
+
+    /// Sets whether the agent may read the terminal. Returns whether that changed.
+    pub(super) fn share(
+        &mut self,
+        agent: AgentId,
+        terminal: TerminalId,
+        shared: bool,
+    ) -> Result<bool, String> {
+        let open = self.of_agent(agent, terminal)?;
+        let changed = open.shared != shared;
+        open.shared = shared;
+        Ok(changed)
+    }
+
+    /// Names the terminal's tab, or drops its name. Returns whether that changed.
+    pub(super) fn rename(
+        &mut self,
+        agent: AgentId,
+        terminal: TerminalId,
+        name: Option<String>,
+    ) -> Result<bool, String> {
+        let open = self.of_agent(agent, terminal)?;
+        let changed = open.name != name;
+        open.name = name;
+        Ok(changed)
+    }
+
+    /// The kept output of a terminal the agent may read.
+    /// The messages speak to the agent, which reads them as its tool's answer. Another agent's
+    /// terminal reads as one not shared.
+    fn shared_output(&self, agent: AgentId, terminal: TerminalId) -> Result<KeptOutput, ErrorBody> {
+        let open = self
+            .open
+            .get(&terminal)
+            .ok_or_else(|| not_found(format!("There is no terminal {}.", terminal.get())))?;
+        if open.agent != agent || !open.shared {
+            return Err(errors::invalid(format!(
+                "Terminal {} is not shared with you: the user can share it from its tab's menu, with \"{SHARE_LABEL}\".",
+                terminal.get()
+            )));
+        }
+        Ok(open.kept())
     }
 
     /// The terminal, when it is the agent's.
@@ -238,15 +343,15 @@ impl Terminals {
         agent: AgentId,
         terminal: TerminalId,
     ) -> Result<Screen, String> {
-        let open = self.of_agent(agent, terminal)?;
-        let (front, back) = open.recent.as_slices();
-        let mut bytes = Vec::with_capacity(open.recent.len());
-        bytes.extend_from_slice(front);
-        bytes.extend_from_slice(back);
+        let KeptOutput {
+            start,
+            bytes,
+            sizes,
+        } = self.of_agent(agent, terminal)?.kept();
         Ok(Screen {
-            offset: open.written - bytes.len() as u64,
+            offset: start,
             data: STANDARD.encode(bytes),
-            sizes: open.sizes.iter().copied().collect(),
+            sizes,
         })
     }
 
@@ -647,6 +752,112 @@ impl Hub {
         Ok(ResponseBody::Done)
     }
 
+    /// Lets the agent read a terminal, or stops it, and tells every client when that changed.
+    pub(super) fn share_terminal(
+        &mut self,
+        params: TerminalShareParams,
+    ) -> Result<ResponseBody, ErrorBody> {
+        let TerminalShareParams {
+            agent,
+            terminal,
+            shared,
+        } = params;
+        if self
+            .terminals
+            .share(agent, terminal, shared)
+            .map_err(not_found)?
+        {
+            self.send_terminal(TerminalUpdate {
+                agent,
+                terminal,
+                change: TerminalChange::Shared { shared },
+            });
+        }
+        Ok(ResponseBody::Done)
+    }
+
+    /// Names a terminal's tab, or drops the name, and tells every client when that changed. A
+    /// name of only blanks drops it.
+    pub(super) fn rename_terminal(
+        &mut self,
+        params: TerminalRenameParams,
+    ) -> Result<ResponseBody, ErrorBody> {
+        let TerminalRenameParams {
+            agent,
+            terminal,
+            name,
+        } = params;
+        let name = name
+            .filter(|name| !name.trim().is_empty())
+            .map(|name| agents::client_title(&name))
+            .transpose()?;
+        if self
+            .terminals
+            .rename(agent, terminal, name.clone())
+            .map_err(not_found)?
+        {
+            self.send_terminal(TerminalUpdate {
+                agent,
+                terminal,
+                change: TerminalChange::Renamed { name },
+            });
+        }
+        Ok(ResponseBody::Done)
+    }
+
+    /// The agent whose running `claude` is `process`.
+    #[cfg(unix)]
+    pub(super) fn agent_of_process(&self, process: ProcessId) -> Option<AgentId> {
+        self.agents
+            .iter()
+            .find(|(_, agent)| {
+                agent.process.as_ref().and_then(|handle| handle.pid()) == Some(process)
+            })
+            .map(|(id, _)| *id)
+    }
+
+    pub(super) fn list_shared_terminals(&self, agent: AgentId) -> Result<ResponseBody, ErrorBody> {
+        self.agent(agent)?;
+        Ok(ResponseBody::SharedTerminals {
+            terminals: self.terminals.list_shared(agent),
+        })
+    }
+
+    /// Answers the last lines of a shared terminal. Parsing 512 KB of output takes up to seconds,
+    /// so it runs on a blocking thread and answers from there. At most [`MAX_RENDERS`] run at
+    /// once, and the others wait for one to end.
+    pub(super) fn read_terminal_text(&self, params: TerminalReadParams, reply: Reply) {
+        let TerminalReadParams {
+            agent,
+            terminal,
+            lines: wanted,
+        } = params;
+        let kept = match self.terminals.shared_output(agent, terminal) {
+            Ok(kept) => kept,
+            Err(error) => return respond(reply, Err(error)),
+        };
+        let wanted = usize::try_from(wanted.min(MAX_TEXT_LINES)).unwrap_or(usize::MAX);
+        let renders = Arc::clone(&self.terminals.renders);
+        tokio::spawn(async move {
+            let Ok(permit) = renders.acquire_owned().await else {
+                let error =
+                    ErrorBody::new(ErrorCode::Internal, "the daemon is stopping".to_owned());
+                return respond(reply, Err(error));
+            };
+            // A client that left while its read waited, as a closed MCP server, gets no render.
+            if reply.is_closed() {
+                return;
+            }
+            tokio::task::spawn_blocking(move || {
+                let mut lines = terminal_text::lines(&kept.bytes, kept.start, &kept.sizes);
+                drop(permit);
+                let total_lines = u32::try_from(lines.len()).unwrap_or(u32::MAX);
+                lines.drain(..lines.len().saturating_sub(wanted));
+                respond(reply, Ok(ResponseBody::TerminalText { lines, total_lines }));
+            });
+        });
+    }
+
     /// Closes an agent's terminals as it leaves.
     pub(super) fn close_agent_terminals(&mut self, agent: AgentId) {
         for terminal in self.terminals.close_agent(agent) {
@@ -679,6 +890,8 @@ impl Hub {
             TerminalChange::Output { .. } => CLIENT_QUEUE / 2,
             TerminalChange::Opened { .. }
             | TerminalChange::Exited { .. }
+            | TerminalChange::Shared { .. }
+            | TerminalChange::Renamed { .. }
             | TerminalChange::Closed => 0,
         };
         let frame = match Frame::encode(&ServerMessage::Terminal(update)) {
@@ -713,7 +926,9 @@ mod tests {
     #[cfg(target_os = "linux")]
     use std::time::Duration;
 
-    use cockpit_protocol::{AccountId, AgentParams, Mark, Position, Request, Timestamp};
+    use cockpit_protocol::{
+        AccountId, AgentParams, MAX_TITLE_CHARS, Mark, Position, Request, Timestamp,
+    };
 
     use crate::store::{AgentRecord, AgentsFile, ResumeAs, StateDir};
     #[cfg(target_os = "linux")]
@@ -1003,6 +1218,8 @@ mod tests {
                 size: SMALL,
             }]),
             exited: Some(TerminalExit { code: Some(0) }),
+            shared: false,
+            name: None,
         }
     }
 
@@ -1169,5 +1386,215 @@ mod tests {
 
         assert_eq!(received, CLIENT_QUEUE / 2 + 1);
         assert_eq!(hub.clients.len(), 1);
+    }
+
+    /// The hub's answer to `request`, which may come from a blocking thread rather than the hub.
+    async fn answer(hub: &mut Hub, request: Request) -> Result<ResponseBody, ErrorBody> {
+        let (reply, answered) = tokio::sync::oneshot::channel();
+        hub.request(request, reply);
+        tokio::time::timeout(std::time::Duration::from_secs(10), answered)
+            .await
+            .expect("an answer in time")
+            .expect("the hub answers")
+            .into_result()
+    }
+
+    /// The terminal updates the hub sent a client so far.
+    fn updates(frames: &mut mpsc::Receiver<Frame>) -> Vec<TerminalChange> {
+        let mut changes = Vec::new();
+        while let Ok(frame) = frames.try_recv() {
+            if let Ok(ServerMessage::Terminal(update)) = serde_json::from_slice(frame.as_bytes()) {
+                changes.push(update.change);
+            }
+        }
+        changes
+    }
+
+    /// Agent 1 with terminal 1, which wrote two lines, and agent 3's terminal 2.
+    fn hub_with_terminals(temp: &Path) -> (Hub, AgentId, mpsc::Receiver<Frame>) {
+        let (mut hub, _inputs, agent) = hub_with_agent(temp);
+        let (client, frames) = mpsc::channel(16);
+        hub.clients.push(client);
+        let mut own = ended_terminal();
+        own.agent = agent;
+        hub.terminals.open.insert(TerminalId::new(1), own);
+        hub.terminals
+            .open
+            .insert(TerminalId::new(2), ended_terminal());
+        hub.terminals.output(
+            TerminalId::new(1),
+            b"\x1b[32m$ cargo test\x1b[0m\r\ntest result: ok\r\n",
+        );
+        (hub, agent, frames)
+    }
+
+    fn share(agent: AgentId, terminal: u32, shared: bool) -> Request {
+        Request::TerminalShare(TerminalShareParams {
+            agent,
+            terminal: TerminalId::new(terminal),
+            shared,
+        })
+    }
+
+    fn read(agent: AgentId, terminal: u32, lines: u32) -> Request {
+        Request::TerminalReadText(TerminalReadParams {
+            agent,
+            terminal: TerminalId::new(terminal),
+            lines,
+        })
+    }
+
+    #[tokio::test]
+    async fn sharing_a_terminal_tells_every_client_once_and_lists_it_for_the_agent() {
+        let temp = tempfile::tempdir().unwrap();
+        let (mut hub, agent, mut frames) = hub_with_terminals(temp.path());
+
+        let shared = answer(&mut hub, share(agent, 1, true)).await;
+        let again = answer(&mut hub, share(agent, 1, true)).await;
+        let listed = answer(&mut hub, Request::TerminalListShared(AgentParams { agent })).await;
+        let all = hub.terminals.list(agent);
+        let unshared = answer(&mut hub, share(agent, 1, false)).await;
+        let others = answer(&mut hub, share(agent, 2, true)).await;
+
+        assert_eq!(shared, Ok(ResponseBody::Done));
+        assert_eq!(again, Ok(ResponseBody::Done));
+        assert_eq!(unshared, Ok(ResponseBody::Done));
+        assert_eq!(
+            updates(&mut frames),
+            [
+                TerminalChange::Shared { shared: true },
+                TerminalChange::Shared { shared: false }
+            ]
+        );
+        let Ok(ResponseBody::SharedTerminals { terminals }) = listed else {
+            panic!("expected the shared terminals, got {listed:?}");
+        };
+        let ids: Vec<TerminalId> = terminals.iter().map(|info| info.terminal).collect();
+        assert_eq!(ids, [TerminalId::new(1)]);
+        assert!(all.iter().all(|info| info.shared), "{all:?}");
+        assert_eq!(
+            others.map_err(|error| error.code),
+            Err(ErrorCode::NotFound),
+            "another agent's terminal"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_agent_reads_only_a_shared_terminal_of_its_own_as_text() {
+        let temp = tempfile::tempdir().unwrap();
+        let (mut hub, agent, _frames) = hub_with_terminals(temp.path());
+
+        let unshared = answer(&mut hub, read(agent, 1, 200)).await;
+        answer(&mut hub, share(agent, 1, true)).await.unwrap();
+        let shared = answer(&mut hub, read(agent, 1, 200)).await;
+        let last = answer(&mut hub, read(agent, 1, 1)).await;
+        let others = answer(&mut hub, read(agent, 2, 200)).await;
+        let unknown = answer(&mut hub, read(agent, 9, 200)).await;
+
+        let unshared = unshared.unwrap_err();
+        assert_eq!(unshared.code, ErrorCode::InvalidRequest);
+        assert!(
+            unshared.message.contains("not shared"),
+            "{}",
+            unshared.message
+        );
+        assert_eq!(
+            shared,
+            Ok(ResponseBody::TerminalText {
+                lines: vec!["$ cargo test".to_owned(), "test result: ok".to_owned()],
+                total_lines: 2,
+            })
+        );
+        assert_eq!(
+            last,
+            Ok(ResponseBody::TerminalText {
+                lines: vec!["test result: ok".to_owned()],
+                total_lines: 2,
+            })
+        );
+        let others = others.unwrap_err();
+        assert_eq!(others.code, ErrorCode::InvalidRequest);
+        assert!(
+            others
+                .message
+                .starts_with("Terminal 2 is not shared with you"),
+            "another agent's terminal reads as one not shared: {}",
+            others.message
+        );
+        assert_eq!(
+            unknown.map_err(|error| error.code),
+            Err(ErrorCode::NotFound)
+        );
+    }
+
+    /// Four renders hold the permits: a fifth read waits until one of them ends.
+    #[tokio::test]
+    async fn a_read_waits_while_the_most_renders_run() {
+        use std::time::Duration;
+
+        let temp = tempfile::tempdir().unwrap();
+        let (mut hub, agent, _frames) = hub_with_terminals(temp.path());
+        answer(&mut hub, share(agent, 1, true)).await.unwrap();
+        let mut running = Vec::new();
+        for _ in 0..MAX_RENDERS {
+            let permit = Arc::clone(&hub.terminals.renders).acquire_owned().await;
+            running.push(permit.unwrap());
+        }
+
+        let (reply, mut answered) = tokio::sync::oneshot::channel();
+        hub.request(read(agent, 1, 200), reply);
+        let waited = tokio::time::timeout(Duration::from_millis(300), &mut answered).await;
+        running.pop();
+        let after = tokio::time::timeout(Duration::from_secs(10), answered)
+            .await
+            .expect("an answer once a render ends")
+            .expect("the hub answers")
+            .into_result();
+
+        assert!(waited.is_err(), "the fifth read waits: {waited:?}");
+        assert!(
+            matches!(after, Ok(ResponseBody::TerminalText { total_lines: 2, .. })),
+            "{after:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_terminal_keeps_the_name_its_tab_gets_and_tells_every_client() {
+        let temp = tempfile::tempdir().unwrap();
+        let (mut hub, agent, mut frames) = hub_with_terminals(temp.path());
+        let rename = |name: Option<&str>| {
+            Request::TerminalRename(TerminalRenameParams {
+                agent,
+                terminal: TerminalId::new(1),
+                name: name.map(str::to_owned),
+            })
+        };
+
+        let named = answer(&mut hub, rename(Some("  the   tests "))).await;
+        let listed = hub.terminals.list(agent);
+        let blank = answer(&mut hub, rename(Some("   "))).await;
+        let unnamed = hub.terminals.list(agent);
+        let too_long = answer(&mut hub, rename(Some(&"x".repeat(MAX_TITLE_CHARS + 1)))).await;
+
+        assert_eq!(named, Ok(ResponseBody::Done));
+        assert_eq!(blank, Ok(ResponseBody::Done));
+        assert_eq!(
+            listed.first().and_then(|info| info.name.as_deref()),
+            Some("the tests")
+        );
+        assert_eq!(unnamed.first().and_then(|info| info.name.clone()), None);
+        assert_eq!(
+            too_long.map_err(|error| error.code),
+            Err(ErrorCode::InvalidRequest)
+        );
+        assert_eq!(
+            updates(&mut frames),
+            [
+                TerminalChange::Renamed {
+                    name: Some("the tests".to_owned())
+                },
+                TerminalChange::Renamed { name: None }
+            ]
+        );
     }
 }

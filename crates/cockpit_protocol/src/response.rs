@@ -101,6 +101,18 @@ pub enum ResponseBody {
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         sizes: Vec<TerminalSizeAt>,
     },
+    /// For `terminal.list_shared`, oldest first.
+    SharedTerminals {
+        terminals: Vec<TerminalInfo>,
+    },
+    /// For `terminal.read_text`: the last lines of the terminal's scrollback and screen, oldest
+    /// first, as plain text without trailing blanks. A line the terminal wrapped comes whole.
+    TerminalText {
+        lines: Vec<String>,
+        /// How many lines the daemon could answer, the answered ones included: those of the screen
+        /// and of at most [`MAX_TEXT_LINES`](crate::MAX_TEXT_LINES) rows above it.
+        total_lines: u32,
+    },
     /// `path` is where the file was read, absolute: the path asked for, or the file the daemon
     /// found for it. `None` from a daemon that predates it, which reads only the path asked for.
     ///

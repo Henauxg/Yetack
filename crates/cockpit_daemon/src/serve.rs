@@ -4,6 +4,8 @@ use std::io;
 use std::path::PathBuf;
 
 #[cfg(unix)]
+use crate::agent_tools::{AgentTools, McpCommand};
+#[cfg(unix)]
 use crate::daemon::Daemon;
 #[cfg(unix)]
 use crate::daemon_config::DaemonConfig;
@@ -32,7 +34,8 @@ pub enum ServeError {
     TaskEnded(&'static str),
 }
 
-/// Runs the daemon until `shutdown` completes.
+/// Runs the daemon until `shutdown` completes. Its agents get no MCP server of the daemon's: a
+/// program that serves `mcp` runs [`serve_with_agent_tools`] instead.
 ///
 /// It takes the state folder's lock first, so a second daemon fails with
 /// `StoreError::AlreadyRunning` without touching the first one's socket. On shutdown the agents
@@ -46,12 +49,36 @@ pub async fn serve(
     config: DaemonConfig,
     shutdown: impl Future<Output = ()>,
 ) -> Result<(), ServeError> {
-    let prepared = Daemon::prepare(config)?;
+    serve_offering(config, None, shutdown).await
+}
+
+/// Runs the daemon as [`serve`] does, and gives each agent's `claude` the daemon's MCP server,
+/// which `mcp` runs. The server reaches the daemon through its socket.
+#[cfg(unix)]
+pub async fn serve_with_agent_tools(
+    config: DaemonConfig,
+    mcp: McpCommand,
+    shutdown: impl Future<Output = ()>,
+) -> Result<(), ServeError> {
+    let agent_tools = AgentTools::new(mcp);
+    serve_offering(config, agent_tools, shutdown).await
+}
+
+#[cfg(unix)]
+async fn serve_offering(
+    config: DaemonConfig,
+    agent_tools: Option<AgentTools>,
+    shutdown: impl Future<Output = ()>,
+) -> Result<(), ServeError> {
+    let mut prepared = Daemon::prepare(config)?;
     let socket = prepared.socket();
     let listener = server::bind(&socket).map_err(|source| ServeError::Listen {
         path: socket.clone(),
         source,
     })?;
+    if let Some(tools) = agent_tools {
+        prepared.offer_agent_tools(tools);
+    }
     let mut daemon = prepared.start();
     let mut server_task = tokio::spawn(server::accept_loop(
         listener,

@@ -7,6 +7,7 @@ use std::path::PathBuf;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
+use crate::agent_tools::AgentTools;
 use crate::daemon_config::DaemonConfig;
 use crate::hub::{Hub, HubInput, Restored};
 use crate::serve::ServeError;
@@ -23,6 +24,7 @@ pub(crate) struct PreparedDaemon {
     lock: ServeLock,
     config: DaemonConfig,
     restored: Restored,
+    agent_tools: Option<AgentTools>,
 }
 
 /// A running daemon. Its agents' processes run on the Tokio runtime it started on, and end with
@@ -46,6 +48,7 @@ impl Daemon {
             lock,
             config,
             restored,
+            agent_tools: None,
         })
     }
 
@@ -83,6 +86,13 @@ impl PreparedDaemon {
         self.state.socket()
     }
 
+    /// Gives each agent's `claude` the daemon's MCP server, which reaches the daemon through its
+    /// socket.
+    #[cfg(unix)]
+    pub(crate) fn offer_agent_tools(&mut self, tools: AgentTools) {
+        self.agent_tools = Some(tools);
+    }
+
     /// Starts the hub, which resumes the agents that were running. Spawns on the current Tokio
     /// runtime.
     pub(crate) fn start(self) -> Daemon {
@@ -91,9 +101,10 @@ impl PreparedDaemon {
             lock,
             config,
             restored,
+            agent_tools,
         } = self;
         let (inputs, received) = mpsc::channel(HUB_INPUTS);
-        let hub = Hub::new(state, config, restored, inputs.clone());
+        let hub = Hub::new(state, config, agent_tools, restored, inputs.clone());
         Daemon {
             hub: tokio::spawn(hub.run(received)),
             inputs,

@@ -280,6 +280,8 @@ mod tests {
             terminal: TerminalId::new(terminal),
             title: "zsh".to_owned(),
             exited: None,
+            shared: false,
+            name: None,
         };
         terminals::listed(&mut state, AgentId::new(1), Some(vec![info(2)]), Vec::new());
 

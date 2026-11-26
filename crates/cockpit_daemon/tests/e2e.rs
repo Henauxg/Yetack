@@ -640,6 +640,45 @@ fn named(commands: &[(&str, CommandKind)]) -> Vec<(String, CommandKind)> {
         .collect()
 }
 
+/// `test-serve`, as the app's background service, runs the daemon from a program without `mcp`.
+#[tokio::test]
+async fn a_daemon_whose_program_serves_no_mcp_gives_claude_no_mcp_server() {
+    let setup = Setup::new();
+    let mut client = setup.connect().await;
+
+    client.start(&setup.work(), "hello there").await;
+
+    let launches = setup.wait_for_launches(1);
+    assert!(
+        launches[0]
+            .iter()
+            .all(|arg| !arg.starts_with("--mcp-config") && !arg.starts_with("--allowedTools")),
+        "{launches:?}"
+    );
+}
+
+/// A process under an agent's `claude`, as its MCP server, reads only that agent's terminals.
+#[tokio::test]
+async fn a_process_under_an_agent_gets_only_that_agents_reads() {
+    let setup = Setup::new();
+    let mut client = setup.connect().await;
+    let agent = client.start(&setup.work(), "hello").await;
+    client.idle(agent).await;
+
+    client
+        .prompt(
+            agent,
+            &format!("peer {} {}", setup.socket().display(), agent.get()),
+        )
+        .await;
+
+    client
+        .says(agent, "Peer: ok, InvalidRequest, InvalidRequest")
+        .await;
+    let summary = client.summary_with(agent, |_| true).await;
+    assert_ne!(summary.status, AgentStatus::Exited, "the stop was refused");
+}
+
 #[tokio::test]
 async fn a_reload_updates_the_commands_every_client_sees() {
     let setup = Setup::new();

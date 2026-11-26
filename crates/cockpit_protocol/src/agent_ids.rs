@@ -28,11 +28,15 @@ impl Request {
             | Self::AgentReloadSkills(params)
             | Self::AgentReloadPlugins(params)
             | Self::AgentGitStatus(params)
-            | Self::AgentTerminals(params) => &mut params.agent,
+            | Self::AgentTerminals(params)
+            | Self::TerminalListShared(params) => &mut params.agent,
             Self::AgentTerminalOpen(params) => &mut params.agent,
             Self::TerminalAttach(params) | Self::TerminalClose(params) => &mut params.agent,
             Self::TerminalInput(params) => &mut params.agent,
             Self::TerminalResize(params) => &mut params.agent,
+            Self::TerminalShare(params) => &mut params.agent,
+            Self::TerminalRename(params) => &mut params.agent,
+            Self::TerminalReadText(params) => &mut params.agent,
             Self::AgentHistory(params) => &mut params.agent,
             Self::AgentSetModel(params) => &mut params.agent,
             Self::AgentSetEffort(params) => &mut params.agent,
@@ -98,6 +102,8 @@ impl ResponseBody {
             | Self::TerminalOpened { .. }
             | Self::Terminals { .. }
             | Self::TerminalScreen { .. }
+            | Self::SharedTerminals { .. }
+            | Self::TerminalText { .. }
             | Self::File { .. }
             | Self::Image { .. }
             | Self::Pdf { .. }

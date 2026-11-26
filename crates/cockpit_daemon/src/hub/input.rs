@@ -2,6 +2,8 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::time::Instant;
 
+#[cfg(unix)]
+use cockpit_protocol::ProcessId;
 use cockpit_protocol::{
     AccountId, AccountState, AgentId, CostUsd, ErrorBody, Frame, PermissionMode, Repository,
     Request, ResponseResult, Seq, ShellChoice, SignIn, SlashCommand, Snapshot, TerminalId,
@@ -30,6 +32,13 @@ pub(crate) enum HubInput {
     Request {
         request: Request,
         reply: Reply,
+    },
+    /// A connection from under the daemon asks which agent's `claude` is `process`, the daemon's
+    /// child it descends from. `None` when it is no agent's.
+    #[cfg(unix)]
+    AgentOfProcess {
+        process: ProcessId,
+        reply: oneshot::Sender<Option<AgentSession>>,
     },
     /// From the process task of one of an agent's processes, `generation` telling which.
     Process {
@@ -137,9 +146,19 @@ pub(crate) struct AccountLogin {
 /// A client's place among the hub's clients.
 pub(crate) struct Registration {
     pub(crate) joined: Joined,
+    /// Whether each agent's `claude` gets the daemon's MCP server, as the welcome says.
+    pub(crate) agent_tools: bool,
     /// Live events, each after the last one the catch-up covers. The hub drops a client whose
     /// queue is full, which ends this channel.
     pub(crate) frames: mpsc::Receiver<Frame>,
+}
+
+/// The agent a connection from under the daemon serves.
+#[cfg(unix)]
+pub(crate) struct AgentSession {
+    pub(crate) agent: AgentId,
+    /// Whether each agent's `claude` gets the daemon's MCP server, as the welcome says.
+    pub(crate) agent_tools: bool,
 }
 
 /// How the client catches up.

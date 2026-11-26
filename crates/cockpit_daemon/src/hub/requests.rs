@@ -153,6 +153,12 @@ impl Hub {
             Request::TerminalInput(params) => agents::respond(reply, self.type_in_terminal(params)),
             Request::TerminalResize(params) => agents::respond(reply, self.resize_terminal(params)),
             Request::TerminalClose(params) => agents::respond(reply, self.close_terminal(params)),
+            Request::TerminalShare(params) => agents::respond(reply, self.share_terminal(params)),
+            Request::TerminalRename(params) => agents::respond(reply, self.rename_terminal(params)),
+            Request::TerminalListShared(params) => {
+                agents::respond(reply, self.list_shared_terminals(params.agent));
+            }
+            Request::TerminalReadText(params) => self.read_terminal_text(params, reply),
             Request::AgentCommands(params) => {
                 let commands = self
                     .agent(params.agent)

@@ -63,6 +63,9 @@ pub(crate) struct ClaudeCommand {
     pub(crate) interrupted_turn: InterruptedTurn,
     /// What the agent's account sets in the environment.
     pub(crate) env: ClaudeEnv,
+    /// The arguments that give `claude` the daemon's MCP server, from `AgentTools::claude_args`.
+    /// Empty when the daemon's caller gave no MCP server.
+    pub(crate) agent_tools: Vec<OsString>,
 }
 
 impl ClaudeCommand {
@@ -84,6 +87,7 @@ impl ClaudeCommand {
                 args.push(OsString::from(FORK_SESSION_FLAG));
             }
         }
+        args.extend(self.agent_tools.iter().cloned());
         args
     }
 
@@ -131,6 +135,7 @@ mod tests {
             resume_as: ResumeAs::Same,
             interrupted_turn: InterruptedTurn::Leave,
             env: ClaudeEnv::for_tests(),
+            agent_tools: Vec::new(),
         }
     }
 

@@ -38,10 +38,10 @@ use cockpit_protocol::{
     SetModelParams, Settings, ShellChoice, SignIn, SignInWait, SlashCommand, Snapshot, StartParams,
     StopProcessParams, StopTaskParams, Subagent, SubagentRun, SubagentStatus, SubagentToolCall,
     TaskListItem, TaskProgress, TaskStatus, TerminalChange, TerminalExit, TerminalId, TerminalInfo,
-    TerminalInputParams, TerminalOpenParams, TerminalParams, TerminalResizeParams, TerminalSize,
-    TerminalSizeAt, TerminalUpdate, Timestamp, TokenUsage, ToolCall, ToolCallStatus,
-    TranscriptItem, TurnEnd, TurnOutcome, Upstream, UsageWindow, UserMessage, WaitingPrompt,
-    WaitingState, WindowUsage,
+    TerminalInputParams, TerminalOpenParams, TerminalParams, TerminalReadParams,
+    TerminalRenameParams, TerminalResizeParams, TerminalShareParams, TerminalSize, TerminalSizeAt,
+    TerminalUpdate, Timestamp, TokenUsage, ToolCall, ToolCallStatus, TranscriptItem, TurnEnd,
+    TurnOutcome, Upstream, UsageWindow, UserMessage, WaitingPrompt, WaitingState, WindowUsage,
 };
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -751,6 +751,22 @@ fn requests() -> Vec<Request> {
             agent,
             terminal: TerminalId::new(2),
         }),
+        Request::TerminalShare(TerminalShareParams {
+            agent,
+            terminal: TerminalId::new(2),
+            shared: true,
+        }),
+        Request::TerminalRename(TerminalRenameParams {
+            agent,
+            terminal: TerminalId::new(2),
+            name: Some("tests".to_owned()),
+        }),
+        Request::TerminalListShared(AgentParams { agent }),
+        Request::TerminalReadText(TerminalReadParams {
+            agent,
+            terminal: TerminalId::new(2),
+            lines: 200,
+        }),
         Request::McpRemove(McpRemoveParams {
             agent,
             server: "issues".to_owned(),
@@ -959,16 +975,22 @@ fn response_bodies() -> Vec<ResponseBody> {
                     terminal: TerminalId::new(2),
                     title: "zsh".to_owned(),
                     exited: Some(TerminalExit { code: Some(0) }),
+                    shared: false,
+                    name: None,
                 },
                 TerminalInfo {
                     terminal: TerminalId::new(3),
                     title: "bash".to_owned(),
                     exited: Some(TerminalExit { code: None }),
+                    shared: false,
+                    name: None,
                 },
                 TerminalInfo {
                     terminal: TerminalId::new(4),
                     title: "fish".to_owned(),
                     exited: None,
+                    shared: true,
+                    name: Some("tests".to_owned()),
                 },
             ],
             shells: vec![
@@ -1000,6 +1022,19 @@ fn response_bodies() -> Vec<ResponseBody> {
                     },
                 },
             ],
+        },
+        ResponseBody::SharedTerminals {
+            terminals: vec![TerminalInfo {
+                terminal: TerminalId::new(4),
+                title: "fish".to_owned(),
+                exited: None,
+                shared: true,
+                name: None,
+            }],
+        },
+        ResponseBody::TerminalText {
+            lines: vec!["$ cargo test".to_owned(), "test result: ok".to_owned()],
+            total_lines: 120,
         },
         ResponseBody::File {
             path: Some(PathBuf::from("/srv/projects/shop/src/main.rs")),
@@ -1195,6 +1230,8 @@ fn server_messages() -> Vec<ServerMessage> {
             daemon_commit: Some(commit()),
             catchup: Catchup::Replay,
             replayed_through: Some(Seq::new(41)),
+            agent_tools: true,
+            agent_session: Some(AgentId::new(3)),
         },
         ServerMessage::Welcome {
             protocol_version: PROTOCOL_VERSION,
@@ -1202,6 +1239,8 @@ fn server_messages() -> Vec<ServerMessage> {
             daemon_commit: Some(commit()),
             catchup: Catchup::Replay,
             replayed_through: None,
+            agent_tools: false,
+            agent_session: None,
         },
         ServerMessage::Welcome {
             protocol_version: PROTOCOL_VERSION,
@@ -1209,6 +1248,8 @@ fn server_messages() -> Vec<ServerMessage> {
             daemon_commit: None,
             catchup: Catchup::Snapshot(snapshot()),
             replayed_through: None,
+            agent_tools: false,
+            agent_session: None,
         },
         ServerMessage::Refused {
             reason: "the daemon speaks protocol 2".to_owned(),
@@ -1260,6 +1301,11 @@ fn terminal_changes() -> Vec<TerminalChange> {
         },
         TerminalChange::Exited { code: Some(1) },
         TerminalChange::Exited { code: None },
+        TerminalChange::Shared { shared: true },
+        TerminalChange::Renamed {
+            name: Some("tests".to_owned()),
+        },
+        TerminalChange::Renamed { name: None },
         TerminalChange::Closed,
     ]
 }
@@ -1382,6 +1428,10 @@ fn method_names_are_pinned() {
             "terminal.input",
             "terminal.resize",
             "terminal.close",
+            "terminal.share",
+            "terminal.rename",
+            "terminal.list_shared",
+            "terminal.read_text",
             "mcp.remove",
             "settings.set",
             "sessions.list",
@@ -1413,7 +1463,7 @@ fn message_and_body_tags_are_pinned() {
     );
     assert_eq!(
         tags(&terminal_changes(), "type"),
-        ["opened", "output", "exited", "closed"]
+        ["opened", "output", "exited", "shared", "renamed", "closed"]
     );
     assert_eq!(
         tags(&[Catchup::Replay, Catchup::Snapshot(snapshot())], "type"),
@@ -1435,6 +1485,8 @@ fn message_and_body_tags_are_pinned() {
             "terminal_opened",
             "terminals",
             "terminal_screen",
+            "shared_terminals",
+            "terminal_text",
             "file",
             "image",
             "pdf",
@@ -1827,6 +1879,132 @@ fn a_terminal_screen_without_sizes_reads_as_an_empty_list() {
         }
     );
     assert_eq!(serde_json::to_value(&answer).unwrap(), older);
+}
+
+#[test]
+fn a_terminal_share_and_its_change_on_the_wire() {
+    let request = Request::TerminalShare(TerminalShareParams {
+        agent: agent(),
+        terminal: TerminalId::new(2),
+        shared: true,
+    });
+    let change = TerminalUpdate {
+        agent: agent(),
+        terminal: TerminalId::new(2),
+        change: TerminalChange::Shared { shared: true },
+    };
+
+    assert_wire(
+        &request,
+        json!({
+            "method": "terminal.share",
+            "params": { "agent": agent().get(), "terminal": 2, "shared": true },
+        }),
+    );
+    assert_wire(
+        &change,
+        json!({
+            "agent": agent().get(),
+            "terminal": 2,
+            "change": { "type": "shared", "shared": true },
+        }),
+    );
+}
+
+#[test]
+fn a_terminal_rename_and_its_change_on_the_wire() {
+    let request = Request::TerminalRename(TerminalRenameParams {
+        agent: agent(),
+        terminal: TerminalId::new(2),
+        name: Some("tests".to_owned()),
+    });
+    let back_to_the_shell = Request::TerminalRename(TerminalRenameParams {
+        agent: agent(),
+        terminal: TerminalId::new(2),
+        name: None,
+    });
+    let change = TerminalUpdate {
+        agent: agent(),
+        terminal: TerminalId::new(2),
+        change: TerminalChange::Renamed {
+            name: Some("tests".to_owned()),
+        },
+    };
+
+    assert_wire(
+        &request,
+        json!({
+            "method": "terminal.rename",
+            "params": { "agent": agent().get(), "terminal": 2, "name": "tests" },
+        }),
+    );
+    assert_wire(
+        &back_to_the_shell,
+        json!({
+            "method": "terminal.rename",
+            "params": { "agent": agent().get(), "terminal": 2, "name": null },
+        }),
+    );
+    assert_wire(
+        &change,
+        json!({
+            "agent": agent().get(),
+            "terminal": 2,
+            "change": { "type": "renamed", "name": "tests" },
+        }),
+    );
+}
+
+#[test]
+fn an_agents_reads_of_its_terminals_on_the_wire() {
+    let list = Request::TerminalListShared(AgentParams { agent: agent() });
+    let read = Request::TerminalReadText(TerminalReadParams {
+        agent: agent(),
+        terminal: TerminalId::new(2),
+        lines: 200,
+    });
+    let listed = ResponseBody::SharedTerminals {
+        terminals: vec![TerminalInfo {
+            terminal: TerminalId::new(2),
+            title: "zsh".to_owned(),
+            exited: None,
+            shared: true,
+            name: Some("tests".to_owned()),
+        }],
+    };
+    let text = ResponseBody::TerminalText {
+        lines: vec!["$ cargo test".to_owned()],
+        total_lines: 40,
+    };
+
+    assert_wire(
+        &list,
+        json!({ "method": "terminal.list_shared", "params": { "agent": agent().get() } }),
+    );
+    assert_wire(
+        &read,
+        json!({
+            "method": "terminal.read_text",
+            "params": { "agent": agent().get(), "terminal": 2, "lines": 200 },
+        }),
+    );
+    assert_wire(
+        &listed,
+        json!({
+            "type": "shared_terminals",
+            "terminals": [{
+                "terminal": 2,
+                "title": "zsh",
+                "exited": null,
+                "shared": true,
+                "name": "tests",
+            }],
+        }),
+    );
+    assert_wire(
+        &text,
+        json!({ "type": "terminal_text", "lines": ["$ cargo test"], "total_lines": 40 }),
+    );
 }
 
 #[test]
@@ -2358,6 +2536,8 @@ fn a_welcome_with_a_snapshot_on_the_wire() {
             }],
         }),
         replayed_through: None,
+        agent_tools: false,
+        agent_session: None,
     };
 
     assert_wire(
@@ -2394,6 +2574,7 @@ fn a_welcome_with_a_snapshot_on_the_wire() {
                 }],
                 "other_plan_usage": [{"account": 2, "usage": {"windows": {}}}],
             },
+            "agent_tools": false,
         }),
     );
 }
@@ -2406,6 +2587,8 @@ fn a_welcome_with_a_replay_on_the_wire() {
         daemon_commit: None,
         catchup: Catchup::Replay,
         replayed_through: Some(Seq::new(41)),
+        agent_tools: true,
+        agent_session: Some(AgentId::new(3)),
     };
 
     assert_wire(
@@ -2417,11 +2600,14 @@ fn a_welcome_with_a_replay_on_the_wire() {
             "daemon_commit": null,
             "catchup": {"type": "replay"},
             "replayed_through": 41,
+            "agent_tools": true,
+            "agent_session": 3,
         }),
     );
 }
 
-/// A daemon that predates `replayed_through` does not say where its replay ends.
+/// A daemon that predates `replayed_through` does not say where its replay ends, nor whether its
+/// agents get the terminal tools.
 #[test]
 fn a_welcome_without_the_end_of_its_replay_reads_as_none() {
     let older = r#"{"type":"welcome","protocol_version":1,"daemon_version":"0.1.0","daemon_commit":null,"catchup":{"type":"replay"}}"#;
@@ -2436,6 +2622,8 @@ fn a_welcome_without_the_end_of_its_replay_reads_as_none() {
             daemon_commit: None,
             catchup: Catchup::Replay,
             replayed_through: None,
+            agent_tools: false,
+            agent_session: None,
         }
     );
 }
@@ -2509,6 +2697,8 @@ fn a_terminal_list_without_shells_reads_as_none() {
                 terminal: TerminalId::new(2),
                 title: "zsh".to_owned(),
                 exited: None,
+                shared: false,
+                name: None,
             }],
             shells: Vec::new(),
         }

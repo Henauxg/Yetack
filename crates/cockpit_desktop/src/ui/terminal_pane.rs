@@ -8,7 +8,9 @@
 
 use std::path::PathBuf;
 
-use cockpit_protocol::{AgentId, TerminalId, TerminalParams, TerminalSize, TerminalSizeAt};
+use cockpit_protocol::{
+    AgentId, MAX_TITLE_CHARS, TerminalId, TerminalParams, TerminalSize, TerminalSizeAt,
+};
 use dioxus::prelude::*;
 use serde::{Deserialize, Serialize};
 
@@ -36,6 +38,10 @@ const GHOSTTY_WEB: &str = include_str!("../../assets/ghostty-web/ghostty-web.js"
 // The elements that hold the terminal each dock shows: the bottom dock's, then the side dock's.
 const SCREEN_ID: &str = "terminal-screen";
 const SIDE_SCREEN_ID: &str = "terminal-screen-side";
+/// The field that holds a terminal tab's title while it is renamed: one at a time.
+pub const TERMINAL_NAME_FIELD_ID: &str = "terminal-name-field";
+/// The tooltip of a shared tab's eye.
+const SHARED_TOOLTIP: &str = "The agent can read this terminal";
 
 /// Receives ghostty-web's source, then the pane's ids and the size limits, then output and
 /// screens. Sends what the user types, the sizes, the titles, and which terminals it needs the
@@ -1480,10 +1486,10 @@ pub fn tab_view(
     shown: Option<TerminalId>,
 ) -> Option<TerminalTabViewProps> {
     let tab = terminals.tab(terminal)?;
-    let title = if tab.title.is_empty() {
+    let title = if tab.shown_title().is_empty() {
         "shell".to_owned()
     } else {
-        tab.title.clone()
+        tab.shown_title().to_owned()
     };
     let exited = tab.exited.map(|exit| match exit.code {
         Some(code) => format!("exit {code}"),
@@ -1496,11 +1502,16 @@ pub fn tab_view(
         exited,
         selected: shown == Some(terminal),
         pinned: docks::is_pinned(state, agent, &TabKey::Terminal(terminal)),
+        // The eye would promise a read that a daemon without terminal tools cannot do.
+        shared: tab.shared && state.agent_reads_terminals(agent),
+        renaming: state.ui.terminal_rename == Some(TerminalParams { agent, terminal }),
     })
 }
 
 /// A terminal's tab, which looks as a file's: its "×" ends the shell, and a pinned tab shows a
-/// pin, which unpins it, in its place.
+/// pin, which unpins it, in its place. Its tooltip and its menu's title give the terminal's id,
+/// which the user and the agent name it by. A teal eye after the title says the agent may read it.
+/// A double-click on the title, or the menu's Rename, puts the title in a field.
 #[component]
 pub fn TerminalTabView(
     agent: AgentId,
@@ -1509,15 +1520,19 @@ pub fn TerminalTabView(
     exited: Option<String>,
     selected: bool,
     pinned: bool,
+    shared: bool,
+    renaming: bool,
 ) -> Element {
     let cockpit: Cockpit = use_context();
     let key = TabKey::Terminal(terminal);
     let page_key = key.to_page();
+    let tooltip = terminal_tab_menu::heading(terminal);
     rsx! {
         div {
             class: if selected { "file-tab terminal-tab selected" } else { "file-tab terminal-tab" },
             role: "tab",
             aria_selected: selected,
+            title: "{tooltip}",
             "data-tab": "{page_key}",
             "data-pinned": pinned.then_some(""),
             oncontextmenu: move |event: MouseEvent| {
@@ -1528,13 +1543,29 @@ pub fn TerminalTabView(
                 let (x, y) = (point.x.round() as i32, point.y.round() as i32);
                 cockpit.update(|state| terminal_tab_menu::open(state, agent, terminal, x, y));
             },
-            button {
-                class: "file-tab-name",
-                onclick: move |_| cockpit.update(|state| terminals::show(state, agent, terminal)),
-                span { class: "terminal-tab-icon", Icon { kind: IconKind::Terminal, size: 12 } }
-                span { class: "terminal-title", "{title}" }
-                if let Some(exited) = exited {
-                    span { class: "terminal-exited", "{exited}" }
+            if renaming {
+                // A div: a button would take the field's Space and Enter.
+                div { class: "file-tab-name",
+                    span { class: "terminal-tab-icon", Icon { kind: IconKind::Terminal, size: 12 } }
+                    TerminalNameField { agent, terminal, title: title.clone() }
+                    SharedMarker { shared }
+                    if let Some(exited) = exited.clone() {
+                        span { class: "terminal-exited", "{exited}" }
+                    }
+                }
+            } else {
+                button {
+                    class: "file-tab-name",
+                    onclick: move |_| cockpit.update(|state| terminals::show(state, agent, terminal)),
+                    ondoubleclick: move |_| {
+                        cockpit.update(|state| terminals::start_rename(state, agent, terminal));
+                    },
+                    span { class: "terminal-tab-icon", Icon { kind: IconKind::Terminal, size: 12 } }
+                    span { class: "terminal-title", "{title}" }
+                    SharedMarker { shared }
+                    if let Some(exited) = exited {
+                        span { class: "terminal-exited", "{exited}" }
+                    }
                 }
             }
             if pinned {
@@ -1557,6 +1588,58 @@ pub fn TerminalTabView(
                     Icon { kind: IconKind::Close, size: 12 }
                 }
             }
+        }
+    }
+}
+
+/// The eye of a terminal the agent may read. It stays in the tab while hidden, so that it grows in
+/// and shrinks out.
+#[component]
+fn SharedMarker(shared: bool) -> Element {
+    rsx! {
+        span {
+            class: if shared { "terminal-shared on" } else { "terminal-shared" },
+            title: shared.then_some(SHARED_TOOLTIP),
+            aria_label: shared.then_some(SHARED_TOOLTIP),
+            aria_hidden: (!shared).then_some(true),
+            Icon { kind: IconKind::Eye, size: 12 }
+        }
+    }
+}
+
+/// The field that takes a tab's title while it is renamed, as wide as the text in it: the tab
+/// keeps its width. Enter or a blur saves the name, Esc keeps the old one.
+#[component]
+fn TerminalNameField(agent: AgentId, terminal: TerminalId, title: String) -> Element {
+    let cockpit: Cockpit = use_context();
+    let opened_with = use_signal(|| title.clone());
+    let mut typed = use_signal(|| title.clone());
+    let save = move || {
+        let text = typed.peek().clone();
+        let opened_with = opened_with.peek().clone();
+        cockpit
+            .change(|state| terminals::finish_rename(state, agent, terminal, &opened_with, &text));
+    };
+    let chars = typed.read().chars().count();
+    rsx! {
+        input {
+            id: TERMINAL_NAME_FIELD_ID,
+            class: "terminal-name-field",
+            r#type: "text",
+            aria_label: "Terminal name",
+            style: "--chars: {chars}",
+            initial_value: "{title}",
+            maxlength: "{MAX_TITLE_CHARS}",
+            // The page's Esc would also close an open comment and drop its text.
+            "data-takes-escape": "",
+            onmounted: move |_| bridge::focus_title_field(TERMINAL_NAME_FIELD_ID, true),
+            oninput: move |event: FormEvent| typed.set(event.value()),
+            onkeydown: move |event: KeyboardEvent| match event.key() {
+                Key::Enter => save(),
+                Key::Escape => cockpit.update(terminals::cancel_rename),
+                _ => {}
+            },
+            onblur: move |_| bridge::save_on_blur(save, || {}),
         }
     }
 }
@@ -1768,6 +1851,61 @@ mod tests {
                 ]
             ),
             "{parsed:?}"
+        );
+    }
+
+    /// The tab's eye and its field follow the state: the daemon's flag, and the rename under way.
+    #[test]
+    fn the_tab_shows_the_marker_from_the_flag_and_the_users_name() {
+        use cockpit_protocol::{AgentStatus, TerminalChange, TerminalInfo, TerminalUpdate};
+
+        use crate::state::{state_with, summary};
+
+        let agent = AgentId::new(1);
+        let terminal = TerminalId::new(7);
+        let mut state = state_with(vec![summary(1, AgentStatus::Idle)]);
+        state.machines.this.agent_tools = true;
+        let info = TerminalInfo {
+            terminal,
+            title: "zsh".to_owned(),
+            exited: None,
+            shared: false,
+            name: None,
+        };
+        terminals::listed(&mut state, agent, Some(vec![info]), Vec::new());
+        let view = |state: &AppState| {
+            let terminals = &state.agents[&agent].terminals;
+            tab_view(state, agent, terminals, terminal, None).unwrap()
+        };
+
+        let before = view(&state);
+        for change in [
+            TerminalChange::Shared { shared: true },
+            TerminalChange::Renamed {
+                name: Some("tests".to_owned()),
+            },
+        ] {
+            terminals::apply_update(
+                &mut state,
+                TerminalUpdate {
+                    agent,
+                    terminal,
+                    change,
+                },
+            );
+        }
+        terminals::start_rename(&mut state, agent, terminal);
+        let after = view(&state);
+        state.machines.this.agent_tools = false;
+        let without_tools = view(&state);
+
+        assert!(!before.shared && !before.renaming);
+        assert_eq!(before.title, "zsh");
+        assert!(after.shared && after.renaming);
+        assert_eq!(after.title, "tests");
+        assert!(
+            !without_tools.shared,
+            "no eye where the daemon gives its agents no terminal tools"
         );
     }
 }

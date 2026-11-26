@@ -13,6 +13,7 @@ claude_protocol = { path = "crates/claude_protocol" }
 cockpit_protocol = { path = "crates/cockpit_protocol" }
 cockpit_client = { path = "crates/cockpit_client" }
 cockpit_daemon = { path = "crates/cockpit_daemon" }
+cockpit_mcp = { path = "crates/cockpit_mcp" }
 cockpit_voice = { path = "crates/cockpit_voice" }
 anyhow = "1"
 serde = { version = "1", features = ["derive"] }
@@ -23,6 +24,8 @@ thiserror = "2"
 tokio = { version = "1", features = ["io-util", "macros", "net", "process", "rt-multi-thread", "sync", "time", "fs", "signal"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+# Reads a terminal's kept output as text, for an agent that reads the terminal.
+vt100 = "0.18"
 
 # The standard's panic lints (docs/standards/rust/implementation.md, "Panics").
 [workspace.lints.clippy]

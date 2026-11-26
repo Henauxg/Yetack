@@ -13,6 +13,7 @@ use serde::{Deserialize, Serialize};
 use crate::connection::Cockpit;
 use crate::state::docks::{Dock, TabKey};
 use crate::state::{actions, terminals};
+use crate::ui::terminal_pane::TERMINAL_NAME_FIELD_ID;
 
 /// The attribute a row of tabs carries, which names its dock.
 pub const DOCK_ATTRIBUTE: &str = "data-dock";
@@ -164,7 +165,8 @@ const stop = () => {
 };
 document.addEventListener("pointerdown", (event) => {
   const tab = tabOf(event.target);
-  // A press on the tab's close or pin button stays a press on that button.
+  // A press on the tab's close or pin button stays a press on that button, and one in its name
+  // field selects text.
   const onButton = event.target instanceof Element && event.target.closest(settings.button_selector) !== null;
   if (tab === null || onButton || event.button !== 0 || drag !== null) {
     return;
@@ -245,8 +247,8 @@ struct Settings {
     zone_attribute: &'static str,
     /// On the drop area under the pointer.
     zone_target_class: &'static str,
-    /// The tab's buttons a drag does not start from.
-    button_selector: &'static str,
+    /// The tab's buttons and field, which a drag does not start from.
+    button_selector: String,
     /// On the dragged tab, which stays in its place, dimmed.
     dragged_attribute: &'static str,
     /// On the lifted copy of the tab that follows the pointer.
@@ -269,7 +271,7 @@ impl Settings {
             pinned_attribute: PINNED_ATTRIBUTE,
             zone_attribute: ZONE_ATTRIBUTE,
             zone_target_class: "drop-target",
-            button_selector: ".file-tab-close",
+            button_selector: format!(".file-tab-close, #{TERMINAL_NAME_FIELD_ID}"),
             dragged_attribute: "data-dragged",
             ghost_class: "tab-ghost",
             dragging_class: "dragging-tab",
@@ -355,7 +357,7 @@ mod tests {
                 "pinned_attribute": "data-pinned",
                 "zone_attribute": "data-dock-zone",
                 "zone_target_class": "drop-target",
-                "button_selector": ".file-tab-close",
+                "button_selector": ".file-tab-close, #terminal-name-field",
                 "dragged_attribute": "data-dragged",
                 "ghost_class": "tab-ghost",
                 "dragging_class": "dragging-tab",

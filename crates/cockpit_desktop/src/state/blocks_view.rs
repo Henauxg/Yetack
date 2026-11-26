@@ -178,6 +178,8 @@ mod tests {
             terminal: TerminalId::new(1),
             title: "zsh".to_owned(),
             exited: None,
+            shared: false,
+            name: None,
         };
         terminals::listed(&mut state, agent(), Some(vec![terminal]), Vec::new());
         terminals::toggle_pane(&mut state);

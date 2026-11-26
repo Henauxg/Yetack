@@ -4,12 +4,26 @@
 //! Their output does not go out as events: events are numbered, logged and replayed, and a shell
 //! can write megabytes a second. A [`TerminalUpdate`] goes to every client as it comes, and a
 //! client that missed some asks `terminal.attach` for the output the daemon keeps.
+//!
+//! The user can share a terminal with its agent, whose `claude` then reads its text through the
+//! daemon's MCP server (`yetack mcp`): `terminal.list_shared` and `terminal.read_text`.
 
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
 use crate::ids::AgentId;
+
+/// The most lines `terminal.read_text` answers: about 200 KB of text at 100 columns.
+pub const MAX_TEXT_LINES: u32 = 2000;
+
+/// The item of a terminal tab's menu that shares the terminal with its agent, which the refusals
+/// of an unshared terminal name.
+pub const SHARE_LABEL: &str = "Let the agent read it";
+
+/// The word before a terminal's id in the text a terminal tab's menu copies, "terminal 3", which
+/// the agent's `read_terminal` takes as the id.
+pub const TERMINAL_WORD: &str = "terminal";
 
 /// A terminal of the daemon, numbered from 1 for the daemon's life.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
@@ -92,7 +106,33 @@ pub struct TerminalResizeParams {
     pub size: TerminalSize,
 }
 
-/// A terminal as `agent.terminals` lists it.
+/// Lets the agent read a terminal, or stops it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TerminalShareParams {
+    pub agent: AgentId,
+    pub terminal: TerminalId,
+    pub shared: bool,
+}
+
+/// Names a terminal's tab, or gives it back the shell's own title.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TerminalRenameParams {
+    pub agent: AgentId,
+    pub terminal: TerminalId,
+    /// At most [`MAX_TITLE_CHARS`](crate::MAX_TITLE_CHARS) characters. `None` drops the name.
+    pub name: Option<String>,
+}
+
+/// What `terminal.read_text` reads.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TerminalReadParams {
+    pub agent: AgentId,
+    pub terminal: TerminalId,
+    /// How many of the last lines to answer. The daemon answers at most [`MAX_TEXT_LINES`].
+    pub lines: u32,
+}
+
+/// A terminal as `agent.terminals` and `terminal.list_shared` list it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TerminalInfo {
     pub terminal: TerminalId,
@@ -100,6 +140,12 @@ pub struct TerminalInfo {
     pub title: String,
     /// `Some` once the shell ended.
     pub exited: Option<TerminalExit>,
+    /// Whether the agent may read it. Every terminal starts unshared.
+    #[serde(default)]
+    pub shared: bool,
+    /// The name the user gave its tab, which the tab shows in place of the shell's title.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
 }
 
 /// How a terminal's shell ended. It is a struct, not an `Option`, since JSON writes `Some(None)`
@@ -127,6 +173,10 @@ pub enum TerminalChange {
     Output { offset: u64, data: String },
     /// The shell ended. The terminal stays, with its output, until a client closes it.
     Exited { code: Option<i32> },
+    /// A client let the agent read it, or stopped it.
+    Shared { shared: bool },
+    /// A client named its tab, or dropped the name (`None`).
+    Renamed { name: Option<String> },
     /// A client closed it.
     Closed,
 }

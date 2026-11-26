@@ -9,6 +9,8 @@ use clap::{Args, Parser, Subcommand, ValueEnum};
 #[cfg(unix)]
 use cockpit_client::BRIDGE_SUBCOMMAND;
 use cockpit_client::Transport;
+#[cfg(unix)]
+use cockpit_daemon::MCP_SUBCOMMAND;
 use cockpit_daemon::{HOME_ENV, RELEASE_VERSION, STATE_DIR_FLAG, build_commit, version_text};
 use cockpit_protocol::{AccountId, AgentId, Effort, PendingId, PermissionMode, PlanDecision};
 
@@ -59,6 +61,11 @@ pub(crate) enum Command {
     #[cfg(unix)]
     #[command(name = BRIDGE_SUBCOMMAND)]
     Bridge,
+    /// Serve an agent's MCP server over stdin and stdout, which lets it read the terminals the user
+    /// shares with it. The daemon starts it for each agent's claude, with YETACK_AGENT set
+    #[cfg(unix)]
+    #[command(name = MCP_SUBCOMMAND)]
+    Mcp,
     /// List the agents
     List,
     /// Start an agent in a folder, and print its id
@@ -317,6 +324,17 @@ mod tests {
     #[test]
     fn the_command_line_is_consistent() {
         Cli::command().debug_assert();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_mcp_subcommand_takes_the_state_folder_before_it() {
+        let cli =
+            Cli::try_parse_from(["yetack", "--state-dir", "/srv/state", MCP_SUBCOMMAND]).unwrap();
+
+        assert!(matches!(cli.command, Command::Mcp));
+        assert_eq!(cli.target.state_dir, Some(PathBuf::from("/srv/state")));
+        assert_eq!(MCP_SUBCOMMAND, "mcp");
     }
 
     #[cfg(unix)]

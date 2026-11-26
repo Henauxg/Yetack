@@ -7,7 +7,7 @@ use tokio::net::UnixListener;
 use tokio::sync::mpsc;
 
 use crate::hub::HubInput;
-use crate::server::peer::DaemonIdentity;
+use crate::server::peer::{DaemonIdentity, Peer};
 use crate::server::{connection, peer};
 
 /// Only the owner may connect: on Linux, connecting needs write permission on the socket.
@@ -33,7 +33,8 @@ pub(crate) fn bind(path: &Path) -> io::Result<UnixListener> {
     Ok(listener)
 }
 
-/// Accepts connections forever. Each peer is checked before any of its bytes is read.
+/// Accepts connections forever. Each peer is checked before any of its bytes is read, and a
+/// process under the daemon gets an agent's session.
 pub(crate) async fn accept_loop(
     listener: UnixListener,
     hub: mpsc::Sender<HubInput>,
@@ -42,9 +43,13 @@ pub(crate) async fn accept_loop(
     loop {
         match listener.accept().await {
             Ok((stream, _)) => match peer::check(&stream, daemon) {
-                Ok(()) => {
+                Ok(Peer::Outside) => {
                     let (read, write) = stream.into_split();
                     tokio::spawn(connection::serve(read, write, hub.clone()));
+                }
+                Ok(Peer::UnderDaemon { child }) => {
+                    let (read, write) = stream.into_split();
+                    tokio::spawn(connection::serve_agent(read, write, hub.clone(), child));
                 }
                 Err(error) => {
                     tracing::warn!(

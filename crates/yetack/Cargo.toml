@@ -15,6 +15,7 @@ anyhow.workspace = true
 clap = { version = "4", features = ["derive"] }
 cockpit_client.workspace = true
 cockpit_daemon.workspace = true
+cockpit_mcp.workspace = true
 cockpit_protocol.workspace = true
 serde.workspace = true
 serde_json.workspace = true

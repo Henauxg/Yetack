@@ -15,8 +15,11 @@ mod restore;
 mod shells;
 mod start;
 mod state;
+mod terminal_text;
 mod terminals;
 
+#[cfg(unix)]
+pub(crate) use input::AgentSession;
 pub(crate) use input::{HubInput, Joined, Registration};
 pub(crate) use restore::{Restored, restore};
 pub(crate) use state::Hub;

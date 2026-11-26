@@ -23,10 +23,10 @@ use cockpit_protocol::{
     Prompt, PromptId, Question, QuestionAnswer, QuestionOption, RateLimitStatus, ReleaseVersion,
     Remote, Repository, Request, ResourceUse, ResponseBody, Selection, ServerLoad, ServerPoint,
     SessionUse, ShellChoice, SignIn, SignInWait, SlashCommand, Subagent, SubagentRun,
-    SubagentStatus, SubagentToolCall, TaskListItem, TaskProgress, TaskStatus, TerminalId,
-    TerminalInfo, Timestamp, TokenUsage, ToolCall, ToolCallStatus, TranscriptItem, TurnEnd,
-    TurnOutcome, Upstream, UsageWindow, UserMessage, WaitingPrompt, WaitingState, WindowUsage,
-    is_pdf_name,
+    SubagentStatus, SubagentToolCall, TaskListItem, TaskProgress, TaskStatus, TerminalChange,
+    TerminalId, TerminalInfo, TerminalUpdate, Timestamp, TokenUsage, ToolCall, ToolCallStatus,
+    TranscriptItem, TurnEnd, TurnOutcome, Upstream, UsageWindow, UserMessage, WaitingPrompt,
+    WaitingState, WindowUsage, is_pdf_name,
 };
 use dioxus::prelude::{Signal, WritableExt};
 use serde_json::Value;
@@ -60,7 +60,7 @@ use crate::state::update_plan::{
 use crate::state::{
     AgentEntry, AppState, Block, ConnectionState, Dialog, Drafts, Loadable, MachineState, Popover,
     Utf16Offset, ViewMode, actions, claude_code_version, daemon_start, file_edits, file_tree,
-    machines, projects, quotes, resume, sending,
+    machines, projects, quotes, resume, sending, terminals,
 };
 use crate::update_script::{self, APP_VERSION};
 use crate::{command_line, ui};
@@ -1735,6 +1735,7 @@ pub fn state(daemon: DaemonLabel) -> AppState {
     state.machines.this.connection = ConnectionState::Connected;
     state.machines.this.daemon_version = Some(ReleaseVersion::new(APP_VERSION.to_owned()));
     state.machines.this.daemon_commit = update_script::app_commit();
+    state.machines.this.agent_tools = true;
     let agents = [
         parser_agent(now),
         question_agent(now),
@@ -1873,6 +1874,7 @@ fn insert_server<const N: usize>(
     server.connection = ConnectionState::Connected;
     server.daemon_version = Some(ReleaseVersion::new(APP_VERSION.to_owned()));
     server.daemon_commit = update_script::app_commit();
+    server.agent_tools = true;
     server.plan_usage = plan_usage(now);
     server.accounts = accounts().into_iter().take(1).collect();
     server.server = Some(MachineConfig {
@@ -2219,13 +2221,40 @@ pub fn latency(request: &Request) -> Duration {
 }
 
 /// What the daemon's events would change after a request it accepts: a rename shows in the
-/// title, a mark on the row, which a prompt clears unless it is kept, an answered approval and a
-/// stopped task show in the agent map, a reconnected MCP server connects, and the accounts
-/// change.
+/// title, a terminal's share and name on its tab, a mark on the row, which a prompt clears
+/// unless it is kept, an answered approval and a stopped task show in the agent map, a
+/// reconnected MCP server connects, and the accounts change.
 pub fn apply(state: &mut AppState, request: &Request) {
     apply_map_request(state, request);
     apply_account_request(state, request);
     match request {
+        Request::TerminalShare(params) => terminals::apply_update(
+            state,
+            TerminalUpdate {
+                agent: params.agent,
+                terminal: params.terminal,
+                change: TerminalChange::Shared {
+                    shared: params.shared,
+                },
+            },
+        ),
+        Request::TerminalRename(params) => {
+            // As the daemon does: blanks drop the name, and the rest is trimmed.
+            let name = params
+                .name
+                .as_deref()
+                .map(str::trim)
+                .filter(|name| !name.is_empty())
+                .map(str::to_owned);
+            terminals::apply_update(
+                state,
+                TerminalUpdate {
+                    agent: params.agent,
+                    terminal: params.terminal,
+                    change: TerminalChange::Renamed { name },
+                },
+            );
+        }
         Request::AgentRename(params) => {
             if let Some(entry) = state.agents.get_mut(&params.agent) {
                 entry.summary.title.clone_from(&params.title);
@@ -2428,10 +2457,19 @@ pub fn answer(state: &AppState, request: &Request) -> Result<ResponseBody, Reque
         Request::AgentFindFiles(params) => Ok(find_files(&params.name)),
         Request::AgentTerminals(params) => Ok(ResponseBody::Terminals {
             terminals: (params.agent == AgentId::new(TERMINAL_AGENT))
-                .then(|| TerminalInfo {
-                    terminal: demo_terminal(),
-                    title: "zsh".to_owned(),
-                    exited: None,
+                .then(|| {
+                    // A listing again keeps what the user changed.
+                    let tab = state
+                        .agents
+                        .get(&params.agent)
+                        .and_then(|entry| entry.terminals.tab(demo_terminal()));
+                    TerminalInfo {
+                        terminal: demo_terminal(),
+                        title: "zsh".to_owned(),
+                        exited: None,
+                        shared: tab.is_some_and(|tab| tab.shared),
+                        name: tab.and_then(|tab| tab.name.clone()),
+                    }
                 })
                 .into_iter()
                 .collect(),
@@ -3614,6 +3652,35 @@ fn mcp_servers() -> Vec<McpServer> {
             tools: vec![
                 tool("list_tickets", "Lists the open tickets", true, false, 1),
                 tool("close_ticket", "Closes a ticket", false, true, 0),
+            ],
+        },
+        // The daemon's own server, which it gives every agent on `claude`'s command line.
+        McpServer {
+            name: "yetack".to_owned(),
+            status: McpServerStatus::Connected,
+            error: None,
+            version: Some(format!("yetack {APP_VERSION}")),
+            transport: Some(McpTransport::Stdio {
+                command:
+                    "/home/dev/.local/bin/yetack --state-dir /home/dev/.local/state/yetack mcp"
+                        .to_owned(),
+            }),
+            scope: None,
+            tools: vec![
+                tool(
+                    "list_terminals",
+                    "Lists the terminals the user shares with you",
+                    true,
+                    false,
+                    1,
+                ),
+                tool(
+                    "read_terminal",
+                    "Reads a terminal the user shares with you",
+                    true,
+                    false,
+                    2,
+                ),
             ],
         },
         McpServer {

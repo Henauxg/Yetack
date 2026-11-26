@@ -18,7 +18,8 @@ use crate::ids::{
 };
 use crate::settings::Settings;
 use crate::terminal::{
-    TerminalInputParams, TerminalOpenParams, TerminalParams, TerminalResizeParams,
+    TerminalInputParams, TerminalOpenParams, TerminalParams, TerminalReadParams,
+    TerminalRenameParams, TerminalResizeParams, TerminalShareParams,
 };
 use crate::transcript::{ApprovalAnswer, Image, PlanAnswer, QuestionAnswer};
 
@@ -136,6 +137,17 @@ pub enum Request {
     TerminalResize(TerminalResizeParams),
     /// Ends a terminal's shell and forgets the terminal. Answered by `Done`.
     TerminalClose(TerminalParams),
+    /// Lets the agent read a terminal, or stops it. Answered by `Done`, and a
+    /// `TerminalChange::Shared` to every client.
+    TerminalShare(TerminalShareParams),
+    /// Names a terminal's tab, or gives it back the shell's title. Answered by `Done`, and a
+    /// `TerminalChange::Renamed` to every client.
+    TerminalRename(TerminalRenameParams),
+    /// The agent's terminals that it may read. Answered by `SharedTerminals`.
+    TerminalListShared(AgentParams),
+    /// The last lines of a terminal the agent may read, from its scrollback and its screen.
+    /// Answered by `TerminalText`.
+    TerminalReadText(TerminalReadParams),
     /// Runs `claude mcp remove <server> -s <scope>` in the agent's folder. Answered by `Done`.
     McpRemove(McpRemoveParams),
     /// Replaces the settings. Answered by `Done`, and a `SettingsChanged` event to every client.
@@ -259,6 +271,14 @@ pub enum Method {
     TerminalResize,
     #[strum(serialize = "terminal.close")]
     TerminalClose,
+    #[strum(serialize = "terminal.share")]
+    TerminalShare,
+    #[strum(serialize = "terminal.rename")]
+    TerminalRename,
+    #[strum(serialize = "terminal.list_shared")]
+    TerminalListShared,
+    #[strum(serialize = "terminal.read_text")]
+    TerminalReadText,
     #[strum(serialize = "mcp.remove")]
     McpRemove,
     #[strum(serialize = "settings.set")]
@@ -643,6 +663,10 @@ impl Request {
             Self::TerminalInput(_) => Method::TerminalInput,
             Self::TerminalResize(_) => Method::TerminalResize,
             Self::TerminalClose(_) => Method::TerminalClose,
+            Self::TerminalShare(_) => Method::TerminalShare,
+            Self::TerminalRename(_) => Method::TerminalRename,
+            Self::TerminalListShared(_) => Method::TerminalListShared,
+            Self::TerminalReadText(_) => Method::TerminalReadText,
             Self::McpRemove(_) => Method::McpRemove,
             Self::SettingsSet(_) => Method::SettingsSet,
             Self::SessionsList => Method::SessionsList,
@@ -719,6 +743,10 @@ impl Serialize for Request {
             Self::TerminalInput(params) => tagged(method, params, serializer),
             Self::TerminalResize(params) => tagged(method, params, serializer),
             Self::TerminalClose(params) => tagged(method, params, serializer),
+            Self::TerminalShare(params) => tagged(method, params, serializer),
+            Self::TerminalRename(params) => tagged(method, params, serializer),
+            Self::TerminalListShared(params) => tagged(method, params, serializer),
+            Self::TerminalReadText(params) => tagged(method, params, serializer),
             Self::McpRemove(params) => tagged(method, params, serializer),
             Self::SettingsSet(params) => tagged(method, params, serializer),
             Self::SessionsList | Self::MachineLoad | Self::AccountsList => Tagged::<()> {
@@ -793,6 +821,10 @@ impl<'de> Deserialize<'de> for Request {
             Method::TerminalInput => Self::TerminalInput(params(raw)?),
             Method::TerminalResize => Self::TerminalResize(params(raw)?),
             Method::TerminalClose => Self::TerminalClose(params(raw)?),
+            Method::TerminalShare => Self::TerminalShare(params(raw)?),
+            Method::TerminalRename => Self::TerminalRename(params(raw)?),
+            Method::TerminalListShared => Self::TerminalListShared(params(raw)?),
+            Method::TerminalReadText => Self::TerminalReadText(params(raw)?),
             Method::McpRemove => Self::McpRemove(params(raw)?),
             Method::SettingsSet => Self::SettingsSet(params(raw)?),
             Method::SessionsList => Self::SessionsList,

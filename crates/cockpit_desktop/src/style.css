@@ -1544,6 +1544,11 @@ button:disabled {
   color: var(--red);
 }
 
+/* A flat menu's title line, such as a terminal tab's id, lined up with its rows' labels. */
+.keyed-menu .flat-menu-title {
+  padding: 5px 8px 3px;
+}
+
 /* The project menu's head: the project it acts on. */
 .project-menu-title {
   display: flex;
@@ -5458,6 +5463,17 @@ html[data-blocks-settling] :is(.chat-scroll, .composer-wrap, .jump-latest) {
   gap: 10px;
 }
 
+/* The page takes the wide card's width, less the body's padding, from the start: WebKitGTK keeps
+   the height a tab's panel had at the narrow width while the card widens. The card hides what
+   passes its edge meanwhile. */
+.block-card.wide {
+  overflow: hidden;
+}
+
+.block-card.wide .mcp-detail-view {
+  width: 356px;
+}
+
 .back-button {
   align-self: flex-start;
   display: inline-flex;
@@ -5478,7 +5494,7 @@ html[data-blocks-settling] :is(.chat-scroll, .composer-wrap, .jump-latest) {
 }
 
 .mcp-name {
-  flex: 1 1 auto;
+  flex: 0 1 auto;
   min-width: 0;
   font-size: 14px;
   font-weight: 600;
@@ -5530,7 +5546,7 @@ html[data-blocks-settling] :is(.chat-scroll, .composer-wrap, .jump-latest) {
 }
 
 /* How the last reconnect went, under the server's name. It folds open and shut by its height,
-   so the facts under it move with it. */
+   so what is under it moves with it. */
 .mcp-reconnect-note {
   display: grid;
   grid-template-rows: 1fr;
@@ -5575,17 +5591,89 @@ html[data-blocks-settling] :is(.chat-scroll, .composer-wrap, .jump-latest) {
   animation: note-out var(--motion-out) var(--ease-in) forwards;
 }
 
+/* Where the server comes from, under its name. */
+.mcp-source {
+  margin: 0;
+  font-size: 12.5px;
+  color: var(--text-soft);
+}
+
+/* The Details tab's facts: a label column wide enough for "Version", and the values. */
 .mcp-facts {
   display: flex;
   flex-direction: column;
-  gap: 2px;
-  font-size: 12px;
-  color: var(--muted);
+  gap: 5px;
+  margin: 0;
+  font-size: 12.5px;
 }
 
-.mcp-facts .mono {
-  font-size: 11.5px;
+.mcp-fact {
+  display: grid;
+  grid-template-columns: 56px 1fr;
+  gap: 12px;
+}
+
+.mcp-fact dt {
+  color: var(--dim);
+}
+
+.mcp-fact dd {
+  min-width: 0;
+  margin: 0;
+  color: var(--text-soft);
+}
+
+.mcp-fact .mono {
+  font-size: 12px;
   overflow-wrap: anywhere;
+}
+
+/* The tabs, lower than a dialog's. */
+.dialog-tabs.mcp-tabs {
+  gap: 14px;
+  padding: 0;
+}
+
+.mcp-tabs .dialog-tab {
+  min-height: 30px;
+  padding: 0 2px;
+  font-size: 12.5px;
+}
+
+/* Both tabs' panels stay on the page: the shown one opens to its height as the other folds shut,
+   so the card's height moves from one tab's to the other's. Both take the timing of the panel
+   that opens, so the height moves straight there without growing past it first. The content's
+   4px padding gives focus rings room inside the clip, and the -4px margin takes it back. */
+.mcp-tab-panels {
+  display: flex;
+  flex-direction: column;
+  margin: -4px;
+}
+
+.mcp-tab-panel {
+  display: grid;
+  grid-template-rows: 0fr;
+  opacity: 0;
+  transition:
+    grid-template-rows var(--motion-in) var(--ease-out),
+    opacity var(--motion-in) var(--ease-out);
+}
+
+.mcp-tab-panel.shown {
+  grid-template-rows: 1fr;
+  opacity: 1;
+}
+
+.mcp-tab-clip {
+  min-height: 0;
+  overflow: hidden;
+}
+
+.mcp-tab-content {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 4px;
 }
 
 .error-box,
@@ -5608,7 +5696,7 @@ html[data-blocks-settling] :is(.chat-scroll, .composer-wrap, .jump-latest) {
 }
 
 /* The sign-in box on a server's page. It folds open and shut by its height, as the reconnect
-   note does, so the facts and tools under it move with it. */
+   note does, so what is under it moves with it. */
 .mcp-sign-in {
   display: grid;
   grid-template-rows: 1fr;
@@ -5677,7 +5765,6 @@ html[data-blocks-settling] :is(.chat-scroll, .composer-wrap, .jump-latest) {
   color: var(--red);
 }
 
-.mcp-tools,
 .mcp-remove {
   display: flex;
   flex-direction: column;
@@ -5711,21 +5798,24 @@ html[data-blocks-settling] :is(.chat-scroll, .composer-wrap, .jump-latest) {
 .tool-list {
   display: flex;
   flex-direction: column;
+  gap: 2px;
   max-height: 280px;
 }
 
 .tool-row {
+  flex: none;
   display: flex;
   flex-direction: column;
-  gap: 1px;
-  padding: 6px 2px;
-  border-bottom: 1px solid var(--hover);
+  gap: 2px;
+  padding: 6px 8px;
+  border-radius: 7px;
+  background: var(--well);
 }
 
 .tool-row-head {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
 }
 
 .tool-row-name {
@@ -5740,7 +5830,7 @@ html[data-blocks-settling] :is(.chat-scroll, .composer-wrap, .jump-latest) {
 .tool-used {
   flex: none;
   font-size: 11.5px;
-  color: var(--muted);
+  color: var(--dim);
 }
 
 .tool-chip {
@@ -8311,6 +8401,50 @@ html.splitting * {
   font-size: 11px;
 }
 
+/* The eye of a terminal the agent may read. It is always in the tab, so that it can grow in and
+   shrink out. When it is hidden, its -6px margin cancels the 6px gap of the tab's name. */
+.terminal-shared {
+  flex: none;
+  display: inline-flex;
+  width: 0;
+  margin-left: -6px;
+  overflow: hidden;
+  opacity: 0;
+  color: var(--teal);
+  transition:
+    width var(--motion-out) var(--ease-in),
+    margin-left var(--motion-out) var(--ease-in),
+    opacity var(--motion-out) var(--ease-in);
+}
+
+.terminal-shared.on {
+  width: 12px;
+  margin-left: 0;
+  opacity: 1;
+  transition:
+    width var(--motion-in) var(--ease-out),
+    margin-left var(--motion-in) var(--ease-out),
+    opacity var(--motion-in) var(--ease-out);
+}
+
+/* The field that takes a tab's title while it is renamed: as wide as its text in the tab's
+   monospace font, with its frame drawn outside that width, so the tab keeps its size, and capped as
+   the title is. */
+.terminal-name-field {
+  width: max(1ch, calc(var(--chars) * 1ch));
+  max-width: 40ch;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 3px;
+  background: var(--bg);
+  outline: 1px solid rgba(45, 212, 191, 0.55);
+  outline-offset: 2px;
+  box-shadow: 0 0 0 4px rgba(45, 212, 191, 0.12);
+  color: var(--text);
+  font: inherit;
+}
+
 .file-tabs > .terminal-new {
   align-self: center;
 }
@@ -8791,7 +8925,9 @@ html.splitting * {
   align-self: center;
 }
 
+/* A name can hold 200 characters: past 40, the tab cuts it with an ellipsis. */
 .terminal-title {
+  max-width: 40ch;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -12208,6 +12344,7 @@ label.icon-button,
 .effort:active,
 .segment:active,
 .filter:active,
+.mcp-tab:active,
 .copy-button:not(:disabled):active,
 .back-button:active,
 .fold-lines:active,
@@ -12309,7 +12446,7 @@ html.splitting .sidebar {
 
 /* A switch to another agent draws its layout at once. `!important` beats the rules above, some of
    which are more specific. */
-.app.switching :is(.chat-scroll, .composer-wrap, .block-card, .jump-latest, .send-button, .send-button > *) {
+.app.switching :is(.chat-scroll, .composer-wrap, .block-card, .jump-latest, .send-button, .send-button > *, .terminal-shared, .mcp-tab-panel) {
   transition-duration: 0s !important;
 }
 

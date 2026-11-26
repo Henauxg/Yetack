@@ -421,6 +421,9 @@ pub struct MachineState {
     /// while the app was away, so they raise no notification. `None` after a snapshot, and from a
     /// daemon that does not say.
     pub replayed_through: Option<Seq>,
+    /// Whether the daemon gives each agent's `claude` the MCP server that reads the terminals the
+    /// user shares, as its last welcome said. Without it, the app offers no sharing.
+    pub agent_tools: bool,
     /// The default account's plan usage.
     pub plan_usage: PlanUsage,
     pub settings: Settings,
@@ -475,6 +478,7 @@ impl MachineState {
             daemon_version: None,
             daemon_commit: None,
             replayed_through: None,
+            agent_tools: false,
             plan_usage: PlanUsage::default(),
             settings: Settings::default(),
             accounts: Vec::new(),
@@ -664,6 +668,14 @@ impl AppState {
     pub fn daemon_machine(&self, agent: AgentId) -> Option<&str> {
         let machine = self.machines.get(MachineId::of(agent))?;
         Some(&machine.daemon.machine)
+    }
+
+    /// Whether the daemon of the machine `agent` is on lets its agents read the terminals the user
+    /// shares.
+    pub fn agent_reads_terminals(&self, agent: AgentId) -> bool {
+        self.machines
+            .get(MachineId::of(agent))
+            .is_some_and(|machine| machine.agent_tools)
     }
 
     /// Whether the app is connected to the daemon of the machine `agent` is on.
@@ -895,6 +907,8 @@ pub(crate) mod tests {
             daemon_commit: Some(BuildCommit::new(DAEMON_COMMIT.to_owned())),
             catchup,
             replayed_through: None,
+            agent_tools: false,
+            agent_session: None,
         })
     }
 

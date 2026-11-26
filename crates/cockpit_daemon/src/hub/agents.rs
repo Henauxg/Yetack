@@ -972,7 +972,7 @@ pub(super) fn check_model(model: &str) -> Result<(), ErrorBody> {
 
 /// A title from a client, its whitespace collapsed to single spaces and trimmed. It is refused
 /// empty or over [`MAX_TITLE_CHARS`] characters.
-fn client_title(text: &str) -> Result<String, ErrorBody> {
+pub(super) fn client_title(text: &str) -> Result<String, ErrorBody> {
     let title = text.split_whitespace().collect::<Vec<_>>().join(" ");
     if title.is_empty() {
         return Err(errors::invalid("the title is empty".to_owned()));
