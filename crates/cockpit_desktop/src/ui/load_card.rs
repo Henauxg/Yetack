@@ -8,9 +8,10 @@ use dioxus::prelude::*;
 use crate::connection::Cockpit;
 use crate::format;
 use crate::machine::MachineId;
-use crate::state::machine_load::{self, AgentLine, LoadLevel, LoadView};
+use crate::state::machine_load::{self, AgentLine, IdleAgent, LoadLevel, LoadView};
 use crate::state::{AppState, Popover};
 use crate::ui::icons::{Icon, IconKind};
+use crate::ui::presence::use_presence;
 
 /// The class of a value the daemon could not give.
 const UNKNOWN_CLASS: &str = "load-unknown";
@@ -106,6 +107,7 @@ fn known_load(cockpit: Cockpit, load: &MachineLoad, state: &AppState) -> Element
         (percent, text)
     });
     let lines = machine_load::agent_lines(load, state);
+    let unfolded = state.ui.idle_agents_unfolded;
     let others_percent = machine_load::share_of_server(load.others.cpu, server);
     let others_class = LoadLevel::from_percent(others_percent).class();
     let others_cores = format::cores(load.others.cpu);
@@ -132,7 +134,7 @@ fn known_load(cockpit: Cockpit, load: &MachineLoad, state: &AppState) -> Element
             }
             div { class: "load-agents",
                 for line in lines {
-                    {agent_line(cockpit, line)}
+                    {agent_line(cockpit, line, unfolded)}
                 }
             }
         }
@@ -153,7 +155,8 @@ fn known_load(cockpit: Cockpit, load: &MachineLoad, state: &AppState) -> Element
     }
 }
 
-fn agent_line(cockpit: Cockpit, line: AgentLine) -> Element {
+/// An agent's line, or the line of the idle agents, which `unfolded` lists under it.
+fn agent_line(cockpit: Cockpit, line: AgentLine, unfolded: bool) -> Element {
     match line {
         AgentLine::Agent {
             agent,
@@ -186,16 +189,68 @@ fn agent_line(cockpit: Cockpit, line: AgentLine) -> Element {
             }
         }
         AgentLine::Idle {
-            count,
             memory_bytes,
+            agents,
         } => {
+            let count = agents.len();
             let memory = format::memory(memory_bytes);
+            // A fixed key keeps the list mounted when the count changes. Agents' keys are numbers,
+            // so it matches none.
+            let key = "idle";
             rsx! {
-                div { key: "idle-{count}", class: "load-row",
-                    span { class: "load-row-title muted", "{count} idle agents" }
-                    div { class: "bar small" }
-                    span { class: "load-figure", "0.0 cores" }
-                    span { class: "load-figure", "{memory}" }
+                div { key: "{key}", class: "load-idle-group",
+                    button {
+                        class: if unfolded { "load-row load-agent load-idle open" } else { "load-row load-agent load-idle" },
+                        aria_expanded: unfolded,
+                        title: if unfolded { "Fold the idle agents" } else { "List the idle agents" },
+                        onclick: move |_| cockpit.update(|state| {
+                            state.ui.idle_agents_unfolded = !state.ui.idle_agents_unfolded;
+                        }),
+                        span { class: "load-row-title muted load-idle-title",
+                            span { class: "load-idle-chevron", Icon { kind: IconKind::ChevronRight, size: 12 } }
+                            "{count} idle agents"
+                        }
+                        div { class: "bar small" }
+                        span { class: "load-figure", "0.0 cores" }
+                        span { class: "load-figure", "{memory}" }
+                    }
+                    IdleAgents { agents: unfolded.then_some(agents) }
+                }
+            }
+        }
+    }
+}
+
+/// The idle agents, under their line: each opens on a click. The list folds open and shut, and
+/// scrolls past a few agents. A list open as the card opens draws at once.
+#[component]
+fn IdleAgents(agents: Option<Vec<IdleAgent>>) -> Element {
+    let cockpit: Cockpit = use_context();
+    let open_at_mount = use_hook(|| agents.is_some());
+    let Some(shown) = use_presence(agents) else {
+        return rsx! {};
+    };
+    let class = match (shown.leaving, open_at_mount && shown.opening == 1) {
+        (true, _) => "load-idle-fold leaving",
+        (false, true) => "load-idle-fold instant",
+        (false, false) => "load-idle-fold",
+    };
+    rsx! {
+        div { class, inert: shown.leaving.then_some(true),
+            div { class: "load-idle-clip",
+                div { class: "load-idle-list scroll",
+                    for idle in shown.value {
+                        button {
+                            key: "{idle.agent.get()}",
+                            class: "load-row load-agent",
+                            title: "Open {idle.title}",
+                            onclick: move |_| select(cockpit, idle.agent),
+                            span { class: "load-row-title", "{idle.title}" }
+                            div { class: "bar small" }
+                            span { class: "load-figure", "0.0 cores" }
+                            span { class: "load-figure", "{format::memory(idle.memory_bytes)}" }
+                        }
+                    }
                 }
             }
         }

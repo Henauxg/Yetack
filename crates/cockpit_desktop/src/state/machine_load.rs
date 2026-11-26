@@ -10,10 +10,10 @@ use cockpit_protocol::{
     ServerLoad, StopProcessParams,
 };
 
-use super::actions;
 use super::app_state::AppState;
 use super::requests::Outgoing;
 use super::ui_state::Popover;
+use super::{actions, title_emoji};
 use crate::machine::MachineId;
 
 /// How often the app asks for the load while connected: the daemon's sampling interval.
@@ -28,6 +28,9 @@ const SATURATED_PERCENT: u8 = 95;
 const HEAVY_AGENT_SHARE: f64 = 0.25;
 /// Under this, an agent's CPU reads 0.0 cores, and the card folds it with the other idle agents.
 const IDLE_CORES: f64 = 0.05;
+/// The idle agents' list orders them by their memory in steps of this many bytes.
+const IDLE_ORDER_STEP_BYTES: u64 = 64 * 1024 * 1024;
+
 /// The card folds idle agents into one line from this many.
 const MIN_FOLDED: usize = 2;
 
@@ -160,8 +163,19 @@ pub enum AgentLine {
         heavy: bool,
         selected: bool,
     },
-    /// The agents that use no CPU, together.
-    Idle { count: usize, memory_bytes: u64 },
+    /// The agents that use no CPU, on one line. `agents` lists them, the heaviest in memory first.
+    Idle {
+        memory_bytes: u64,
+        agents: Vec<IdleAgent>,
+    },
+}
+
+/// An agent of the idle line, which the line lists once unfolded.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IdleAgent {
+    pub agent: AgentId,
+    pub title: String,
+    pub memory_bytes: u64,
 }
 
 /// Every agent the answer measured, the heaviest first; the idle ones fold into one line at the
@@ -189,12 +203,19 @@ pub fn agent_lines(load: &MachineLoad, state: &AppState) -> Vec<AgentLine> {
         .iter()
         .filter(|(measured, _)| is_idle(measured.cpu, measured.agent))
         .count();
-    let fold = idle_count >= MIN_FOLDED;
+    // An open list keeps its line, even for one agent: it would vanish under the pointer.
+    let fold = idle_count >= MIN_FOLDED || (state.ui.idle_agents_unfolded && idle_count > 0);
     let mut lines = Vec::with_capacity(agents.len());
     let mut idle_memory: u64 = 0;
+    let mut idle_agents = Vec::new();
     for (measured, title) in agents {
         if fold && is_idle(measured.cpu, measured.agent) {
             idle_memory = idle_memory.saturating_add(measured.memory_bytes);
+            idle_agents.push(IdleAgent {
+                agent: measured.agent,
+                title,
+                memory_bytes: measured.memory_bytes,
+            });
             continue;
         }
         lines.push(AgentLine::Agent {
@@ -208,9 +229,20 @@ pub fn agent_lines(load: &MachineLoad, state: &AppState) -> Vec<AgentLine> {
         });
     }
     if fold {
+        // By steps of memory, so that two agents whose memory moves a little keep their places under
+        // the pointer.
+        idle_agents.sort_by_cached_key(|idle| {
+            (
+                std::cmp::Reverse(idle.memory_bytes / IDLE_ORDER_STEP_BYTES),
+                title_emoji::split(&idle.title)
+                    .map_or(idle.title.as_str(), |(_, rest)| rest.trim_start())
+                    .to_lowercase(),
+                idle.agent,
+            )
+        });
         lines.push(AgentLine::Idle {
-            count: idle_count,
             memory_bytes: idle_memory,
+            agents: idle_agents,
         });
     }
     lines
@@ -280,7 +312,7 @@ pub(crate) mod tests {
             .iter()
             .map(|line| match line {
                 AgentLine::Agent { agent, .. } => agent.get().to_string(),
-                AgentLine::Idle { count, .. } => format!("{count} idle"),
+                AgentLine::Idle { agents, .. } => format!("{} idle", agents.len()),
             })
             .collect()
     }
@@ -316,13 +348,16 @@ pub(crate) mod tests {
         let lines = agent_lines(&answer, &state);
 
         assert_eq!(names(&lines), ["3", "1", "5", "3 idle"]);
-        assert_eq!(
-            lines.last(),
-            Some(&AgentLine::Idle {
-                count: 3,
-                memory_bytes: 7 * GIB,
-            })
-        );
+        let Some(AgentLine::Idle {
+            memory_bytes,
+            agents,
+        }) = lines.last()
+        else {
+            panic!("expected the idle agents last");
+        };
+        assert_eq!(*memory_bytes, 7 * GIB);
+        let heaviest_first: Vec<u32> = agents.iter().map(|idle| idle.agent.get()).collect();
+        assert_eq!(heaviest_first, [6, 4, 2], "the heaviest in memory first");
         let Some(AgentLine::Agent {
             bar_percent, heavy, ..
         }) = lines.first()
@@ -351,6 +386,44 @@ pub(crate) mod tests {
         let lines = agent_lines(&answer, &state);
 
         assert_eq!(names(&lines), ["3", "2", "1"]);
+    }
+
+    #[test]
+    fn an_open_list_keeps_its_line_for_one_idle_agent() {
+        let mut state = state_with((1..=2).map(|id| summary(id, AgentStatus::Idle)).collect());
+        let answer = load(vec![measured(1, 0.0, 1), measured(2, 0.5, 1)]);
+        let folded = names(&agent_lines(&answer, &state));
+
+        state.ui.idle_agents_unfolded = true;
+
+        assert_eq!(folded, ["2", "1"]);
+        assert_eq!(names(&agent_lines(&answer, &state)), ["2", "1 idle"]);
+    }
+
+    #[test]
+    fn idle_agents_whose_memory_moves_a_little_keep_their_order() {
+        let state = state_with((1..=3).map(|id| summary(id, AgentStatus::Idle)).collect());
+        let order = |memory: [u64; 3]| {
+            let measured = (1..=3).zip(memory).map(|(id, bytes)| AgentLoad {
+                memory_bytes: bytes,
+                ..measured(id, 0.0, 0)
+            });
+            let lines = agent_lines(&load(measured.collect()), &state);
+            let Some(AgentLine::Idle { agents, .. }) = lines.last() else {
+                panic!("expected the idle agents");
+            };
+            agents
+                .iter()
+                .map(|idle| idle.agent.get())
+                .collect::<Vec<u32>>()
+        };
+        const MIB: u64 = 1024 * 1024;
+
+        let before = order([412 * MIB, 413 * MIB, 900 * MIB]);
+        let after = order([414 * MIB, 412 * MIB, 900 * MIB]);
+
+        assert_eq!(before, [3, 1, 2], "the heaviest first, then by title");
+        assert_eq!(after, before);
     }
 
     #[test]

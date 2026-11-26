@@ -758,6 +758,8 @@ pub struct UiState {
     pub chat_room: ChatRoom,
     /// The agents whose background block lists the finished tasks, not only the running ones.
     pub finished_tasks_unfolded: BTreeSet<AgentId>,
+    /// Whether the load card lists the idle agents under their line.
+    pub idle_agents_unfolded: bool,
     pub popover: Option<Popover>,
     pub dialog: Option<Dialog>,
     /// The file views: one for each agent's dock that shows files.
@@ -832,6 +834,7 @@ impl Default for UiState {
             badge: None,
             chat_room: ChatRoom::ForCards,
             finished_tasks_unfolded: BTreeSet::new(),
+            idle_agents_unfolded: false,
             popover: None,
             dialog: None,
             file_views: BTreeMap::new(),

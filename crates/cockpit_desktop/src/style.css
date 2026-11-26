@@ -2213,6 +2213,9 @@ html.reordering * {
   right: 0;
   top: calc(100% + 6px);
   width: 440px;
+  /* A short window scrolls the card, whose stop buttons stay in reach. */
+  max-height: calc(100vh - 80px);
+  overflow-y: auto;
   display: flex;
   flex-direction: column;
   gap: 12px;
@@ -2274,8 +2277,68 @@ html.reordering * {
   background: var(--hover);
 }
 
+.load-agent:active {
+  background: var(--pressed);
+}
+
+/* The idle list's scroll cuts a focus ring drawn outside a row. */
+.load-agent:focus-visible {
+  outline-offset: -2px;
+}
+
 .load-agent.selected .load-row-title {
   color: var(--teal);
+}
+
+/* The idle line and its list sit in the card's list as its other rows do. */
+.load-idle-group {
+  display: contents;
+}
+
+/* The idle agents' line opens their list: its chevron turns down while the list shows. */
+.load-idle-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.load-idle-chevron {
+  display: inline-flex;
+  transition: transform var(--motion-out) var(--ease-in);
+}
+
+.load-idle.open .load-idle-chevron {
+  transform: rotate(90deg);
+  transition: transform var(--motion-in) var(--ease-out);
+}
+
+/* The list folds open and shut by its height, so the card's next sections move with it. */
+.load-idle-fold {
+  display: grid;
+  grid-template-rows: 1fr;
+  animation: line-fold-in var(--motion-in) var(--ease-out) backwards;
+}
+
+.load-idle-fold.leaving {
+  animation: line-fold-out var(--motion-out) var(--ease-in) forwards;
+}
+
+.load-idle-fold.instant {
+  animation: none;
+}
+
+/* The rows reach past the list's sides, as the card's other rows do: the clip reaches as far,
+   so that it cuts neither them nor the list's scrollbar. */
+.load-idle-clip {
+  min-height: 0;
+  margin: 0 -6px;
+  overflow: hidden;
+}
+
+/* About 8 agents show, the others scroll. */
+.load-idle-list {
+  max-height: 216px;
+  padding: 0 6px 0 22px;
 }
 
 .load-row-title,
