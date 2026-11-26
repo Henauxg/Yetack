@@ -73,16 +73,16 @@ pub use repository::Repository;
 pub use request::{
     AccountAddParams, AccountChangeParams, AccountParams, AgentParams, Answer, AnswerParams,
     COMMAND_PREFIX, DEFAULT_TITLE_MAX_CHARS, FindFilesParams, FolderParams, FoldersListParams,
-    HistoryParams, ListDirParams, MAX_TITLE_CHARS, MarkParams, McpCallbackParams, McpRemoveParams,
-    McpServerParams, McpToggleAction, McpToggleParams, Method, MoveParams, Prompt, PromptDelivery,
-    PromptParams, QueuedPromptParams, ReadFileParams, RenameParams, Request, SessionResumeParams,
-    SetEffortParams, SetModeParams, SetModelParams, StartParams, StopProcessParams, StopTaskParams,
-    default_title,
+    HistoryParams, IgnoredSearch, ListDirParams, MAX_TITLE_CHARS, MarkParams, McpCallbackParams,
+    McpRemoveParams, McpServerParams, McpToggleAction, McpToggleParams, Method, MoveParams, Prompt,
+    PromptDelivery, PromptParams, QueuedPromptParams, ReadFileParams, RenameParams, Request,
+    SessionResumeParams, SetEffortParams, SetModeParams, SetModelParams, StartParams,
+    StopProcessParams, StopTaskParams, default_title,
 };
 pub use response::{
     CommandChanges, Completeness, DirEntry, DirListing, EntryKind, EntryLink, ErrorBody, ErrorCode,
-    GitIgnore, HistoryPage, McpSignIn, OlderItems, PastSession, ResponseBody, ResponseResult,
-    is_pdf_name,
+    FoundFile, GitIgnore, HistoryPage, IgnoredSearched, McpSignIn, OlderItems, PastSession,
+    ResponseBody, ResponseResult, is_pdf_name,
 };
 pub use session::{
     BuildCommit, Catchup, ClientMessage, PROTOCOL_VERSION, ReleaseVersion, ServerMessage, Snapshot,

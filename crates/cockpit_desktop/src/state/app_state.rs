@@ -7,9 +7,10 @@ use std::time::{Duration, Instant, SystemTime};
 
 use cockpit_protocol::{
     Account, AccountId, AgentDetails, AgentId, AgentStatus, AgentSummary, AnswerState,
-    BackgroundTask, BackgroundTaskStatus, BuildCommit, ClaudeSessionId, FileEdit, Image, ItemBody,
-    ItemId, PastSession, PendingId, PlanUsage, ReleaseVersion, Seq, SessionUse, Settings,
-    SlashCommand, Timestamp, ToolCallStatus, TranscriptItem, WaitingPrompt, list_order,
+    BackgroundTask, BackgroundTaskStatus, BuildCommit, ClaudeSessionId, FileEdit, FoundFile,
+    IgnoredSearch, IgnoredSearched, Image, ItemBody, ItemId, PastSession, PendingId, PlanUsage,
+    ReleaseVersion, Seq, SessionUse, Settings, SlashCommand, Timestamp, ToolCallStatus,
+    TranscriptItem, WaitingPrompt, list_order,
 };
 use strum::VariantArray;
 
@@ -81,8 +82,70 @@ pub enum FileRead {
     /// Several files end with the path, which names none in the agent's folder: the user picks
     /// one. Absolute paths.
     Choices(Vec<PathBuf>),
-    /// No file matches: the daemon's sentence that says so.
+    /// Files git ignores end with the path: the user picks one by when it changed and its size.
+    /// Several, or one that a search cut short found. `cut_short`: other files may end with it.
+    IgnoredChoices {
+        matches: Vec<FoundFile>,
+        cut_short: bool,
+    },
+    /// The path does not exist: the daemon's sentence that says so.
     Missing(String),
+    /// No file ends with the path, which names none in the agent's folder.
+    NotFound(NotFound),
+}
+
+/// The lookup of a name that found no file, and the search of the files git ignores that the user
+/// may ask for next.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NotFound {
+    /// How far the last lookup went.
+    pub searched: IgnoredSearched,
+    /// The search the user asked for, while it runs.
+    pub search: Option<IgnoredSearchRun>,
+    /// The agent changed files while the search ran, which looks only at the ignored ones: the
+    /// lookup runs again once the search ends.
+    pub look_again: bool,
+    /// The searches the user started, stopped ones included.
+    pub searches: u32,
+}
+
+impl NotFound {
+    pub fn new(searched: IgnoredSearched) -> Self {
+        Self {
+            searched,
+            search: None,
+            look_again: false,
+            searches: 0,
+        }
+    }
+}
+
+/// A search of the files git ignores, on its way to the daemon.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct IgnoredSearchRun {
+    pub level: IgnoredSearch,
+    pub since: Timestamp,
+    /// Tells its answer from the one of a search the user stopped.
+    pub number: u32,
+}
+
+/// Where the daemon's lookup found a file.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FoundAmong {
+    /// The path itself, a file the agent read or changed, or one git lists.
+    ListedFiles,
+    IgnoredFiles,
+}
+
+impl FoundAmong {
+    /// From the answer's `ignored` flag.
+    pub fn of(ignored: bool) -> Self {
+        if ignored {
+            Self::IgnoredFiles
+        } else {
+            Self::ListedFiles
+        }
+    }
 }
 
 #[cfg(test)]
@@ -172,6 +235,9 @@ pub struct AgentEntry {
     pub files: BTreeMap<PathBuf, Loadable<FileRead>>,
     /// When the file views read the files they show, and what reading them again changed, by path.
     pub file_freshness: BTreeMap<PathBuf, FileFreshness>,
+    /// The files a lookup found among the files git ignores, by the path the file views show:
+    /// their bar says so. A read by that path later needs no lookup, and says nothing of it.
+    pub ignored_files: BTreeSet<PathBuf>,
     /// When the app saw each running tool call start, for the timer on its card. A call already
     /// running when the app connected has none.
     pub calls_running_since: BTreeMap<ItemId, Instant>,
@@ -340,6 +406,7 @@ impl AgentEntry {
             context_loading: false,
             files: BTreeMap::new(),
             file_freshness: BTreeMap::new(),
+            ignored_files: BTreeSet::new(),
             calls_running_since: BTreeMap::new(),
             commands: Vec::new(),
             commands_requested: false,

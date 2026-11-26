@@ -273,11 +273,19 @@ impl Hub {
                 touched,
                 home,
             } = access;
-            let found = read_file::find_and_read(folder.clone(), touched, home, params.path).await;
+            let found = read_file::find_and_read(
+                folder.clone(),
+                touched,
+                home,
+                params.path,
+                params.ignored,
+            )
+            .await;
             let result = match found {
                 Ok(Found::File {
                     path,
                     content: Content::Text(text),
+                    ignored,
                 }) => {
                     let max_bytes = max_edits_bytes(&text);
                     let edits = read_file::edits_of(named, &folder, &path, max_bytes);
@@ -285,17 +293,32 @@ impl Hub {
                         path: Some(path),
                         text,
                         edits: Some(edits),
+                        ignored,
                     })
                 }
                 Ok(Found::File {
                     path,
                     content: Content::Image(image),
-                }) => Ok(ResponseBody::Image { path, image }),
+                    ignored,
+                }) => Ok(ResponseBody::Image {
+                    path,
+                    image,
+                    ignored,
+                }),
                 Ok(Found::File {
                     path,
                     content: Content::Pdf(data),
-                }) => Ok(ResponseBody::Pdf { path, data }),
+                    ignored,
+                }) => Ok(ResponseBody::Pdf {
+                    path,
+                    data,
+                    ignored,
+                }),
                 Ok(Found::Several(matches)) => Ok(ResponseBody::FileMatches { matches }),
+                Ok(Found::IgnoredMatches { matches, cut_short }) => {
+                    Ok(ResponseBody::IgnoredFileMatches { matches, cut_short })
+                }
+                Ok(Found::Nowhere(ignored)) => Ok(ResponseBody::FileNotFound { ignored }),
                 Err(error) => Err(error.to_error_body()),
             };
             agents::respond(reply, result);

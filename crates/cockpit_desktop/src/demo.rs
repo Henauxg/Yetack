@@ -16,17 +16,17 @@ use cockpit_protocol::{
     CommitTexts, Completeness, ContextCategory, ContextUsage, Cores, CostUsd, CredentialSource,
     DirEntry, DirListing, EditTexts, Effort, EffortSource, EntryKind, EntryLink,
     EnvironmentCredentials, ErrorBody, ErrorCode, FileChange, FileEdit, FileStatus, GitBlame,
-    GitCommitFile, GitFile, GitIgnore, GitStatus, HistoryPage, Image, ImageMediaType, ItemBody,
-    ItemId, LineCounts as GitLineCounts, LoadAverage, LoadHistory, LogEntry, MachineLoad, Mark,
-    McpScope, McpServer, McpServerStatus, McpTool, McpTransport, NoticeKind, OlderItems, OnRemote,
-    PROTOCOL_VERSION, PastSession, PendingId, PermissionMode, Plan, PlanUsage, Position, ProcessId,
-    Prompt, PromptId, Question, QuestionAnswer, QuestionOption, RateLimitStatus, ReleaseVersion,
-    Remote, Repository, Request, ResourceUse, ResponseBody, Selection, ServerLoad, ServerPoint,
-    SessionUse, ShellChoice, SignIn, SignInWait, SlashCommand, Subagent, SubagentRun,
-    SubagentStatus, SubagentToolCall, TaskListItem, TaskProgress, TaskStatus, TerminalChange,
-    TerminalId, TerminalInfo, TerminalUpdate, Timestamp, TokenUsage, ToolCall, ToolCallStatus,
-    TranscriptItem, TurnEnd, TurnOutcome, Upstream, UsageWindow, UserMessage, WaitingPrompt,
-    WaitingState, WindowUsage, is_pdf_name,
+    GitCommitFile, GitFile, GitIgnore, GitStatus, HistoryPage, IgnoredSearch, IgnoredSearched,
+    Image, ImageMediaType, ItemBody, ItemId, LineCounts as GitLineCounts, LoadAverage, LoadHistory,
+    LogEntry, MachineLoad, Mark, McpScope, McpServer, McpServerStatus, McpTool, McpTransport,
+    NoticeKind, OlderItems, OnRemote, PROTOCOL_VERSION, PastSession, PendingId, PermissionMode,
+    Plan, PlanUsage, Position, ProcessId, Prompt, PromptId, Question, QuestionAnswer,
+    QuestionOption, RateLimitStatus, ReleaseVersion, Remote, Repository, Request, ResourceUse,
+    ResponseBody, Selection, ServerLoad, ServerPoint, SessionUse, ShellChoice, SignIn, SignInWait,
+    SlashCommand, Subagent, SubagentRun, SubagentStatus, SubagentToolCall, TaskListItem,
+    TaskProgress, TaskStatus, TerminalChange, TerminalId, TerminalInfo, TerminalUpdate, Timestamp,
+    TokenUsage, ToolCall, ToolCallStatus, TranscriptItem, TurnEnd, TurnOutcome, Upstream,
+    UsageWindow, UserMessage, WaitingPrompt, WaitingState, WindowUsage, is_pdf_name,
 };
 use dioxus::prelude::{Signal, WritableExt};
 use serde_json::Value;
@@ -210,6 +210,11 @@ const NOT_STARTED_LOG: &str = "INFO reading the state folder\nyetack: cannot bin
 const SERVER_DAEMON: &str = "/opt/yetack/bin/yetack";
 
 const PARSER_FOLDER: &str = "/home/dev/projects/calc-parser";
+/// The files git ignores in the parser's folder, as a full search counts them.
+const DEMO_IGNORED_FILES: u32 = 1_284;
+/// A file in a folder git ignores, which a link by name opens.
+const DEMO_IGNORED_FILE: &str = ".scratch/bench-notes.md";
+const DEMO_IGNORED_TEXT: &str = "Parse times on the large sample, before and after the cache.\n";
 const SERVICE_FOLDER: &str = "/home/dev/projects/calc-service";
 const PLATFORM_FOLDER: &str = "/home/dev/projects/acme-platform";
 const STREAM_FOLDER: &str = "/home/dev/projects/calc-stream";
@@ -2450,9 +2455,8 @@ pub fn answer(state: &AppState, request: &Request) -> Result<ResponseBody, Reque
             .context
             .map(ResponseBody::ContextUsage)
             .ok_or_else(|| refused(ErrorCode::NotFound, "No context usage in the demo.")),
-        Request::AgentReadFile(params) => {
-            read_file(&params.path).map(|body| with_edits(state, params.agent, body))
-        }
+        Request::AgentReadFile(params) => read_file(&params.path, params.ignored)
+            .map(|body| with_edits(state, params.agent, body)),
         Request::AgentListDir(params) => list_dir(&params.path),
         Request::AgentFindFiles(params) => Ok(find_files(&params.name)),
         Request::AgentTerminals(params) => Ok(ResponseBody::Terminals {
@@ -3354,6 +3358,7 @@ fn with_edits(state: &AppState, agent: AgentId, body: ResponseBody) -> ResponseB
         ResponseBody::File {
             path: Some(found),
             text,
+            ignored,
             ..
         },
         Some(entry),
@@ -3368,13 +3373,15 @@ fn with_edits(state: &AppState, agent: AgentId, body: ResponseBody) -> ResponseB
         path: Some(found.clone()),
         text: text.clone(),
         edits: Some(edits.into_iter().cloned().collect()),
+        ignored: *ignored,
     }
 }
 
 /// As the daemon answers for the parser agent: the path itself, else the sample's files whose
 /// path ends with it, one read or several listed. Any PNG is the app's icon, and a PDF comes as
-/// bytes.
-fn read_file(path: &Path) -> Result<ResponseBody, RequestError> {
+/// bytes. A name no file has is looked up in [`DEMO_IGNORED_FILE`], the one file git ignores
+/// there, which even the quick lookup finds.
+fn read_file(path: &Path, ignored: IgnoredSearch) -> Result<ResponseBody, RequestError> {
     if path.extension().is_some_and(|extension| extension == "png") {
         return Ok(ResponseBody::Image {
             path: path.to_owned(),
@@ -3382,6 +3389,7 @@ fn read_file(path: &Path) -> Result<ResponseBody, RequestError> {
                 media_type: ImageMediaType::Png,
                 data: Base64::encode(crate::ICON_PNG),
             },
+            ignored: false,
         });
     }
     let files = files();
@@ -3394,21 +3402,34 @@ fn read_file(path: &Path) -> Result<ResponseBody, RequestError> {
             .collect(),
     };
     match matches.as_slice() {
-        [] => Err(refused(
+        [] if path.is_absolute() => Err(refused(
             ErrorCode::NotFound,
-            &format!(
-                "{} is not in the agent's folder or in the files it read or changed",
-                path.display()
-            ),
+            &format!("{} does not exist", path.display()),
         )),
+        [] if Path::new(DEMO_IGNORED_FILE).ends_with(path) => Ok(ResponseBody::File {
+            path: Some(in_folder(PARSER_FOLDER, DEMO_IGNORED_FILE)),
+            text: DEMO_IGNORED_TEXT.to_owned(),
+            edits: Some(Vec::new()),
+            ignored: true,
+        }),
+        [] => Ok(ResponseBody::FileNotFound {
+            ignored: match ignored {
+                IgnoredSearch::Quick => IgnoredSearched::Quick,
+                IgnoredSearch::All | IgnoredSearch::Longer => IgnoredSearched::All {
+                    files: DEMO_IGNORED_FILES,
+                },
+            },
+        }),
         [(path, text)] if is_pdf_name(&path.to_string_lossy()) => Ok(ResponseBody::Pdf {
             path: path.clone(),
             data: Base64::encode(text.as_bytes()),
+            ignored: false,
         }),
         [(path, text)] => Ok(ResponseBody::File {
             path: Some(path.clone()),
             text: (*text).to_owned(),
             edits: Some(Vec::new()),
+            ignored: false,
         }),
         several => Ok(ResponseBody::FileMatches {
             matches: several.iter().map(|(path, _)| path.clone()).collect(),
@@ -6030,7 +6051,7 @@ pub struct ParseError {
 
     #[test]
     fn names_are_looked_up_as_the_daemon_does() {
-        let read = |path: &str| read_file(Path::new(path));
+        let read = |path: &str| read_file(Path::new(path), IgnoredSearch::Quick);
         let position = in_folder(PARSER_COLUMNS_WORKTREE, POSITION_FILE);
         let lib = in_folder(PARSER_FOLDER, LIB_FILE);
 
@@ -6045,9 +6066,27 @@ pub struct ParseError {
             read("src/lib.rs"),
             Ok(ResponseBody::File { path, .. }) if path == Some(lib)
         ));
+        assert_eq!(
+            read("cache.rs").unwrap(),
+            ResponseBody::FileNotFound {
+                ignored: IgnoredSearched::Quick
+            }
+        );
+        assert_eq!(
+            read_file(Path::new("cache.rs"), IgnoredSearch::All).unwrap(),
+            ResponseBody::FileNotFound {
+                ignored: IgnoredSearched::All {
+                    files: DEMO_IGNORED_FILES
+                }
+            }
+        );
         assert!(matches!(
-            read("cache.rs"),
+            read("/elsewhere/cache.rs"),
             Err(RequestError::Failed(body)) if body.code == ErrorCode::NotFound
+        ));
+        assert!(matches!(
+            read("bench-notes.md"),
+            Ok(ResponseBody::File { ignored: true, .. })
         ));
     }
 
@@ -6099,6 +6138,7 @@ pub struct ParseError {
         let request = Request::AgentReadFile(ReadFileParams {
             agent: entry.id(),
             path: PathBuf::from(ERROR_FILE),
+            ignored: IgnoredSearch::Quick,
         });
 
         let Ok(ResponseBody::File { text, edits, .. }) = answer(&state, &request) else {
@@ -6118,6 +6158,7 @@ pub struct ParseError {
         let request = Request::AgentReadFile(ReadFileParams {
             agent: AgentId::new(QUESTION_AGENT),
             path: PathBuf::from(CHANGELOG_FILE),
+            ignored: IgnoredSearch::Quick,
         });
 
         let Ok(ResponseBody::File { text, edits, .. }) = answer(&state, &request) else {
@@ -6203,6 +6244,7 @@ pub struct ParseError {
         let file = ask(Request::AgentReadFile(ReadFileParams {
             agent,
             path: PathBuf::from(SERVER_FOLDER).join("README.md"),
+            ignored: IgnoredSearch::Quick,
         }));
 
         assert!(matches!(sessions, Ok(ResponseBody::Sessions { sessions }) if sessions.is_empty()));

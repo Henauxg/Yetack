@@ -11,7 +11,7 @@
 
 use std::path::PathBuf;
 
-use cockpit_protocol::{AgentId, ReadFileParams, Request, ResponseBody};
+use cockpit_protocol::{AgentId, IgnoredSearch, ReadFileParams, Request, ResponseBody};
 
 use super::app_state::AppState;
 use super::requests::{Outgoing, Purpose};
@@ -204,6 +204,7 @@ pub fn start(state: &mut AppState, agent: AgentId, page: &str, text: String) -> 
             request: Request::AgentReadFile(ReadFileParams {
                 agent,
                 path: PathBuf::from(path),
+                ignored: IgnoredSearch::Quick,
             }),
             purpose: Purpose::PageCopy {
                 copy: id,
@@ -472,6 +473,7 @@ mod tests {
             path: None,
             text: text.to_owned(),
             edits: None,
+            ignored: false,
         })
     }
 
@@ -581,6 +583,7 @@ mod tests {
                     media_type: ImageMediaType::Png,
                     data: Base64::new("iVBO".to_owned()),
                 },
+                ignored: false,
             }),
         );
         answered(&mut state, copy, "/srv/site/css/site.css", text("body {}"));

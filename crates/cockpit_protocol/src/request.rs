@@ -4,6 +4,7 @@
 //! so `Request` serializes by hand through it.
 
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::Value;
@@ -538,8 +539,38 @@ pub struct ReadFileParams {
     pub agent: AgentId,
     /// Absolute, or relative to the agent's folder. A relative path that names no file there is
     /// looked up in the files the agent read or changed, then searched for in the checkouts it
-    /// worked in.
+    /// worked in, then in the files they ignore as far as `ignored` says.
     pub path: PathBuf,
+    /// How far the lookup goes in the files git ignores.
+    #[serde(default)]
+    pub ignored: IgnoredSearch,
+}
+
+/// How far `agent.read_file` looks for a relative path in the files git ignores.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, VariantArray)]
+#[serde(rename_all = "snake_case")]
+pub enum IgnoredSearch {
+    /// After the other steps find nothing: in each ignored folder, and in its folders one level
+    /// down. As quick as the other steps.
+    #[default]
+    Quick,
+    /// Searches all the ignored files and skips the other steps, for up to 15 seconds. The user
+    /// asks for it.
+    All,
+    /// The same, for up to a minute, after a search that ran out of time.
+    Longer,
+}
+
+impl IgnoredSearch {
+    /// How long the search of all the ignored files may run. `None` for the quick look, which
+    /// takes no more time than the other steps.
+    pub fn full_search_time(self) -> Option<Duration> {
+        match self {
+            Self::Quick => None,
+            Self::All => Some(Duration::from_secs(15)),
+            Self::Longer => Some(Duration::from_secs(60)),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

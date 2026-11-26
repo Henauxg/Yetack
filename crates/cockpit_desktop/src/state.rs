@@ -69,7 +69,7 @@ pub mod working_folder;
 
 pub use app_state::{
     AgentEntry, AppState, CARD_EXIT, ConnectionState, FileFreshness, FileRead, FileUpdate,
-    Loadable, MachineState, MessageHold, Reread, TurnStart,
+    IgnoredSearchRun, Loadable, MachineState, MessageHold, NotFound, Reread, TurnStart,
 };
 pub use apply::{Alert, AlertKind, apply_update, error_chain, next_finish_due, release_finishes};
 pub use drafts::{Draft, Drafts, QuestionDraft};

@@ -407,6 +407,7 @@ mod tests {
             path: None,
             text: request.method().to_string(),
             edits: None,
+            ignored: false,
         }
     }
 

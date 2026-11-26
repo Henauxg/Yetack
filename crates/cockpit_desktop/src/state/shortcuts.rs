@@ -1409,7 +1409,7 @@ mod tests {
     fn f5_reads_the_shown_file_again_from_anywhere() {
         use std::path::{Path, PathBuf};
 
-        use crate::state::app_state::{FileRead, Reread};
+        use crate::state::app_state::{FileRead, FoundAmong, Reread};
 
         let mut drafts = Drafts::default();
         let mut state = state(AgentStatus::Idle, None);
@@ -1417,7 +1417,15 @@ mod tests {
         actions::open_file(&mut state, agent, PathBuf::from("notes.md"), None);
         let path = Path::new("notes.md");
         let text = FileRead::unedited("one\n");
-        actions::show_read_file(&mut state, agent, path, path, text, None);
+        actions::show_read_file(
+            &mut state,
+            agent,
+            path,
+            path,
+            text,
+            None,
+            FoundAmong::ListedFiles,
+        );
 
         handle_key(&mut state, &mut drafts, &press("F5", KeyTarget::Field));
 

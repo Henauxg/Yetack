@@ -32,6 +32,7 @@ use crate::ui::file_git::{
     self, BlameCard, BlameCell, BlameHover, ChangeCount, CommitChange, HistoryButton, LineBlame,
 };
 use crate::ui::file_list::FileListButton;
+use crate::ui::file_lookup::{IgnoredChoices, NotFoundCard};
 use crate::ui::find::FileFindBox;
 use crate::ui::icons::{Icon, IconKind};
 use crate::ui::markdown::MarkdownView;
@@ -346,6 +347,7 @@ pub fn FileShown(agent: AgentId, dock: Dock) -> Element {
         .cloned()
         .unwrap_or_default();
     let update = freshness.update.clone();
+    let ignored = entry.ignored_files.contains(&view.path);
     let short = ShortPath::new(folder, &view.path);
     let full = full_path(folder, &view.path);
     let changed = entry.has_changed(&view.path);
@@ -430,6 +432,13 @@ pub fn FileShown(agent: AgentId, dock: Dock) -> Element {
                     span { class: "spinner", role: "status", aria_label: "Loading the file" }
                 }
             }
+            if ignored {
+                span {
+                    class: "read-only-chip",
+                    title: "Git ignores this file: the agent's search lists only the files git tracks",
+                    "Git-ignored"
+                }
+            }
             span { class: "read-only-chip", "Read-only" }
             if shows_text {
                 div { class: "segmented", role: "group", aria_label: "View mode",
@@ -495,6 +504,12 @@ pub fn FileShown(agent: AgentId, dock: Dock) -> Element {
                 },
                 Loadable::Loaded(FileRead::Choices(matches)) => rsx! {
                     FileChoices { agent, folder: folder.clone(), name: view.path.clone(), matches, line: view.line }
+                },
+                Loadable::Loaded(FileRead::IgnoredChoices { matches, cut_short }) => rsx! {
+                    IgnoredChoices { agent, folder: folder.clone(), name: view.path.clone(), matches, cut_short, line: view.line }
+                },
+                Loadable::Loaded(FileRead::NotFound(not_found)) => rsx! {
+                    NotFoundCard { agent, folder: folder.clone(), path: view.path.clone(), not_found }
                 },
                 Loadable::Loaded(FileRead::Text { .. }) if commit_change.is_some() => rsx! {
                     CommitChange {

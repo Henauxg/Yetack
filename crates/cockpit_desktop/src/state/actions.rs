@@ -4,22 +4,24 @@
 use std::cmp::Reverse;
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
-use std::time::Instant;
+use std::time::{Instant, SystemTime};
 
 use cockpit_client::RequestError;
 use cockpit_protocol::{
     AccountId, AgentId, AgentParams, AgentStatus, AgentSummary, Answer, AnswerParams, AnswerState,
     ApprovalAnswer, ApprovalDecision, BackgroundTaskId, COMMAND_PREFIX, ClaudeSessionId, Effort,
-    EffortSource, Image, ItemBody, ItemId, McpRemoveParams, McpScope, McpToggleAction,
-    McpToggleParams, MoveParams, PastSession, PendingId, PermissionMode, Placed, PlanAnswer,
-    PlanDecision, Prompt, PromptDelivery, PromptId, PromptParams, Question, QuestionAnswer,
-    QueuedPromptParams, RenameParams, Request, Selection, SessionResumeParams, SetEffortParams,
-    SetModeParams, SetModelParams, SlashCommand, StartParams, StopTaskParams, Timestamp,
-    TranscriptItem,
+    EffortSource, IgnoredSearch, Image, ItemBody, ItemId, McpRemoveParams, McpScope,
+    McpToggleAction, McpToggleParams, MoveParams, PastSession, PendingId, PermissionMode, Placed,
+    PlanAnswer, PlanDecision, Prompt, PromptDelivery, PromptId, PromptParams, Question,
+    QuestionAnswer, QueuedPromptParams, ReadFileParams, RenameParams, Request, Selection,
+    SessionResumeParams, SetEffortParams, SetModeParams, SetModelParams, SlashCommand, StartParams,
+    StopTaskParams, Timestamp, TranscriptItem,
 };
 use strum::VariantArray;
 
-use super::app_state::{self, AgentEntry, AppState, FileRead, Loadable, MachineState};
+use super::app_state::{
+    self, AgentEntry, AppState, FileRead, FoundAmong, IgnoredSearchRun, Loadable, MachineState,
+};
 use super::apply::forget_agent;
 use super::docks::{Dock, TabKey};
 use super::drafts::{Drafts, NewAgentDraft, Palette, QuestionDraft, SlashWord, SwitcherDraft};
@@ -1796,6 +1798,138 @@ pub fn pick_file(
     }
 }
 
+/// Opens `choice`, one of the files git ignores that end with `name`. The bar says it is ignored.
+pub fn pick_ignored_file(
+    state: &mut AppState,
+    agent: AgentId,
+    name: &Path,
+    choice: PathBuf,
+    line: Option<u32>,
+) {
+    pick_file(state, agent, name, choice, line);
+    let shown = state.ui.file_view(agent).map(|view| view.path.clone());
+    if let (Some(shown), Some(entry)) = (shown, state.agents.get_mut(&agent)) {
+        entry.ignored_files.insert(shown);
+    }
+}
+
+/// Searches the files git ignores for `path`, a name that no file was found for, as far as
+/// `level` goes.
+pub fn search_ignored(
+    state: &mut AppState,
+    agent: AgentId,
+    path: &Path,
+    level: IgnoredSearch,
+) -> Vec<Outgoing> {
+    let Some(Loadable::Loaded(FileRead::NotFound(not_found))) = state
+        .agents
+        .get_mut(&agent)
+        .and_then(|entry| entry.files.get_mut(path))
+    else {
+        return Vec::new();
+    };
+    if not_found.search.is_some() {
+        return Vec::new();
+    }
+    let Some(since) = Timestamp::from_system_time(SystemTime::now()) else {
+        return Vec::new();
+    };
+    not_found.searches = not_found.searches.wrapping_add(1);
+    let run = IgnoredSearchRun {
+        level,
+        since,
+        number: not_found.searches,
+    };
+    not_found.search = Some(run);
+    vec![Outgoing {
+        request: Request::AgentReadFile(ReadFileParams {
+            agent,
+            path: path.to_owned(),
+            ignored: level,
+        }),
+        purpose: Purpose::ReadFile {
+            agent,
+            path: path.to_owned(),
+            search: Some(run),
+        },
+        to: MachineId::THIS,
+    }]
+}
+
+/// Stops waiting for the search of the files git ignores for `path`. The daemon ends it at its
+/// time limit, and its answer is dropped. A lookup the agent's changes asked for runs now.
+pub fn stop_search(state: &mut AppState, agent: AgentId, path: &Path) {
+    let Some(held) = state
+        .agents
+        .get_mut(&agent)
+        .and_then(|entry| entry.files.get_mut(path))
+    else {
+        return;
+    };
+    match held {
+        Loadable::Loaded(FileRead::NotFound(not_found)) if not_found.look_again => {
+            *held = Loadable::NotRequested;
+        }
+        Loadable::Loaded(FileRead::NotFound(not_found)) => not_found.search = None,
+        _ => {}
+    }
+}
+
+/// Whether the view waits for the answer of the search `run` of `path`.
+pub fn waits_for_search(
+    state: &AppState,
+    agent: AgentId,
+    path: &Path,
+    run: IgnoredSearchRun,
+) -> bool {
+    matches!(
+        held_file(state, agent, path),
+        Some(Loadable::Loaded(FileRead::NotFound(not_found))) if not_found.search == Some(run)
+    )
+}
+
+/// Whether the agent changed files while the search for `path` ran.
+pub fn looks_again(state: &AppState, agent: AgentId, path: &Path) -> bool {
+    matches!(
+        held_file(state, agent, path),
+        Some(Loadable::Loaded(FileRead::NotFound(not_found))) if not_found.look_again
+    )
+}
+
+fn held_file<'state>(
+    state: &'state AppState,
+    agent: AgentId,
+    path: &Path,
+) -> Option<&'state Loadable<FileRead>> {
+    state.agents.get(&agent)?.files.get(path)
+}
+
+/// The search of the files git ignores for `path` failed: the view shows what it found before,
+/// and a note says why.
+pub fn search_failed(state: &mut AppState, agent: AgentId, path: &Path, message: &str) {
+    stop_search(state, agent, path);
+    state.ui.report(format!(
+        "The search of the git-ignored files failed: {message}"
+    ));
+}
+
+/// Puts a question in the agent's message: where is the file named `path`, which the file view did
+/// not find.
+pub fn ask_where_file_is(state: &AppState, drafts: &mut Drafts, agent: AgentId, path: &Path) {
+    let Some(entry) = state.agents.get(&agent) else {
+        return;
+    };
+    let name = file_edits::shown_path(&entry.summary.folder, path);
+    let draft = drafts.draft_mut(agent);
+    if !draft.text.is_empty() && !draft.text.ends_with(char::is_whitespace) {
+        draft.text.push(' ');
+    }
+    draft
+        .text
+        .push_str(&format!("Where is {name}? Give me its full path."));
+    drafts.draft_written(agent);
+}
+
 /// Closes a tab. When it is the shown one, the tab after it shows, or the one before it for the
 /// last tab; closing the only tab closes the file view.
 pub fn close_tab(state: &mut AppState, agent: AgentId, path: &Path) {
@@ -1900,6 +2034,7 @@ pub fn move_file(
 
 /// Shows the text the daemon read for `requested` at `found`. When the daemon looked a name up and
 /// found the file elsewhere, the view moves to it. A file the view no longer shows is not kept.
+/// A file found among the files git ignores is marked so.
 pub fn show_read_file(
     state: &mut AppState,
     agent: AgentId,
@@ -1907,6 +2042,7 @@ pub fn show_read_file(
     found: &Path,
     read: FileRead,
     now: Option<Timestamp>,
+    among: FoundAmong,
 ) {
     let Some(entry) = state.agents.get_mut(&agent) else {
         return;
@@ -1918,6 +2054,9 @@ pub fn show_read_file(
     file_reread::arrived(&mut freshness, old.loaded(), &read, now);
     let folder = &entry.summary.folder;
     let found = file_edits::relative_path(folder, found);
+    if among == FoundAmong::IgnoredFiles {
+        entry.ignored_files.insert(found.clone());
+    }
     entry.file_freshness.insert(found.clone(), freshness);
     let view = state
         .ui
@@ -5492,6 +5631,7 @@ mod tests {
                         new_text: "let total = 2;".to_owned(),
                         texts: EditTexts::Kept,
                     }]),
+                    ignored: false,
                 }),
             );
         };
@@ -5520,6 +5660,7 @@ mod tests {
                     path: Some(PathBuf::from("/work/project-1/src/lexer.rs")),
                     text: "pub fn lex() {}\n".to_owned(),
                     edits: Some(Vec::new()),
+                    ignored: false,
                 }),
             );
         };
@@ -5615,6 +5756,7 @@ mod tests {
                     new_text: "let total = 2;".to_owned(),
                     texts: EditTexts::Kept,
                 }]),
+                ignored: false,
             }),
         );
 
@@ -5635,6 +5777,7 @@ mod tests {
                 path: Some(PathBuf::from("/work/project-1/a.rs")),
                 text: "fn a() {}\n".to_owned(),
                 edits: Some(Vec::new()),
+                ignored: false,
             }),
         );
         git::show_commit(&mut state, agent(), Some(hash));
@@ -5660,6 +5803,7 @@ mod tests {
                 path: Some(full),
                 text: "let total = 2;\n".to_owned(),
                 edits: Some(edits.into_iter().collect()),
+                ignored: false,
             }),
         );
     }
@@ -5817,6 +5961,7 @@ mod tests {
                 path: Some(full),
                 text: "let total = 2;\n".to_owned(),
                 edits: Some(vec![edit.clone()]),
+                ignored: false,
             }),
         );
 
@@ -5851,6 +5996,7 @@ mod tests {
                     new_text: "let total = 2;".to_owned(),
                     texts: EditTexts::Kept,
                 }]),
+                ignored: false,
             }),
         );
 
@@ -5909,6 +6055,7 @@ mod tests {
                 path: Some(full),
                 text: "let total = 2;\n".to_owned(),
                 edits: None,
+                ignored: false,
             }),
         );
 
@@ -5971,11 +6118,13 @@ mod tests {
                 Purpose::ReadFile {
                     agent: agent(),
                     path: PathBuf::from(path),
+                    search: None,
                 },
                 Ok(ResponseBody::File {
                     path: Some(PathBuf::from(format!("/work/project-1/{path}"))),
                     text: format!("text of {path}"),
                     edits: Some(Vec::new()),
+                    ignored: false,
                 }),
                 MachineId::THIS,
             );
@@ -6000,6 +6149,7 @@ mod tests {
             Purpose::ReadFile {
                 agent: agent(),
                 path: PathBuf::from(path),
+                search: None,
             },
             result,
             MachineId::THIS,
@@ -6037,6 +6187,7 @@ mod tests {
             Ok(ResponseBody::Image {
                 path: PathBuf::from("/work/project-1/shots/sheet05.jpg"),
                 image: image.clone(),
+                ignored: false,
             }),
         );
 
@@ -6057,6 +6208,7 @@ mod tests {
             Ok(ResponseBody::Pdf {
                 path: PathBuf::from("/work/project-1/docs/report.pdf"),
                 data: Base64::new("JVBERi0=".to_owned()),
+                ignored: false,
             }),
         );
 
@@ -6077,6 +6229,7 @@ mod tests {
             Ok(ResponseBody::Pdf {
                 path: PathBuf::from("/work/project-1/docs/report.pdf"),
                 data: Base64::new("not base64!".to_owned()),
+                ignored: false,
             }),
         );
 
@@ -6102,6 +6255,7 @@ mod tests {
                 path: Some(PathBuf::from(found)),
                 text: "export class RegisterParcel {}\n".to_owned(),
                 edits: Some(Vec::new()),
+                ignored: false,
             }),
         );
 
@@ -6127,6 +6281,7 @@ mod tests {
                 path: None,
                 text: "fn main() {}\n".to_owned(),
                 edits: None,
+                ignored: false,
             }),
         );
 

@@ -24,8 +24,9 @@ pub fn reread(state: &mut AppState, agent: AgentId) {
     }
 }
 
-/// Reads `path` again. A file that did not read reads from the start. A name that several files
-/// end with keeps its list to pick from.
+/// Reads `path` again. A file that did not read reads from the start, and so does a name no file
+/// was found for, once the search for it that runs ends. A name that several files end with keeps
+/// its list to pick from.
 fn reread_path(state: &mut AppState, agent: AgentId, path: &Path) {
     let Some(entry) = state.agents.get_mut(&agent) else {
         return;
@@ -41,12 +42,16 @@ fn reread_path(state: &mut AppState, agent: AgentId, path: &Path) {
                 Reread::Reading { .. } => Reread::Reading { again: true },
             };
         }
-        Loadable::Loaded(FileRead::Missing(_)) | Loadable::Failed(_) => {
+        Loadable::Loaded(FileRead::NotFound(not_found)) if not_found.search.is_some() => {
+            not_found.look_again = true;
+        }
+        Loadable::Loaded(FileRead::Missing(_) | FileRead::NotFound(_)) | Loadable::Failed(_) => {
             *held = Loadable::NotRequested;
         }
         // The answer on its way may predate the change: one more read follows it.
         Loadable::Loading => freshness.reread = Reread::Reading { again: true },
-        Loadable::Loaded(FileRead::Choices(_)) | Loadable::NotRequested => {}
+        Loadable::Loaded(FileRead::Choices(_) | FileRead::IgnoredChoices { .. })
+        | Loadable::NotRequested => {}
     }
 }
 
@@ -139,6 +144,7 @@ mod tests {
     use serde_json::Value;
 
     use super::*;
+    use crate::state::app_state::FoundAmong;
     use crate::state::{ConnectionState, Purpose, ViewMode, actions, state_with, summary};
 
     const AGENT_ID: u32 = 1;
@@ -163,7 +169,15 @@ mod tests {
         state.ui.selected = Some(agent());
         actions::open_file(&mut state, agent(), PathBuf::from(path), None);
         let path = Path::new(path);
-        actions::show_read_file(&mut state, agent(), path, path, read, at(1_000));
+        actions::show_read_file(
+            &mut state,
+            agent(),
+            path,
+            path,
+            read,
+            at(1_000),
+            FoundAmong::ListedFiles,
+        );
         state
     }
 
@@ -214,7 +228,15 @@ mod tests {
 
         let path = Path::new("notes.md");
         let new = FileRead::unedited("one\nTWO\nthree\n");
-        actions::show_read_file(&mut state, agent(), path, path, new, at(2_000));
+        actions::show_read_file(
+            &mut state,
+            agent(),
+            path,
+            path,
+            new,
+            at(2_000),
+            FoundAmong::ListedFiles,
+        );
 
         let fresh = freshness(&state);
         assert_eq!(fresh.read_at, at(2_000));
@@ -240,7 +262,15 @@ mod tests {
             .count();
         let path = Path::new("report.pdf");
         let held = state.agents[&agent()].files[path].clone();
-        actions::show_read_file(&mut state, agent(), path, path, pdf(b"%PDF-2"), at(2_000));
+        actions::show_read_file(
+            &mut state,
+            agent(),
+            path,
+            path,
+            pdf(b"%PDF-2"),
+            at(2_000),
+            FoundAmong::ListedFiles,
+        );
 
         assert_eq!(reads, 1);
         assert_eq!(held, Loadable::Loaded(pdf(b"%PDF-1")));
@@ -263,7 +293,15 @@ mod tests {
 
         let path = Path::new("notes.md");
         let new = FileRead::unedited("two\n");
-        actions::show_read_file(&mut state, agent(), path, path, new, at(2_000));
+        actions::show_read_file(
+            &mut state,
+            agent(),
+            path,
+            path,
+            new,
+            at(2_000),
+            FoundAmong::ListedFiles,
+        );
 
         assert_eq!(
             state.ui.file_view(agent()).map(|view| view.mode),
@@ -279,7 +317,15 @@ mod tests {
 
         let path = Path::new("notes.md");
         let same = FileRead::unedited("one\n");
-        actions::show_read_file(&mut state, agent(), path, path, same, at(2_000));
+        actions::show_read_file(
+            &mut state,
+            agent(),
+            path,
+            path,
+            same,
+            at(2_000),
+            FoundAmong::ListedFiles,
+        );
 
         assert_eq!(freshness(&state).update, None);
         assert_eq!(freshness(&state).read_at, at(2_000));
@@ -295,7 +341,15 @@ mod tests {
         assert_eq!(freshness(&state).reread, Reread::Reading { again: true });
         let path = Path::new("notes.md");
         let new = FileRead::unedited("two\n");
-        actions::show_read_file(&mut state, agent(), path, path, new, at(2_000));
+        actions::show_read_file(
+            &mut state,
+            agent(),
+            path,
+            path,
+            new,
+            at(2_000),
+            FoundAmong::ListedFiles,
+        );
 
         assert_eq!(freshness(&state).reread, Reread::Wanted);
     }
@@ -315,7 +369,15 @@ mod tests {
         );
         let path = Path::new("notes.md");
         let first = FileRead::unedited("new\n");
-        actions::show_read_file(&mut state, agent(), path, path, first, at(1_000));
+        actions::show_read_file(
+            &mut state,
+            agent(),
+            path,
+            path,
+            first,
+            at(1_000),
+            FoundAmong::ListedFiles,
+        );
 
         assert_eq!(freshness(&state).reread, Reread::Wanted);
         assert_eq!(freshness(&state).update, None);
@@ -337,7 +399,15 @@ mod tests {
                 texts: EditTexts::Kept,
             }],
         };
-        actions::show_read_file(&mut state, agent(), path, path, edited, at(2_000));
+        actions::show_read_file(
+            &mut state,
+            agent(),
+            path,
+            path,
+            edited,
+            at(2_000),
+            FoundAmong::ListedFiles,
+        );
 
         assert_eq!(freshness(&state).update, None);
     }

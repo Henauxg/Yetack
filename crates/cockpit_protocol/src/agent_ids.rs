@@ -108,6 +108,8 @@ impl ResponseBody {
             | Self::Image { .. }
             | Self::Pdf { .. }
             | Self::FileMatches { .. }
+            | Self::IgnoredFileMatches { .. }
+            | Self::FileNotFound { .. }
             | Self::Directory(_)
             | Self::GitFile(_)
             | Self::GitBlame(_)

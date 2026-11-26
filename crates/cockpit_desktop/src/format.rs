@@ -313,6 +313,19 @@ pub fn count(number: usize, singular: &str, plural: &str) -> String {
     format!("{number} {noun}")
 }
 
+/// "950", "127,739", "2,100,000".
+pub fn grouped(number: u64) -> String {
+    let digits = number.to_string();
+    let mut text = String::with_capacity(digits.len() + digits.len() / 3);
+    for (index, digit) in digits.chars().enumerate() {
+        if index > 0 && (digits.len() - index).is_multiple_of(3) {
+            text.push(',');
+        }
+        text.push(digit);
+    }
+    text
+}
+
 /// "12 s", "1 min 42 s", "3 h 12 min".
 pub fn duration(duration: Duration) -> String {
     let seconds = duration.as_secs();
@@ -621,6 +634,15 @@ mod tests {
         assert_eq!(memory(312 * GIB), "312 GB");
         assert_eq!(memory_of(312 * GIB, 503 * GIB), "312 / 503 GB");
         assert_eq!(memory_of(6 * GIB, 16 * GIB), "6.0 / 16.0 GB");
+    }
+
+    #[test]
+    fn grouped_puts_a_comma_every_three_digits() {
+        assert_eq!(grouped(0), "0");
+        assert_eq!(grouped(950), "950");
+        assert_eq!(grouped(1_000), "1,000");
+        assert_eq!(grouped(127_739), "127,739");
+        assert_eq!(grouped(2_100_000), "2,100,000");
     }
 
     fn at(day: i8, hour: i8, minute: i8) -> DateTime {

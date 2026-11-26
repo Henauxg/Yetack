@@ -24,24 +24,25 @@ use cockpit_protocol::{
     Cores, CostUsd, CredentialSource, DEFAULT_TITLE_MAX_CHARS, DetailsChange, DirEntry, DirListing,
     EditTexts, Effort, EffortSource, EntryKind, EntryLink, EnvironmentCredentials, ErrorBody,
     ErrorCode, Event, EventRecord, FileChange, FileEdit, FileStatus, FindFilesParams, FolderParams,
-    FoldersListParams, GitBlame, GitCommitFile, GitFile, GitFileParams, GitIgnore, GitShowParams,
-    GitStatus, HistoryPage, HistoryParams, Image, ImageMediaType, ItemBody, ItemId, LineCounts,
-    ListDirParams, LoadAverage, LoadHistory, LogEntry, MachineLoad, Mark, MarkParams,
-    McpCallbackParams, McpRemoveParams, McpScope, McpServer, McpServerParams, McpServerStatus,
-    McpSignIn, McpToggleAction, McpToggleParams, McpTool, McpTransport, Method, MoveParams,
-    NoticeKind, OlderItems, OnRemote, PROTOCOL_VERSION, PastSession, PendingId, PermissionMode,
-    Plan, PlanAnswer, PlanDecision, PlanUsage, Position, ProcessId, Prompt, PromptDelivery,
-    PromptId, PromptParams, Question, QuestionAnswer, QuestionOption, QueuedPromptParams,
-    RateLimitStatus, ReadFileParams, ReleaseVersion, Remote, RenameParams, Repository, Request,
-    RequestId, ResourceUse, ResponseBody, ResponseResult, Selection, Seq, ServerLoad,
-    ServerMessage, ServerPoint, SessionResumeParams, SessionUse, SetEffortParams, SetModeParams,
-    SetModelParams, Settings, ShellChoice, SignIn, SignInWait, SlashCommand, Snapshot, StartParams,
-    StopProcessParams, StopTaskParams, Subagent, SubagentRun, SubagentStatus, SubagentToolCall,
-    TaskListItem, TaskProgress, TaskStatus, TerminalChange, TerminalExit, TerminalId, TerminalInfo,
-    TerminalInputParams, TerminalOpenParams, TerminalParams, TerminalReadParams,
-    TerminalRenameParams, TerminalResizeParams, TerminalShareParams, TerminalSize, TerminalSizeAt,
-    TerminalUpdate, Timestamp, TokenUsage, ToolCall, ToolCallStatus, TranscriptItem, TurnEnd,
-    TurnOutcome, Upstream, UsageWindow, UserMessage, WaitingPrompt, WaitingState, WindowUsage,
+    FoldersListParams, FoundFile, GitBlame, GitCommitFile, GitFile, GitFileParams, GitIgnore,
+    GitShowParams, GitStatus, HistoryPage, HistoryParams, IgnoredSearch, IgnoredSearched, Image,
+    ImageMediaType, ItemBody, ItemId, LineCounts, ListDirParams, LoadAverage, LoadHistory,
+    LogEntry, MachineLoad, Mark, MarkParams, McpCallbackParams, McpRemoveParams, McpScope,
+    McpServer, McpServerParams, McpServerStatus, McpSignIn, McpToggleAction, McpToggleParams,
+    McpTool, McpTransport, Method, MoveParams, NoticeKind, OlderItems, OnRemote, PROTOCOL_VERSION,
+    PastSession, PendingId, PermissionMode, Plan, PlanAnswer, PlanDecision, PlanUsage, Position,
+    ProcessId, Prompt, PromptDelivery, PromptId, PromptParams, Question, QuestionAnswer,
+    QuestionOption, QueuedPromptParams, RateLimitStatus, ReadFileParams, ReleaseVersion, Remote,
+    RenameParams, Repository, Request, RequestId, ResourceUse, ResponseBody, ResponseResult,
+    Selection, Seq, ServerLoad, ServerMessage, ServerPoint, SessionResumeParams, SessionUse,
+    SetEffortParams, SetModeParams, SetModelParams, Settings, ShellChoice, SignIn, SignInWait,
+    SlashCommand, Snapshot, StartParams, StopProcessParams, StopTaskParams, Subagent, SubagentRun,
+    SubagentStatus, SubagentToolCall, TaskListItem, TaskProgress, TaskStatus, TerminalChange,
+    TerminalExit, TerminalId, TerminalInfo, TerminalInputParams, TerminalOpenParams,
+    TerminalParams, TerminalReadParams, TerminalRenameParams, TerminalResizeParams,
+    TerminalShareParams, TerminalSize, TerminalSizeAt, TerminalUpdate, Timestamp, TokenUsage,
+    ToolCall, ToolCallStatus, TranscriptItem, TurnEnd, TurnOutcome, Upstream, UsageWindow,
+    UserMessage, WaitingPrompt, WaitingState, WindowUsage,
 };
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -697,6 +698,7 @@ fn requests() -> Vec<Request> {
         Request::AgentReadFile(ReadFileParams {
             agent,
             path: PathBuf::from("src/login.rs"),
+            ignored: IgnoredSearch::All,
         }),
         Request::AgentListDir(ListDirParams {
             agent,
@@ -1040,14 +1042,17 @@ fn response_bodies() -> Vec<ResponseBody> {
             path: Some(PathBuf::from("/srv/projects/shop/src/main.rs")),
             text: "fn main() {}\n".to_owned(),
             edits: Some(vec![edit()]),
+            ignored: false,
         },
         ResponseBody::Image {
             path: PathBuf::from("/srv/projects/shop/docs/cart.png"),
             image: image(),
+            ignored: true,
         },
         ResponseBody::Pdf {
             path: PathBuf::from("/srv/projects/shop/docs/invoice.pdf"),
             data: Base64::new("JVBERi0=".to_owned()),
+            ignored: false,
         },
         ResponseBody::Directory(dir_listing()),
         ResponseBody::FileMatches {
@@ -1055,6 +1060,20 @@ fn response_bodies() -> Vec<ResponseBody> {
                 PathBuf::from("/srv/projects/shop/src/login.rs"),
                 PathBuf::from("/srv/projects/shop_feature/src/login.rs"),
             ],
+        },
+        ResponseBody::IgnoredFileMatches {
+            matches: vec![FoundFile {
+                path: PathBuf::from("/srv/projects/shop/.db/orders.sql"),
+                modified: Some(Timestamp::from_unix_millis(1_000)),
+                bytes: Some(4_096),
+            }],
+            cut_short: false,
+        },
+        ResponseBody::FileNotFound {
+            ignored: IgnoredSearched::CutShort {
+                files: 2_100_000,
+                seconds: 15,
+            },
         },
         ResponseBody::GitFile(GitFile::Committed {
             head: git_commit(),
@@ -1469,6 +1488,15 @@ fn message_and_body_tags_are_pinned() {
         tags(&[Catchup::Replay, Catchup::Snapshot(snapshot())], "type"),
         ["replay", "snapshot"]
     );
+    let searched = [
+        IgnoredSearched::Quick,
+        IgnoredSearched::All { files: 3 },
+        IgnoredSearched::CutShort {
+            files: 3,
+            seconds: 15,
+        },
+    ];
+    assert_eq!(tags(&searched, "searched"), ["quick", "all", "cut_short"]);
     assert_eq!(
         tags(&response_bodies(), "type"),
         [
@@ -1492,6 +1520,8 @@ fn message_and_body_tags_are_pinned() {
             "pdf",
             "directory",
             "file_matches",
+            "ignored_file_matches",
+            "file_not_found",
             "git_file",
             "git_blame",
             "git_log",
@@ -1656,6 +1686,7 @@ fn words_are_pinned() {
         ["running", "needs_you", "done", "failed", "stopped"]
     );
     assert_eq!(words::<PromptDelivery>(), ["steer", "queue"]);
+    assert_eq!(words::<IgnoredSearch>(), ["quick", "all", "longer"]);
     assert_eq!(words::<WaitingState>(), ["queued", "sent"]);
     assert_eq!(
         words::<UsageWindow>(),
@@ -1829,6 +1860,7 @@ fn an_image_answer_on_the_wire() {
     let answer = ResponseBody::Image {
         path: PathBuf::from("/srv/projects/shop/docs/cart.png"),
         image: image(),
+        ignored: false,
     };
 
     assert_wire(
@@ -1838,6 +1870,70 @@ fn an_image_answer_on_the_wire() {
             "path": "/srv/projects/shop/docs/cart.png",
             "image": {"media_type": "image/png", "data": "iVBORw0KGgo="},
         }),
+    );
+}
+
+/// A file the lookup found among the files git ignores, and the answers of its search of them.
+#[test]
+fn the_search_of_the_ignored_files_on_the_wire() {
+    let found = ResponseBody::File {
+        path: Some(PathBuf::from("/srv/projects/shop/.db/orders.sql")),
+        text: "SELECT 1;\n".to_owned(),
+        edits: None,
+        ignored: true,
+    };
+    let copies = ResponseBody::IgnoredFileMatches {
+        matches: vec![FoundFile {
+            path: PathBuf::from("/srv/projects/shop/out/a/report.csv"),
+            modified: Some(Timestamp::from_unix_millis(1_000)),
+            bytes: Some(48),
+        }],
+        cut_short: true,
+    };
+    let cut_short = ResponseBody::FileNotFound {
+        ignored: IgnoredSearched::CutShort {
+            files: 2_100_000,
+            seconds: 15,
+        },
+    };
+    let asked = Request::AgentReadFile(ReadFileParams {
+        agent: AgentId::new(7),
+        path: PathBuf::from("report.csv"),
+        ignored: IgnoredSearch::Longer,
+    });
+
+    assert_wire(
+        &found,
+        json!({
+            "type": "file",
+            "path": "/srv/projects/shop/.db/orders.sql",
+            "text": "SELECT 1;\n",
+            "edits": null,
+            "ignored": true,
+        }),
+    );
+    assert_wire(
+        &copies,
+        json!({
+            "type": "ignored_file_matches",
+            "matches": [{
+                "path": "/srv/projects/shop/out/a/report.csv",
+                "modified": 1_000,
+                "bytes": 48,
+            }],
+            "cut_short": true,
+        }),
+    );
+    assert_wire(
+        &cut_short,
+        json!({
+            "type": "file_not_found",
+            "ignored": {"searched": "cut_short", "files": 2_100_000, "seconds": 15},
+        }),
+    );
+    assert_eq!(
+        serde_json::to_value(&asked).unwrap()["params"]["ignored"],
+        json!("longer")
     );
 }
 
@@ -2012,6 +2108,7 @@ fn a_pdf_answer_on_the_wire() {
     let answer = ResponseBody::Pdf {
         path: PathBuf::from("/srv/projects/shop/docs/invoice.pdf"),
         data: Base64::new("JVBERi0=".to_owned()),
+        ignored: false,
     };
 
     assert_wire(
@@ -3126,6 +3223,7 @@ fn a_file_answer_with_or_without_the_path_it_read_and_its_edits() {
         path: Some(PathBuf::from("/srv/projects/shop/src/main.rs")),
         text: "fn main() {}\n".to_owned(),
         edits: Some(vec![edit()]),
+        ignored: false,
     };
 
     assert_wire(
@@ -3150,6 +3248,7 @@ fn a_file_answer_with_or_without_the_path_it_read_and_its_edits() {
             path: None,
             text: "fn main() {}\n".to_owned(),
             edits: None,
+            ignored: false,
         }
     );
 }

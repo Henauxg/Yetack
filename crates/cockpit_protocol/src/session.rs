@@ -19,7 +19,7 @@ use crate::terminal::TerminalUpdate;
 use crate::usage::{AccountPlanUsage, PlanUsage};
 
 /// Changes whenever a message changes shape. Client and daemon speak only the same version.
-pub const PROTOCOL_VERSION: u16 = 15;
+pub const PROTOCOL_VERSION: u16 = 16;
 
 /// How many characters of a commit id git shows in its short form.
 const SHORT_COMMIT_CHARS: usize = 7;

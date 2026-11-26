@@ -23,14 +23,15 @@ use cockpit_protocol::{
     ApprovalAnswer, ApprovalDecision, BackgroundTaskId, Base64, Catchup, ClaudeSessionId,
     CommandChanges, CommandKind, CostUsd, CredentialSource, DetailsChange, EditTexts, Effort,
     EffortSource, EnvironmentCredentials, ErrorCode, Event, EventRecord, FileEdit, HistoryParams,
-    Image, ImageMediaType, ItemBody, McpCallbackParams, McpRemoveParams, McpScope, McpServerParams,
-    McpServerStatus, McpSignIn, McpToggleAction, McpToggleParams, MoveParams, PROTOCOL_VERSION,
-    PendingId, PermissionMode, Plan, PlanAnswer, PlanDecision, PlanUsage, ProcessId, Prompt,
-    PromptDelivery, PromptParams, Question, QuestionAnswer, QueuedPromptParams, ReadFileParams,
-    RenameParams, Request, ResponseBody, Seq, SessionResumeParams, SetEffortParams, SetModeParams,
-    SetModelParams, Settings, SignIn, SignInWait, StartParams, StopProcessParams, StopTaskParams,
-    TerminalInputParams, TerminalOpenParams, TerminalParams, TerminalResizeParams, TerminalSize,
-    TranscriptItem, TurnOutcome, UsageWindow, WaitingPrompt, WaitingState,
+    IgnoredSearch, IgnoredSearched, Image, ImageMediaType, ItemBody, McpCallbackParams,
+    McpRemoveParams, McpScope, McpServerParams, McpServerStatus, McpSignIn, McpToggleAction,
+    McpToggleParams, MoveParams, PROTOCOL_VERSION, PendingId, PermissionMode, Plan, PlanAnswer,
+    PlanDecision, PlanUsage, ProcessId, Prompt, PromptDelivery, PromptParams, Question,
+    QuestionAnswer, QueuedPromptParams, ReadFileParams, RenameParams, Request, ResponseBody, Seq,
+    SessionResumeParams, SetEffortParams, SetModeParams, SetModelParams, Settings, SignIn,
+    SignInWait, StartParams, StopProcessParams, StopTaskParams, TerminalInputParams,
+    TerminalOpenParams, TerminalParams, TerminalResizeParams, TerminalSize, TranscriptItem,
+    TurnOutcome, UsageWindow, WaitingPrompt, WaitingState,
 };
 use rustix::process::{Pid, Signal};
 use serde_json::{Value, json};
@@ -2019,6 +2020,7 @@ async fn a_file_comes_with_its_edits() {
         Request::AgentReadFile(ReadFileParams {
             agent,
             path: PathBuf::from(path),
+            ignored: IgnoredSearch::Quick,
         })
     };
     let edit = |path: &str, old_text: &str, new_text: &str| FileEdit {
@@ -2035,6 +2037,7 @@ async fn a_file_comes_with_its_edits() {
             path: Some(work.join("notes.txt")),
             text: "remember the bread\n".to_owned(),
             edits: Some(vec![edit("notes.txt", "milk", "bread")]),
+            ignored: false,
         }
     );
     // A name that is not in the folder finds the file the agent changed.
@@ -2044,6 +2047,7 @@ async fn a_file_comes_with_its_edits() {
             path: Some(work.join("old/todo.txt")),
             text: "call the bank\n".to_owned(),
             edits: Some(vec![edit("old/todo.txt", "shop", "bank")]),
+            ignored: false,
         }
     );
 }
@@ -2063,6 +2067,7 @@ async fn files_settings_sessions_and_agent_settings() {
         Request::AgentReadFile(ReadFileParams {
             agent,
             path: PathBuf::from(path),
+            ignored: IgnoredSearch::Quick,
         })
     };
     assert_eq!(
@@ -2071,6 +2076,7 @@ async fn files_settings_sessions_and_agent_settings() {
             path: Some(setup.work().join("notes.txt")),
             text: "remember the milk\n".to_owned(),
             edits: Some(Vec::new()),
+            ignored: false,
         }
     );
     assert_eq!(
@@ -2080,7 +2086,8 @@ async fn files_settings_sessions_and_agent_settings() {
             image: Image {
                 media_type: ImageMediaType::Gif,
                 data: Base64::new("R0lGODlh".to_owned()),
-            }
+            },
+            ignored: false,
         }
     );
     assert_eq!(
@@ -2088,6 +2095,7 @@ async fn files_settings_sessions_and_agent_settings() {
         ResponseBody::Pdf {
             path: setup.work().join("invoice.pdf"),
             data: Base64::new("JVBERi3i4w==".to_owned()),
+            ignored: false,
         }
     );
     assert_eq!(
@@ -2095,8 +2103,10 @@ async fn files_settings_sessions_and_agent_settings() {
         ErrorCode::InvalidRequest
     );
     assert_eq!(
-        client.error_code(read("missing.txt")).await,
-        ErrorCode::NotFound
+        client.ok(read("missing.txt")).await,
+        ResponseBody::FileNotFound {
+            ignored: IgnoredSearched::Quick
+        }
     );
 
     let settings = Settings {

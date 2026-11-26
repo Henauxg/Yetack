@@ -6,11 +6,14 @@ use std::time::{Instant, SystemTime};
 use cockpit_client::RequestError;
 use cockpit_protocol::{
     AccountId, AgentDetails, AgentId, AgentParams, ClaudeSessionId, ErrorCode, FileEdit,
-    FindFilesParams, FoldersListParams, HistoryParams, ItemId, ListDirParams, Method, PendingId,
-    Position, ReadFileParams, Request, ResponseBody, Seq, TerminalId, Timestamp,
+    FindFilesParams, FoldersListParams, HistoryParams, IgnoredSearch, ItemId, ListDirParams,
+    Method, PendingId, Position, ReadFileParams, Request, ResponseBody, Seq, TerminalId, Timestamp,
 };
 
-use super::app_state::{self, AgentEntry, AppState, FileRead, Loadable, MachineState, Reread};
+use super::app_state::{
+    self, AgentEntry, AppState, FileRead, FoundAmong, IgnoredSearchRun, Loadable, MachineState,
+    NotFound, Reread,
+};
 use super::chat_images::ImageKey;
 use super::drafts::{Draft, Drafts};
 use super::file_tree::Gone;
@@ -116,9 +119,12 @@ pub enum Purpose {
         agent: AgentId,
         terminal: TerminalId,
     },
+    /// `search` is the search of the files git ignores that the user asked for, and `None` for
+    /// the lookup the view runs itself.
     ReadFile {
         agent: AgentId,
         path: PathBuf,
+        search: Option<IgnoredSearchRun>,
     },
     Git(GitPurpose),
     /// An image a message shows.
@@ -383,8 +389,13 @@ pub fn needed_requests(state: &mut AppState) -> Vec<Outgoing> {
                 request: Request::AgentReadFile(ReadFileParams {
                     agent,
                     path: path.clone(),
+                    ignored: IgnoredSearch::Quick,
                 }),
-                purpose: Purpose::ReadFile { agent, path },
+                purpose: Purpose::ReadFile {
+                    agent,
+                    path,
+                    search: None,
+                },
                 to: MachineId::THIS,
             });
         }
@@ -732,9 +743,10 @@ pub fn apply_response(
                 Ok(ResponseBody::File { .. } | ResponseBody::Pdf { .. }) => {
                     Err("This file is not an image.".to_owned())
                 }
-                Ok(ResponseBody::FileMatches { .. }) => {
+                Ok(ResponseBody::FileMatches { .. } | ResponseBody::IgnoredFileMatches { .. }) => {
                     Err("Several files have this name: give its full path.".to_owned())
                 }
+                Ok(ResponseBody::FileNotFound { .. }) => Err("No file has this name.".to_owned()),
                 Ok(_) => Err(format!("{method} gave an unexpected answer.")),
                 Err(failure) => Err(failure.message),
             };
@@ -743,36 +755,52 @@ pub fn apply_response(
         Purpose::PageCopy { copy, path } => {
             page_copy::answered(state, copy, &path, result.ok());
         }
-        Purpose::ReadFile { agent, path } => {
+        Purpose::ReadFile {
+            agent,
+            path,
+            search,
+        } => {
+            // A search the user stopped, or that the view no longer waits for, is not shown.
+            if let Some(run) = search
+                && !actions::waits_for_search(state, agent, &path, run)
+            {
+                return;
+            }
             let now = Timestamp::from_system_time(SystemTime::now());
             let read = match result {
                 Ok(ResponseBody::File {
                     path: found,
                     text,
                     edits,
+                    ignored,
                 }) => {
                     let found = found.unwrap_or_else(|| path.clone());
                     // A daemon that predates the edits leaves the ones of the loaded messages.
                     let edits = edits.unwrap_or_else(|| loaded_edits(state, agent, &found));
                     let read = FileRead::Text { text, edits };
-                    actions::show_read_file(state, agent, &path, &found, read, now);
+                    let among = FoundAmong::of(ignored);
+                    actions::show_read_file(state, agent, &path, &found, read, now, among);
                     return;
                 }
-                Ok(ResponseBody::Image { path: found, image }) => {
-                    actions::show_read_file(
-                        state,
-                        agent,
-                        &path,
-                        &found,
-                        FileRead::Image(image),
-                        now,
-                    );
+                Ok(ResponseBody::Image {
+                    path: found,
+                    image,
+                    ignored,
+                }) => {
+                    let read = FileRead::Image(image);
+                    let among = FoundAmong::of(ignored);
+                    actions::show_read_file(state, agent, &path, &found, read, now, among);
                     return;
                 }
-                Ok(ResponseBody::Pdf { path: found, data }) => match data.decode() {
+                Ok(ResponseBody::Pdf {
+                    path: found,
+                    data,
+                    ignored,
+                }) => match data.decode() {
                     Ok(bytes) => {
                         let read = FileRead::Pdf(bytes.into());
-                        actions::show_read_file(state, agent, &path, &found, read, now);
+                        let among = FoundAmong::of(ignored);
+                        actions::show_read_file(state, agent, &path, &found, read, now, among);
                         return;
                     }
                     Err(_) => Loadable::Failed(format!("{method} sent a PDF that is not base64")),
@@ -780,11 +808,25 @@ pub fn apply_response(
                 Ok(ResponseBody::FileMatches { matches }) => {
                     Loadable::Loaded(FileRead::Choices(matches))
                 }
+                Ok(ResponseBody::IgnoredFileMatches { matches, cut_short }) => {
+                    Loadable::Loaded(FileRead::IgnoredChoices { matches, cut_short })
+                }
+                Ok(ResponseBody::FileNotFound { ignored }) => {
+                    if search.is_some() && actions::looks_again(state, agent, &path) {
+                        Loadable::NotRequested
+                    } else {
+                        Loadable::Loaded(FileRead::NotFound(NotFound::new(ignored)))
+                    }
+                }
                 Err(failure) if failure.not_found => {
                     Loadable::Loaded(FileRead::Missing(failure.message))
                 }
                 other => {
                     let failure = Failure::from_result(other);
+                    if search.is_some() {
+                        actions::search_failed(state, agent, &path, &failure.message);
+                        return;
+                    }
                     if reread_failed(state, agent, &path, &failure) {
                         return;
                     }
@@ -1154,7 +1196,7 @@ mod tests {
 
     use cockpit_protocol::{
         AgentStatus, ApprovalDecision, Catchup, Completeness, DirListing, ErrorBody, ErrorCode,
-        HistoryPage, ItemBody, NoticeKind, OlderItems, TranscriptItem,
+        FoundFile, HistoryPage, IgnoredSearched, ItemBody, NoticeKind, OlderItems, TranscriptItem,
     };
 
     use super::*;
@@ -1433,7 +1475,15 @@ mod tests {
         let path = PathBuf::from("notes.md");
         actions::open_file(&mut state, agent, path.clone(), None);
         let text = FileRead::unedited("one\n");
-        actions::show_read_file(&mut state, agent, &path, &path, text, None);
+        actions::show_read_file(
+            &mut state,
+            agent,
+            &path,
+            &path,
+            text,
+            None,
+            FoundAmong::ListedFiles,
+        );
         crate::state::file_reread::reread(&mut state, agent);
         needed_requests(&mut state);
         let gone = ErrorBody::new(ErrorCode::NotFound, "notes.md does not exist".to_owned());
@@ -1445,6 +1495,7 @@ mod tests {
             Purpose::ReadFile {
                 agent,
                 path: path.clone(),
+                search: None,
             },
             Err(RequestError::Failed(gone)),
             MachineId::THIS,
@@ -1456,6 +1507,244 @@ mod tests {
             Loadable::Loaded(FileRead::Missing("notes.md does not exist".to_owned()))
         );
         assert_eq!(entry.file_freshness[&path].reread, Reread::Idle);
+    }
+
+    fn read_answer(
+        state: &mut AppState,
+        path: &Path,
+        search: Option<IgnoredSearchRun>,
+        answer: Result<ResponseBody, RequestError>,
+    ) {
+        let purpose = Purpose::ReadFile {
+            agent: AgentId::new(1),
+            path: path.to_owned(),
+            search,
+        };
+        let (method, machine) = (Method::AgentReadFile, MachineId::THIS);
+        apply_response(
+            state,
+            &mut Drafts::default(),
+            method,
+            purpose,
+            answer,
+            machine,
+        );
+    }
+
+    fn quick_not_found() -> ResponseBody {
+        ResponseBody::FileNotFound {
+            ignored: IgnoredSearched::Quick,
+        }
+    }
+
+    /// The file view of `report.csv`, which the quick lookup found nowhere.
+    fn not_found_yet() -> (AppState, PathBuf) {
+        let mut state = connected_with_selection();
+        let path = PathBuf::from("report.csv");
+        actions::open_file(&mut state, AgentId::new(1), path.clone(), None);
+        needed_requests(&mut state);
+        read_answer(&mut state, &path, None, Ok(quick_not_found()));
+        (state, path)
+    }
+
+    fn not_found(state: &AppState, path: &Path) -> NotFound {
+        match &state.agents[&AgentId::new(1)].files[path] {
+            Loadable::Loaded(FileRead::NotFound(not_found)) => not_found.clone(),
+            other => panic!("{other:?}"),
+        }
+    }
+
+    /// Starts the search of the ignored files for `path`, as far as `level` goes.
+    fn start(state: &mut AppState, path: &Path, level: IgnoredSearch) -> Option<IgnoredSearchRun> {
+        let outgoing = actions::search_ignored(state, AgentId::new(1), path, level);
+        match outgoing.as_slice() {
+            [
+                Outgoing {
+                    purpose: Purpose::ReadFile { search, .. },
+                    ..
+                },
+            ] => *search,
+            _ => None,
+        }
+    }
+
+    #[test]
+    fn a_search_of_the_ignored_files_runs_once_and_stop_drops_its_answer() {
+        let (mut state, path) = not_found_yet();
+        let agent = AgentId::new(1);
+
+        let first = start(&mut state, &path, IgnoredSearch::All);
+        let again = start(&mut state, &path, IgnoredSearch::All);
+        actions::stop_search(&mut state, agent, &path);
+        let late = ResponseBody::IgnoredFileMatches {
+            matches: Vec::new(),
+            cut_short: false,
+        };
+        read_answer(&mut state, &path, first, Ok(late));
+
+        assert_eq!(first.map(|run| run.level), Some(IgnoredSearch::All));
+        assert_eq!(again, None);
+        assert_eq!(not_found(&state, &path).search, None);
+        assert_eq!(not_found(&state, &path).searched, IgnoredSearched::Quick);
+    }
+
+    /// The first search, stopped, may have missed a file that the second one finds.
+    #[test]
+    fn a_search_started_again_takes_only_its_own_answer() {
+        let (mut state, path) = not_found_yet();
+        let agent = AgentId::new(1);
+        let first = start(&mut state, &path, IgnoredSearch::All);
+        actions::stop_search(&mut state, agent, &path);
+        let second = start(&mut state, &path, IgnoredSearch::All);
+        let nothing = ResponseBody::FileNotFound {
+            ignored: IgnoredSearched::All { files: 9 },
+        };
+
+        read_answer(&mut state, &path, first, Ok(nothing));
+
+        assert_eq!(not_found(&state, &path).search, second);
+    }
+
+    #[test]
+    fn a_search_that_finds_nothing_says_how_far_it_went() {
+        let (mut state, path) = not_found_yet();
+        let run = start(&mut state, &path, IgnoredSearch::All);
+        let cut_short = IgnoredSearched::CutShort {
+            files: 2_100_000,
+            seconds: 15,
+        };
+
+        let answer = ResponseBody::FileNotFound { ignored: cut_short };
+        read_answer(&mut state, &path, run, Ok(answer));
+
+        assert_eq!(not_found(&state, &path), NotFound::new(cut_short));
+    }
+
+    /// A search cut short found one file: the view lists it, and says that others may exist.
+    #[test]
+    fn a_file_found_by_a_search_cut_short_is_listed_with_a_warning() {
+        let (mut state, path) = not_found_yet();
+        let run = start(&mut state, &path, IgnoredSearch::All);
+        let matches = vec![FoundFile {
+            path: PathBuf::from("/work/out/report.csv"),
+            modified: None,
+            bytes: Some(4),
+        }];
+        let answer = ResponseBody::IgnoredFileMatches {
+            matches: matches.clone(),
+            cut_short: true,
+        };
+
+        read_answer(&mut state, &path, run, Ok(answer));
+
+        assert_eq!(
+            state.agents[&AgentId::new(1)].files[&path],
+            Loadable::Loaded(FileRead::IgnoredChoices {
+                matches,
+                cut_short: true
+            })
+        );
+    }
+
+    #[test]
+    fn a_failed_search_keeps_the_card_and_says_why() {
+        let (mut state, path) = not_found_yet();
+        let run = start(&mut state, &path, IgnoredSearch::All);
+        let failure = ErrorBody::new(ErrorCode::Internal, "the daemon is busy".to_owned());
+
+        read_answer(&mut state, &path, run, Err(RequestError::Failed(failure)));
+
+        assert_eq!(not_found(&state, &path).search, None);
+        assert!(state.ui.errors.iter().any(|note| {
+            note.text
+                .contains("The search of the git-ignored files failed: the daemon is busy")
+        }));
+    }
+
+    /// The bar says the file is git-ignored, and still does once another tab showed and the file
+    /// reads again by its full path, which needs no lookup.
+    #[test]
+    fn an_ignored_file_found_takes_the_tab_and_keeps_its_chip() {
+        let (mut state, path) = not_found_yet();
+        let agent = AgentId::new(1);
+        let folder = state.agents[&agent].summary.folder.clone();
+        let found = folder.join(".db").join("report.csv");
+        let relative = PathBuf::from(".db").join("report.csv");
+        let run = start(&mut state, &path, IgnoredSearch::Longer);
+        let file = |ignored: bool| ResponseBody::File {
+            path: Some(found.clone()),
+            text: "a,b\n".to_owned(),
+            edits: Some(Vec::new()),
+            ignored,
+        };
+
+        read_answer(&mut state, &path, run, Ok(file(true)));
+        let shown = state.ui.file_view(agent).map(|view| view.path.clone());
+        actions::open_file(&mut state, agent, PathBuf::from("src/main.rs"), None);
+        needed_requests(&mut state);
+        actions::open_file(&mut state, agent, relative.clone(), None);
+        needed_requests(&mut state);
+        read_answer(&mut state, &relative, None, Ok(file(false)));
+
+        let entry = &state.agents[&agent];
+        assert_eq!(shown, Some(relative.clone()));
+        assert_eq!(
+            entry.files[&relative],
+            Loadable::Loaded(FileRead::unedited("a,b\n"))
+        );
+        assert!(entry.ignored_files.contains(&relative));
+    }
+
+    /// The agent's change may have made the file: a name found nowhere looks again. A search,
+    /// which looks only at the ignored files, runs on, and the lookup follows it.
+    #[test]
+    fn a_change_looks_again_for_a_name_once_the_search_ends() {
+        let (mut state, path) = not_found_yet();
+        let agent = AgentId::new(1);
+
+        crate::state::file_reread::reread(&mut state, agent);
+        let looked_again = state.agents[&agent].files[&path].clone();
+        needed_requests(&mut state);
+        read_answer(&mut state, &path, None, Ok(quick_not_found()));
+        let run = start(&mut state, &path, IgnoredSearch::All);
+        crate::state::file_reread::reread(&mut state, agent);
+        let during = not_found(&state, &path);
+        let nothing = ResponseBody::FileNotFound {
+            ignored: IgnoredSearched::All { files: 9 },
+        };
+        read_answer(&mut state, &path, run, Ok(nothing));
+
+        assert_eq!(looked_again, Loadable::NotRequested);
+        assert_eq!(during.search, run);
+        assert!(during.look_again);
+        assert_eq!(state.agents[&agent].files[&path], Loadable::NotRequested);
+    }
+
+    #[test]
+    fn stop_runs_the_lookup_the_agents_change_asked_for() {
+        let (mut state, path) = not_found_yet();
+        let agent = AgentId::new(1);
+        start(&mut state, &path, IgnoredSearch::All);
+        crate::state::file_reread::reread(&mut state, agent);
+
+        actions::stop_search(&mut state, agent, &path);
+
+        assert_eq!(state.agents[&agent].files[&path], Loadable::NotRequested);
+    }
+
+    #[test]
+    fn asking_the_agent_puts_the_question_after_the_draft() {
+        let (state, path) = not_found_yet();
+        let agent = AgentId::new(1);
+        let mut drafts = Drafts::default();
+        drafts.draft_mut(agent).text = "Thanks.".to_owned();
+
+        actions::ask_where_file_is(&state, &mut drafts, agent, &path);
+
+        assert_eq!(
+            drafts.draft(agent).map(|draft| draft.text.as_str()),
+            Some("Thanks. Where is report.csv? Give me its full path.")
+        );
     }
 
     #[test]
@@ -1472,6 +1761,7 @@ mod tests {
         let read = Purpose::ReadFile {
             agent,
             path: PathBuf::from("src/main.rs"),
+            search: None,
         };
         assert!(requests.iter().any(|outgoing| outgoing.purpose == read));
     }

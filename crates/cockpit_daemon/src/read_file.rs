@@ -15,6 +15,13 @@
 //!    read; several are listed for the user to pick from. A checkout the agent worked in is the
 //!    folder with the `.git` entry nearest above a file it read or changed, unless that folder is
 //!    `/` or holds the home folder, which would search everything the user owns.
+//! 3. the files git ignores in those folders, such as a `.db/` folder of scripts: at the top of
+//!    each ignored folder and one folder down, and the ignored files outside those folders. A
+//!    match is marked as ignored.
+//!
+//! When all three find nothing, the user may ask for the search of all the ignored files, within
+//! the time [`IgnoredSearch::full_search_time`] gives. The answer then says how many files it went
+//! through, and whether it ran out of time.
 //!
 //! On Windows, names compare whatever their case. A device path or name, such as `\\.\pipe` or
 //! `NUL`, is refused. So is a path on a network share that neither the agent's folder nor a
@@ -30,10 +37,11 @@ use std::process::Stdio;
 use std::time::Duration;
 
 use cockpit_protocol::{
-    Base64, ErrorBody, ErrorCode, FileEdit, Image, ImageMediaType, is_pdf_name,
+    Base64, ErrorBody, ErrorCode, FileEdit, FoundFile, IgnoredSearch, IgnoredSearched, Image,
+    ImageMediaType, Timestamp, is_pdf_name,
 };
 use tokio::io::{AsyncBufReadExt, BufReader};
-use tokio::process::Command;
+use tokio::process::{Child, ChildStdout, Command};
 use tokio::time::Instant;
 
 use crate::blocking::{self, BlockingError, Scope};
@@ -58,14 +66,44 @@ pub(crate) const SEARCH_TIME: Duration = Duration::from_secs(3);
 /// How long finding and reading a file may take, its search apart.
 const READ_TIME: Duration = Duration::from_secs(10);
 pub(crate) const GIT_PROGRAM: &str = "git";
+/// How long the quick look may spend in the ignored folders, after their listing.
+const NEAR_SCAN_TIME: Duration = Duration::from_secs(1);
+/// How much longer the wait for that look lasts, so that it returns what it found by then.
+const NEAR_SCAN_GRACE: Duration = Duration::from_millis(500);
+/// The most entries the quick look reads in one ignored folder.
+const MAX_NEAR_ENTRIES: usize = 10_000;
+const LS_FILES: &str = "ls-files";
+const CACHED_OPTION: &str = "--cached";
+const OTHERS_OPTION: &str = "--others";
+const IGNORED_OPTION: &str = "--ignored";
+const EXCLUDE_STANDARD_OPTION: &str = "--exclude-standard";
+const DIRECTORY_OPTION: &str = "--directory";
 /// Lists the files of the checkout under the current folder, tracked or not, without the ignored
 /// ones, each ended by a NUL byte.
 const LIST_FILES: [&str; 5] = [
-    "ls-files",
+    LS_FILES,
     NUL_ENDED,
-    "--cached",
-    "--others",
-    "--exclude-standard",
+    CACHED_OPTION,
+    OTHERS_OPTION,
+    EXCLUDE_STANDARD_OPTION,
+];
+/// Lists the files the checkout ignores.
+const LIST_IGNORED: [&str; 5] = [
+    LS_FILES,
+    NUL_ENDED,
+    OTHERS_OPTION,
+    IGNORED_OPTION,
+    EXCLUDE_STANDARD_OPTION,
+];
+/// Lists the folders the checkout ignores, each ended by `/`, without what they hold, and the
+/// ignored files outside them.
+const LIST_IGNORED_FOLDERS: [&str; 6] = [
+    LS_FILES,
+    NUL_ENDED,
+    OTHERS_OPTION,
+    IGNORED_OPTION,
+    EXCLUDE_STANDARD_OPTION,
+    DIRECTORY_OPTION,
 ];
 pub(crate) const GIT_FOLDER_OPTION: &str = "-C";
 pub(crate) const CONFIG_OPTION: &str = "-c";
@@ -157,6 +195,23 @@ impl Access {
         Ok(())
     }
 
+    /// The folders of `earlier`, listed by a search before `root`, that `root` holds, relative to
+    /// it. `earlier` starts with the agent's folder, as [`Self::search_roots`] does.
+    fn roots_inside(&self, earlier: &[PathBuf], root: &Path) -> Vec<PathBuf> {
+        let resolved = earlier.iter().enumerate().map(|(index, folder)| {
+            if index == 0 {
+                self.folder.as_path()
+            } else {
+                folder.as_path()
+            }
+        });
+        resolved
+            .filter_map(|folder| folder.strip_prefix(root).ok())
+            .filter(|inside| !inside.as_os_str().is_empty())
+            .map(Path::to_owned)
+            .collect()
+    }
+
     /// The folders a search lists: `folder`, the agent's folder as its record names it, then the
     /// checkouts other than that folder, so that no checkout is listed twice.
     fn search_roots(&self, folder: PathBuf) -> Vec<PathBuf> {
@@ -192,9 +247,6 @@ pub(crate) enum ReadFileError {
     Share,
     #[error("{} does not exist", .0.display())]
     Missing(PathBuf),
-    /// A relative path that the lookup did not find either.
-    #[error("{} is not in the agent's folder or in the files it read or changed", .0.display())]
-    Unknown(PathBuf),
     #[error("cannot open the file: {0}")]
     NotFound(#[source] io::Error),
     #[error("not a regular file")]
@@ -215,7 +267,7 @@ impl ReadFileError {
             Self::GoesUp => ErrorCode::InvalidRequest,
             #[cfg(windows)]
             Self::Share => ErrorCode::InvalidRequest,
-            Self::Missing(_) | Self::Unknown(_) | Self::NotFound(_) => ErrorCode::NotFound,
+            Self::Missing(_) | Self::NotFound(_) => ErrorCode::NotFound,
             Self::NotAFile | Self::TooLarge(_) | Self::NotText | Self::Io(_) => {
                 ErrorCode::FileUnreadable
             }
@@ -318,19 +370,38 @@ impl FileFormat {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Found {
     /// `path` is where the file was read: the path asked for, joined to the agent's folder when
-    /// relative, or what the lookup found for it.
-    File { path: PathBuf, content: Content },
+    /// relative, or what the lookup found for it. `ignored`: the lookup found it among the files
+    /// git ignores.
+    File {
+        path: PathBuf,
+        content: Content,
+        ignored: bool,
+    },
     /// Several files match the path, and none was read.
     Several(Vec<PathBuf>),
+    /// Files git ignores match the path, and none was read: several, or one that a search cut
+    /// short found. `cut_short`: other files may match too.
+    IgnoredMatches {
+        matches: Vec<FoundFile>,
+        cut_short: bool,
+    },
+    /// No file matches the relative path, after a search that went as far as it says.
+    Nowhere(IgnoredSearched),
 }
 
 /// Reads `path`, absolute or relative to `folder`, the agent's folder, or looks a relative path
 /// up as the module says. `touched` holds the files the agent read or changed, most recent first.
+/// `ignored` says how far the lookup goes in the files git ignores:
+/// - [`IgnoredSearch::Quick`]: after the files git tracks, near the ignored ones
+///   ([`search_ignored_nearby`]).
+/// - [`IgnoredSearch::All`] and [`IgnoredSearch::Longer`]: all the ignored files, which the user
+///   asked for once the quick lookup found nothing, rather than the files git tracks.
 pub(crate) async fn find_and_read(
     folder: PathBuf,
     touched: Vec<PathBuf>,
     home: Option<PathBuf>,
     path: PathBuf,
+    ignored: IgnoredSearch,
 ) -> Result<Found, ReadFileError> {
     let task = {
         let agent_folder = folder.clone();
@@ -351,28 +422,106 @@ pub(crate) async fn find_and_read(
     }
     let tail = name_tail(&path).unwrap_or_else(|| path.clone());
     let ends_with_tail = |relative: &Path| relative.ends_with(&tail);
-    let matches = search(
+    let Some(time) = ignored.full_search_time() else {
+        let tracked = search(
+            &access,
+            folder.clone(),
+            ends_with_tail,
+            Instant::now() + SEARCH_TIME,
+        )
+        .await;
+        if !tracked.is_empty() {
+            return pick(&access, &folder, tracked, Listing::Tracked).await;
+        }
+        let near =
+            search_ignored_nearby(&access, folder.clone(), &tail, Instant::now() + SEARCH_TIME)
+                .await;
+        if near.is_empty() {
+            return Ok(Found::Nowhere(IgnoredSearched::Quick));
+        }
+        return pick(&access, &folder, near, Listing::Ignored).await;
+    };
+    let listed = list_matching(
         &access,
         folder.clone(),
+        &LIST_IGNORED,
         ends_with_tail,
-        Instant::now() + SEARCH_TIME,
+        Instant::now() + time,
     )
     .await;
-    match matches.as_slice() {
-        [] => Err(ReadFileError::Unknown(path)),
-        [only] => {
-            let only = only.clone();
-            let content = blocking::run(Instant::now() + READ_TIME, Scope::Folder(&folder), {
-                let only = only.clone();
-                move || read(&access, &only)
-            })
-            .await??;
-            Ok(Found::File {
-                path: only,
-                content,
-            })
+    if listed.matches.is_empty() {
+        return Ok(Found::Nowhere(listed.searched(time)));
+    }
+    // A file found before the search's end may not be the only one: the user picks it.
+    if listed.stopped_early() {
+        return ignored_matches(&folder, listed.matches, true).await;
+    }
+    pick(&access, &folder, listed.matches, Listing::Ignored).await
+}
+
+/// The files of a checkout that a search went through.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Listing {
+    Tracked,
+    Ignored,
+}
+
+/// The one file of `matches`, read, or all of them for the user to pick from. Files git ignores
+/// come with when each changed and its size, to tell copies apart.
+async fn pick(
+    access: &Access,
+    folder: &Path,
+    mut matches: Vec<PathBuf>,
+    listing: Listing,
+) -> Result<Found, ReadFileError> {
+    let ignored = listing == Listing::Ignored;
+    if matches.len() > 1 {
+        if !ignored {
+            return Ok(Found::Several(matches));
         }
-        _ => Ok(Found::Several(matches)),
+        return ignored_matches(folder, matches, false).await;
+    }
+    let Some(only) = matches.pop() else {
+        return Ok(Found::Nowhere(IgnoredSearched::Quick));
+    };
+    let content = blocking::run(Instant::now() + READ_TIME, Scope::Folder(folder), {
+        let access = access.clone();
+        let only = only.clone();
+        move || read(&access, &only)
+    })
+    .await??;
+    Ok(Found::File {
+        path: only,
+        content,
+        ignored,
+    })
+}
+
+/// `matches`, files git ignores, with when each changed and its size, to tell copies apart.
+async fn ignored_matches(
+    folder: &Path,
+    matches: Vec<PathBuf>,
+    cut_short: bool,
+) -> Result<Found, ReadFileError> {
+    let matches = blocking::run(
+        Instant::now() + READ_TIME,
+        Scope::Folder(folder),
+        move || matches.into_iter().map(described).collect(),
+    )
+    .await?;
+    Ok(Found::IgnoredMatches { matches, cut_short })
+}
+
+/// `path`, with when it last changed and its size.
+fn described(path: PathBuf) -> FoundFile {
+    let metadata = std::fs::metadata(&path).ok();
+    FoundFile {
+        modified: metadata
+            .as_ref()
+            .and_then(|metadata| metadata.modified().ok())
+            .and_then(Timestamp::from_system_time),
+        bytes: metadata.map(|metadata| metadata.len()),
+        path,
     }
 }
 
@@ -387,7 +536,11 @@ fn read_or_match_touched(
     let tail = match read(access, path) {
         Ok(content) => {
             let path = folder.join(path);
-            return Ok(Some(Found::File { path, content }));
+            return Ok(Some(Found::File {
+                path,
+                content,
+                ignored: false,
+            }));
         }
         Err(ReadFileError::Missing(missing)) => match name_tail(path) {
             Some(tail) => tail,
@@ -399,7 +552,11 @@ fn read_or_match_touched(
         // A file the agent touched may be gone since.
         if let Ok(content) = read(access, candidate) {
             let path = candidate.clone();
-            return Ok(Some(Found::File { path, content }));
+            return Ok(Some(Found::File {
+                path,
+                content,
+                ignored: false,
+            }));
         }
     }
     Ok(None)
@@ -429,40 +586,76 @@ pub(crate) async fn search(
     matches_path: impl Fn(&Path) -> bool,
     deadline: Instant,
 ) -> Vec<PathBuf> {
-    let mut matches: Vec<PathBuf> = Vec::new();
+    list_matching(access, folder, &LIST_FILES, matches_path, deadline)
+        .await
+        .matches
+}
+
+/// What a listing found: its matches, the files it listed, and whether it ran out of time.
+#[derive(Debug, Default)]
+struct Listed {
+    matches: Vec<PathBuf>,
+    files: u32,
+    timed_out: bool,
+}
+
+impl Listed {
+    /// Whether the listing stopped before git listed every file: at its time limit, or at
+    /// [`MAX_MATCHES`].
+    fn stopped_early(&self) -> bool {
+        self.timed_out || self.matches.len() >= MAX_MATCHES
+    }
+
+    /// How far a search of all the ignored files that matched nothing went, within `time`.
+    fn searched(&self, time: Duration) -> IgnoredSearched {
+        if self.timed_out {
+            IgnoredSearched::CutShort {
+                files: self.files,
+                seconds: u32::try_from(time.as_secs()).unwrap_or(u32::MAX),
+            }
+        } else {
+            IgnoredSearched::All { files: self.files }
+        }
+    }
+}
+
+/// As [`search`], with the files `list`, `git`'s arguments, lists.
+async fn list_matching(
+    access: &Access,
+    folder: PathBuf,
+    list: &[&str],
+    matches_path: impl Fn(&Path) -> bool,
+    deadline: Instant,
+) -> Listed {
+    let mut listed = Listed::default();
     // The agent's folder may sit in one of the checkouts: a file found twice is listed once.
     let mut seen: Vec<PathBuf> = Vec::new();
-    for root in access.search_roots(folder) {
-        let mut git = Command::new(GIT_PROGRAM);
-        git.args(NO_MONITOR)
-            .arg(GIT_FOLDER_OPTION)
-            .arg(&root)
-            .args(LIST_FILES)
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .kill_on_drop(true);
-        #[cfg(windows)]
-        program::hide_console(&mut git);
-        let Ok(mut child) = git.spawn() else {
+    let roots = access.search_roots(folder);
+    for (index, root) in roots.iter().enumerate() {
+        let Some((_child, mut lines)) = listing(root, list) else {
             continue;
         };
-        let Some(stdout) = child.stdout.take() else {
-            continue;
-        };
-        let mut lines = BufReader::new(stdout);
+        let inner = access.roots_inside(roots.get(..index).unwrap_or_default(), root);
         let mut entry: Vec<u8> = Vec::new();
         loop {
             entry.clear();
             match tokio::time::timeout_at(deadline, lines.read_until(0, &mut entry)).await {
                 Ok(Ok(0) | Err(_)) => break,
-                Err(_) => return matches,
+                Err(_) => {
+                    listed.timed_out = true;
+                    return listed;
+                }
                 Ok(Ok(_)) => {}
             }
             let name = entry.strip_suffix(&[0]).unwrap_or(&entry);
             let Some(relative) = git_path(name) else {
                 continue;
             };
+            // The listing of that root counted it already.
+            if inner.iter().any(|inside| relative.starts_with(inside)) {
+                continue;
+            }
+            listed.files = listed.files.saturating_add(1);
             if !matches_path(&relative) {
                 continue;
             }
@@ -472,25 +665,215 @@ pub(crate) async fn search(
                 continue;
             }
             let resolving = found.clone();
-            let resolving = blocking::run(deadline, Scope::Folder(&root), move || {
-                canonical(&resolving)
-            });
+            let resolving =
+                blocking::run(deadline, Scope::Folder(root), move || canonical(&resolving));
             let resolved = match resolving.await {
                 Ok(Ok(resolved)) => resolved,
                 Ok(Err(_)) => continue,
-                Err(_) => return matches,
+                Err(_) => {
+                    listed.timed_out = true;
+                    return listed;
+                }
             };
             if seen.contains(&resolved) {
                 continue;
             }
             seen.push(resolved);
-            matches.push(found);
+            listed.matches.push(found);
+            if listed.matches.len() >= MAX_MATCHES {
+                return listed;
+            }
+        }
+    }
+    listed
+}
+
+/// `git` listing files in `root` with the arguments `list`, NUL-ended, and its output. The
+/// process ends when the first is dropped. `None` when it does not start.
+fn listing(root: &Path, list: &[&str]) -> Option<(Child, BufReader<ChildStdout>)> {
+    let mut git = Command::new(GIT_PROGRAM);
+    git.args(NO_MONITOR)
+        .arg(GIT_FOLDER_OPTION)
+        .arg(root)
+        .args(list)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .kill_on_drop(true);
+    #[cfg(windows)]
+    program::hide_console(&mut git);
+    let mut child = git.spawn().ok()?;
+    let stdout = child.stdout.take()?;
+    Some((child, BufReader::new(stdout)))
+}
+
+/// The files that end with `tail` near the files git ignores in `folder` and the checkouts of
+/// `access`: in each ignored folder, directly or one folder down, and among the ignored files
+/// outside those folders. Each once, until [`MAX_MATCHES`]. The listing stops at `deadline`, and
+/// the look in the folders it named [`NEAR_SCAN_TIME`] later.
+///
+/// `git ls-files --directory` names an ignored folder without listing what it holds, so this
+/// stays quick in a checkout whose ignored folders hold many files.
+async fn search_ignored_nearby(
+    access: &Access,
+    folder: PathBuf,
+    tail: &Path,
+    deadline: Instant,
+) -> Vec<PathBuf> {
+    let scan_deadline = deadline + NEAR_SCAN_TIME;
+    let mut matches: Vec<PathBuf> = Vec::new();
+    let mut seen: Vec<PathBuf> = Vec::new();
+    for root in access.search_roots(folder) {
+        let Some((_child, mut lines)) = listing(&root, &LIST_IGNORED_FOLDERS) else {
+            continue;
+        };
+        let mut entries: Vec<IgnoredEntry> = Vec::new();
+        let mut entry: Vec<u8> = Vec::new();
+        let mut timed_out = false;
+        loop {
+            entry.clear();
+            match tokio::time::timeout_at(deadline, lines.read_until(0, &mut entry)).await {
+                Ok(Ok(0) | Err(_)) => break,
+                Err(_) => {
+                    timed_out = true;
+                    break;
+                }
+                Ok(Ok(_)) => entries.extend(IgnoredEntry::of(&entry, tail)),
+            }
+        }
+        let scan = {
+            let access = access.clone();
+            let root = root.clone();
+            let tail = tail.to_owned();
+            move || files_near(&access, &root, &entries, &tail, scan_deadline)
+        };
+        let wait = scan_deadline + NEAR_SCAN_GRACE;
+        let Ok(found) = blocking::run(wait, Scope::Folder(&root), scan).await else {
+            return matches;
+        };
+        for NearFile { path, resolved } in found {
+            if seen.contains(&resolved) {
+                continue;
+            }
+            seen.push(resolved);
+            matches.push(path);
             if matches.len() >= MAX_MATCHES {
                 return matches;
             }
         }
+        if timed_out {
+            break;
+        }
     }
     matches
+}
+
+/// An entry of `git ls-files --directory` that the quick look keeps, relative to its checkout.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum IgnoredEntry {
+    Folder(PathBuf),
+    /// An ignored file outside the ignored folders, whose path ends with the tail.
+    File(PathBuf),
+}
+
+impl IgnoredEntry {
+    /// The entry `bytes`, NUL-ended, if the look for `tail` needs it. A folder ends with `/`.
+    fn of(bytes: &[u8], tail: &Path) -> Option<Self> {
+        let bytes = bytes.strip_suffix(&[0]).unwrap_or(bytes);
+        match bytes.strip_suffix(b"/") {
+            Some(folder) => git_path(folder).map(Self::Folder),
+            None => git_path(bytes)
+                .filter(|file| file.ends_with(tail))
+                .map(Self::File),
+        }
+    }
+}
+
+/// A file the quick look found, with its path without symlinks.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct NearFile {
+    path: PathBuf,
+    resolved: PathBuf,
+}
+
+/// The files that end with `tail` near the ignored `entries` of `root`, until `deadline` or
+/// [`MAX_MATCHES`].
+fn files_near(
+    access: &Access,
+    root: &Path,
+    entries: &[IgnoredEntry],
+    tail: &Path,
+    deadline: Instant,
+) -> Vec<NearFile> {
+    let mut found: Vec<NearFile> = Vec::new();
+    for entry in entries {
+        let candidates = match entry {
+            IgnoredEntry::File(relative) => vec![root.join(relative)],
+            IgnoredEntry::Folder(relative) => {
+                let folder = root.join(relative);
+                let mut candidates = paths_in(&folder, tail);
+                for below in folders_in(&folder, deadline) {
+                    candidates.extend(paths_in(&below, tail));
+                }
+                candidates
+            }
+        };
+        for path in candidates {
+            if Instant::now() >= deadline || found.len() >= MAX_MATCHES {
+                return found;
+            }
+            // An answer carries paths as text.
+            if path.to_str().is_none()
+                || access.check_before_open(&path).is_err()
+                || !path.is_file()
+            {
+                continue;
+            }
+            if let Ok(resolved) = canonical(&path) {
+                found.push(NearFile { path, resolved });
+            }
+        }
+    }
+    found
+}
+
+/// Where a file whose path ends with `tail` is when `folder` holds it: `folder/tail`, and when
+/// `tail` starts with the last names of `folder`, `folder` joined to the rest of `tail`. For
+/// example, `.db/fix.sql` in `api/.db` is `api/.db/fix.sql`.
+fn paths_in(folder: &Path, tail: &Path) -> Vec<PathBuf> {
+    let names: Vec<Component> = tail.components().collect();
+    let mut paths = vec![folder.join(tail)];
+    // The file's own name stays in the rest.
+    for shared in 1..names.len() {
+        let Some((first, rest)) = names.split_at_checked(shared) else {
+            break;
+        };
+        if folder.ends_with(first.iter().collect::<PathBuf>()) {
+            paths.push(folder.join(rest.iter().collect::<PathBuf>()));
+        }
+    }
+    paths
+}
+
+/// The folders in `folder`, among its first [`MAX_NEAR_ENTRIES`] entries, until `deadline`. An
+/// entry that does not read is left out, as is a symlink.
+fn folders_in(folder: &Path, deadline: Instant) -> Vec<PathBuf> {
+    let mut folders: Vec<PathBuf> = Vec::new();
+    let Ok(entries) = std::fs::read_dir(folder) else {
+        return folders;
+    };
+    for entry in entries.take(MAX_NEAR_ENTRIES) {
+        if Instant::now() >= deadline {
+            break;
+        }
+        let Ok(entry) = entry else {
+            continue;
+        };
+        if entry.file_type().is_ok_and(|kind| kind.is_dir()) {
+            folders.push(entry.path());
+        }
+    }
+    folders
 }
 
 /// A path as `git ls-files -z` writes it, relative to the checkout. `None` for an absolute path or
@@ -786,12 +1169,22 @@ mod tests {
         touched: &[PathBuf],
         path: &str,
     ) -> Result<Found, ReadFileError> {
+        find_ignored(layout, touched, path, IgnoredSearch::Quick).await
+    }
+
+    async fn find_ignored(
+        layout: &Layout,
+        touched: &[PathBuf],
+        path: &str,
+        ignored: IgnoredSearch,
+    ) -> Result<Found, ReadFileError> {
         let home = canonical(layout.temp.path()).unwrap();
         find_and_read(
             layout.agent.clone(),
             touched.to_vec(),
             Some(home),
             PathBuf::from(path),
+            ignored,
         )
         .await
     }
@@ -800,6 +1193,15 @@ mod tests {
         Found::File {
             path,
             content: Content::Text(text.to_owned()),
+            ignored: false,
+        }
+    }
+
+    fn ignored_file(path: PathBuf, text: &str) -> Found {
+        Found::File {
+            path,
+            content: Content::Text(text.to_owned()),
+            ignored: true,
         }
     }
 
@@ -843,7 +1245,7 @@ mod tests {
 
         let one = find(&layout, &touched, "parcel.ts").await.unwrap();
         let several = find(&layout, &touched, "widget.ts").await.unwrap();
-        let ignored = find(&layout, &touched, "report.ts").await;
+        let ignored = find(&layout, &touched, "report.ts").await.unwrap();
         let none = find(&layout, &touched, "register-parcel.component.ts").await;
 
         assert_eq!(
@@ -857,15 +1259,225 @@ mod tests {
                 sibling.join("src/b/widget.ts"),
             ])
         );
-        assert!(
-            matches!(ignored, Err(ReadFileError::Unknown(_))),
-            "{ignored:?}"
-        );
-        let message = none.unwrap_err().to_error_body();
-        assert_eq!(message.code, ErrorCode::NotFound);
         assert_eq!(
-            message.message,
-            "register-parcel.component.ts is not in the agent's folder or in the files it read or changed"
+            ignored,
+            ignored_file(layout.agent.join("build/report.ts"), "built\n")
+        );
+        assert_eq!(none.unwrap(), Found::Nowhere(IgnoredSearched::Quick));
+    }
+
+    /// Git ignores `.db/`, `cache/` and `*.log`. The quick look finds a file at the top of an
+    /// ignored folder or one folder down, and an ignored file outside those folders. A file deeper
+    /// down takes the search of all the ignored files.
+    #[tokio::test]
+    async fn the_quick_look_checks_each_ignored_folder_and_one_folder_down() {
+        let layout = Layout::new();
+        git_init(&layout.agent);
+        write(&layout.agent.join(".gitignore"), "/.db\ncache/\n*.log\n");
+        write(&layout.agent.join(".db/refund_fix.sql"), "UPDATE\n");
+        write(&layout.agent.join("cache/2026/export.csv"), "a,b\n");
+        write(&layout.agent.join("cache/2026/11/deep.csv"), "deep\n");
+        write(&layout.agent.join("src/run.log"), "log\n");
+
+        let top = find(&layout, &[], "refund_fix.sql").await.unwrap();
+        let below = find(&layout, &[], "export.csv").await.unwrap();
+        let loose = find(&layout, &[], "run.log").await.unwrap();
+        let deep = find(&layout, &[], "deep.csv").await.unwrap();
+        let searched = find_ignored(&layout, &[], "deep.csv", IgnoredSearch::All)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            top,
+            ignored_file(layout.agent.join(".db/refund_fix.sql"), "UPDATE\n")
+        );
+        assert_eq!(
+            below,
+            ignored_file(layout.agent.join("cache/2026/export.csv"), "a,b\n")
+        );
+        assert_eq!(
+            loose,
+            ignored_file(layout.agent.join("src/run.log"), "log\n")
+        );
+        assert_eq!(deep, Found::Nowhere(IgnoredSearched::Quick));
+        assert_eq!(
+            searched,
+            ignored_file(layout.agent.join("cache/2026/11/deep.csv"), "deep\n")
+        );
+    }
+
+    /// Copies that git ignores come with their size, to tell them apart. A name no ignored file
+    /// has says how many ignored files the search went through.
+    #[tokio::test]
+    async fn the_search_of_all_ignored_files_lists_copies_or_counts_the_files() {
+        let layout = Layout::new();
+        git_init(&layout.agent);
+        write(&layout.agent.join(".gitignore"), "out/\n");
+        write(&layout.agent.join("out/a/b/report.csv"), "1\n");
+        write(&layout.agent.join("out/c/d/report.csv"), "1,2\n");
+        write(&layout.agent.join("src/report.csv.md"), "tracked\n");
+
+        let copies = find_ignored(&layout, &[], "report.csv", IgnoredSearch::All)
+            .await
+            .unwrap();
+        let none = find_ignored(&layout, &[], "missing.csv", IgnoredSearch::Longer)
+            .await
+            .unwrap();
+
+        let Found::IgnoredMatches {
+            matches: mut copies,
+            cut_short: false,
+        } = copies
+        else {
+            panic!("{copies:?}");
+        };
+        copies.sort_by(|one, other| one.path.cmp(&other.path));
+        let sizes: Vec<(PathBuf, Option<u64>)> = copies
+            .iter()
+            .map(|copy| (copy.path.clone(), copy.bytes))
+            .collect();
+        assert_eq!(
+            sizes,
+            [
+                (layout.agent.join("out/a/b/report.csv"), Some(2)),
+                (layout.agent.join("out/c/d/report.csv"), Some(4)),
+            ]
+        );
+        assert!(copies.iter().all(|copy| copy.modified.is_some()));
+        assert_eq!(none, Found::Nowhere(IgnoredSearched::All { files: 2 }));
+    }
+
+    fn git_add(folder: &Path, path: &str) {
+        let status = std::process::Command::new(GIT_PROGRAM)
+            .args(["add", path])
+            .current_dir(folder)
+            .status()
+            .unwrap();
+        assert!(status.success());
+    }
+
+    /// The agent names the file with its ignored folder, which sits in a tracked folder. Git then
+    /// lists `api/.db/`, not `api/`.
+    #[tokio::test]
+    async fn the_quick_look_finds_a_name_that_starts_with_its_ignored_folder() {
+        let layout = Layout::new();
+        git_init(&layout.agent);
+        write(&layout.agent.join(".gitignore"), ".db/\n");
+        write(&layout.agent.join("api/main.rs"), "fn main() {}\n");
+        write(&layout.agent.join("api/.db/refund_fix.sql"), "UPDATE\n");
+        write(&layout.agent.join("web/.db/old/seed.sql"), "INSERT\n");
+        git_add(&layout.agent, "api/main.rs");
+
+        let top = find(&layout, &[], ".db/refund_fix.sql").await.unwrap();
+        let below = find(&layout, &[], ".db/old/seed.sql").await.unwrap();
+
+        assert_eq!(
+            top,
+            ignored_file(layout.agent.join("api/.db/refund_fix.sql"), "UPDATE\n")
+        );
+        assert_eq!(
+            below,
+            ignored_file(layout.agent.join("web/.db/old/seed.sql"), "INSERT\n")
+        );
+    }
+
+    /// The agent works in `repo/sub` and touched a file of `repo`: both are listed, and the files
+    /// of `sub` count once.
+    #[tokio::test]
+    async fn a_checkout_that_holds_the_agents_folder_counts_its_files_once() {
+        let layout = Layout::new();
+        let repo = layout.agent.parent().unwrap().join("repo");
+        git_init(&repo);
+        write(&repo.join(".gitignore"), "out/\n");
+        write(&repo.join("top.rs"), "top\n");
+        write(&repo.join("sub/out/a.csv"), "a\n");
+        write(&repo.join("sub/out/b.csv"), "b\n");
+        let home = canonical(layout.temp.path()).unwrap();
+
+        let found = find_and_read(
+            repo.join("sub"),
+            vec![repo.join("top.rs")],
+            Some(home),
+            PathBuf::from("missing.csv"),
+            IgnoredSearch::All,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(found, Found::Nowhere(IgnoredSearched::All { files: 2 }));
+    }
+
+    /// More copies than a search lists: the user sees that others may exist.
+    #[tokio::test]
+    async fn a_search_that_stops_at_its_most_matches_says_so() {
+        let layout = Layout::new();
+        git_init(&layout.agent);
+        write(&layout.agent.join(".gitignore"), "out/\n");
+        for copy in 0..=MAX_MATCHES {
+            write(&layout.agent.join(format!("out/{copy}/report.csv")), "1\n");
+        }
+
+        let found = find_ignored(&layout, &[], "report.csv", IgnoredSearch::All)
+            .await
+            .unwrap();
+
+        let Found::IgnoredMatches { matches, cut_short } = found else {
+            panic!("{found:?}");
+        };
+        assert_eq!(matches.len(), MAX_MATCHES);
+        assert!(cut_short);
+    }
+
+    #[test]
+    fn a_listing_out_of_time_or_matches_stopped_early() {
+        let listed = |timed_out: bool, matches: usize| Listed {
+            matches: vec![PathBuf::from("out/report.csv"); matches],
+            files: 10,
+            timed_out,
+        };
+
+        assert!(listed(true, 1).stopped_early());
+        assert!(listed(false, MAX_MATCHES).stopped_early());
+        assert!(!listed(false, 1).stopped_early());
+    }
+
+    #[test]
+    fn a_search_out_of_time_says_how_far_it_went() {
+        let listed = |timed_out: bool| Listed {
+            matches: Vec::new(),
+            files: 2_100_000,
+            timed_out,
+        };
+        let time = Duration::from_secs(15);
+
+        assert_eq!(
+            listed(true).searched(time),
+            IgnoredSearched::CutShort {
+                files: 2_100_000,
+                seconds: 15
+            }
+        );
+        assert_eq!(
+            listed(false).searched(time),
+            IgnoredSearched::All { files: 2_100_000 }
+        );
+    }
+
+    #[test]
+    fn a_tail_that_starts_with_the_folders_names_joins_it_once() {
+        let folder = Path::new("/work/api/.db");
+
+        assert_eq!(
+            paths_in(folder, Path::new("fix.sql")),
+            [folder.join("fix.sql")]
+        );
+        assert_eq!(
+            paths_in(folder, Path::new(".db/fix.sql")),
+            [folder.join(".db/fix.sql"), folder.join("fix.sql")]
+        );
+        assert_eq!(
+            paths_in(folder, Path::new("api/.db/fix.sql")),
+            [folder.join("api/.db/fix.sql"), folder.join("fix.sql")]
         );
     }
 

@@ -178,6 +178,13 @@ On Windows, module `windows_path` checks paths as text, before any file system c
 
 `agent.read_file` sends at most 4 MiB of text, or 8 MiB of image or PDF. It takes a file for an image or a PDF by its extension. It adds the agent's edits of the file, since the app may not hold the messages that made them.
 Its `git ls-files` search stops at 20 matches or 3 seconds, and leaves out a path that is not UTF-8, since the protocol carries paths as text.
+That search lists only the files git does not ignore, and the agent often writes its scripts and exports in an ignored folder, such as `.db/`.
+So when it finds nothing, the daemon checks each ignored folder that `git ls-files --directory` names, at its top and one folder down: in a checkout of 128,000 ignored files, the 15,000 entries list in half a second.
+When that finds nothing too, the answer is `FileNotFound`, and the file view offers the search of all the ignored files (`IgnoredSearch::All`, 15 seconds), then a longer one after a search that ran out of time (`IgnoredSearch::Longer`, a minute).
+A file found among the ignored ones comes with `ignored`, and the file view's bar says so.
+Several come as `IgnoredFileMatches`, each with when it changed and its size, since copies of an export often differ only by those.
+A search that ran out of time or reached 20 matches says so with `cut_short`, and a single file it found comes as a list of one: the user picks it knowing that others may exist.
+Stop in the view only stops waiting: the daemon's search still ends at its time limit, and the view drops its answer.
 `agent.list_dir` and `folders.list` read at most 20,000 entries, send at most 2,000, and run off the hub's task.
 `folders.list` sends no file names, and leaves out a name that is not UTF-8, since the protocol carries paths as text.
 The file system work of these requests, of the git requests and of `sessions.list` and `sessions.resume` runs on a blocking thread (module `blocking`). The request stops waiting at its time limit and answers with a timeout: 10 seconds for a file or a listing, 3 for `agent.find_files`, 30 for the sessions, and the git request's own. A thread that a stuck mount holds runs on until the mount answers. Once one folder has 8 such threads, or the daemon 128, the next work there is refused at once with a timeout, so that retries cannot take all of tokio's 512 blocking threads.

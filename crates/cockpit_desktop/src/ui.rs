@@ -18,6 +18,7 @@ mod exited_bar;
 mod field_help;
 mod file_git;
 mod file_list;
+mod file_lookup;
 mod file_view;
 mod files_pane;
 mod find;

@@ -9808,6 +9808,144 @@ html.splitting * {
   color: var(--dim);
 }
 
+/* A name the view found no file for: a card in the middle of the view, as the PDF's, with where
+   the lookup looked and the next step. */
+.file-lookup {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-height: 100%;
+  box-sizing: border-box;
+  padding: 24px 16px;
+  font-family: var(--sans);
+  text-align: center;
+}
+
+.file-lookup.top {
+  justify-content: flex-start;
+}
+
+.file-lookup .pdf-tile .icon {
+  margin-top: 0;
+}
+
+.lookup-name {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font: 600 12.5px var(--mono);
+  color: var(--text);
+}
+
+.lookup-lead {
+  font-size: 12.5px;
+  color: var(--muted);
+}
+
+.lookup-checks {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  margin: 8px 0 2px;
+  padding: 0;
+  list-style: none;
+  text-align: left;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.lookup-checks li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.lookup-mark {
+  display: inline-grid;
+  flex: none;
+  place-items: center;
+  width: 13px;
+  height: 13px;
+  color: var(--dim);
+}
+
+.lookup-mark.done {
+  color: var(--teal);
+}
+
+.lookup-mark.partly {
+  color: var(--amber);
+}
+
+.lookup-mark .spinner {
+  font-size: 12px;
+}
+
+.lookup-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.lookup-note {
+  font-size: 11.5px;
+  color: var(--dim);
+}
+
+.lookup-found {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  width: 100%;
+  max-width: 560px;
+  margin-top: 6px;
+}
+
+.lookup-choice {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  padding: 7px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--raised);
+  color: var(--text);
+  font: inherit;
+  text-align: left;
+}
+
+.lookup-choice:hover {
+  border-color: var(--line-strong);
+  background: var(--hover);
+}
+
+.lookup-choice:active {
+  background: var(--pressed);
+}
+
+.lookup-choice-name {
+  font: 12px var(--mono);
+}
+
+/* Breaks a long folder anywhere, as the PDF card's note does. */
+.lookup-choice-place {
+  max-width: 100%;
+  overflow-wrap: anywhere;
+  font: 11px var(--mono);
+  color: var(--dim);
+}
+
+.lookup-choice-details {
+  font-size: 11px;
+  color: var(--dim);
+}
+
 .file-choice {
   display: flex;
   max-width: calc(100% - 16px);

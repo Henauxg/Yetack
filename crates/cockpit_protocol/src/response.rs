@@ -119,30 +119,53 @@ pub enum ResponseBody {
     /// `edits` are the agent's finished edits of the file, its subagents' included, oldest first,
     /// over the whole session. When they would not fit in the answer, the oldest are left out.
     /// `None` from a daemon that predates them.
+    ///
+    /// `ignored`: the lookup found the file among the files git ignores.
     File {
         #[serde(default)]
         path: Option<PathBuf>,
         text: String,
         #[serde(default)]
         edits: Option<Vec<FileEdit>>,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        ignored: bool,
     },
-    /// For `agent.read_file`, an image file, which the daemon reads by its extension. `path` is
-    /// as for `File`.
+    /// For `agent.read_file`, an image file, which the daemon reads by its extension. `path` and
+    /// `ignored` are as for `File`.
     Image {
         path: PathBuf,
         image: Image,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        ignored: bool,
     },
     /// For `agent.read_file`, a PDF file, which the daemon reads by its extension
-    /// ([`is_pdf_name`]). `path` is as for `File`. The app opens it outside its window.
+    /// ([`is_pdf_name`]). `path` and `ignored` are as for `File`. The app opens it outside its
+    /// window.
     Pdf {
         path: PathBuf,
         /// The file's bytes.
         data: Base64,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        ignored: bool,
     },
     /// For `agent.read_file`, several files match the relative path asked for, and none was
     /// read. For `agent.find_files`, the files found. Absolute paths.
     FileMatches {
         matches: Vec<PathBuf>,
+    },
+    /// For `agent.read_file`, files git ignores match the relative path asked for, and none was
+    /// read: several, or one that a search cut short found.
+    IgnoredFileMatches {
+        matches: Vec<FoundFile>,
+        /// The search stopped before its end, at its time limit or at its most matches: other
+        /// files may have the name too.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        cut_short: bool,
+    },
+    /// For `agent.read_file`, no file matches the relative path asked for, after a search that
+    /// went as far as `ignored` says.
+    FileNotFound {
+        ignored: IgnoredSearched,
     },
     Directory(DirListing),
     GitFile(GitFile),
@@ -201,6 +224,27 @@ pub fn is_pdf_name(name: &str) -> bool {
 pub struct CommandChanges {
     pub added: Vec<String>,
     pub removed: Vec<String>,
+}
+
+/// A file a search found, absolute, with what tells it apart from another of the same name.
+/// `modified` and `bytes` are `None` when the daemon cannot read the file's metadata.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FoundFile {
+    pub path: PathBuf,
+    pub modified: Option<Timestamp>,
+    pub bytes: Option<u64>,
+}
+
+/// How far `agent.read_file` searched the files git ignores, for a path it did not find.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", tag = "searched")]
+pub enum IgnoredSearched {
+    /// In each ignored folder and its folders one level down.
+    Quick,
+    /// All the ignored files: `files` of them.
+    All { files: u32 },
+    /// The search ran out of `seconds` after `files` ignored files.
+    CutShort { files: u32, seconds: u32 },
 }
 
 /// A folder's entries: its folders first, then its other entries, each group by name.

@@ -11,7 +11,9 @@ use std::io::Cursor;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use cockpit_protocol::{AgentId, Image, ImageMediaType, ItemId, ReadFileParams, Request};
+use cockpit_protocol::{
+    AgentId, IgnoredSearch, Image, ImageMediaType, ItemId, ReadFileParams, Request,
+};
 use image::metadata::Orientation;
 use image::{ImageFormat, ImageReader};
 
@@ -172,6 +174,7 @@ pub(super) fn requests(entry: &mut AgentEntry, agent: AgentId, requests: &mut Ve
                 request: Request::AgentReadFile(ReadFileParams {
                     agent,
                     path: key.path.clone(),
+                    ignored: IgnoredSearch::Quick,
                 }),
                 purpose: Purpose::ChatImage { agent, key },
                 to: MachineId::THIS,
