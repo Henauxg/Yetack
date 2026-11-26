@@ -89,7 +89,75 @@ let linkAsks = 0;
 function pasteInto(term, text) {
   if (text) {
     term.paste(text.replaceAll("\x1b", ""));
+    term.scrollToBottom();
   }
+}
+
+// Writes output without moving a view the user scrolled up. ghostty-web goes to the bottom at
+// each write, so this moves the view back up by the lines the write pushed into the scrollback.
+// At the bottom, or less than a line above it, which looks the same, the view follows the output.
+function writeKeepingView(term, data) {
+  const up = term.getViewportY();
+  if (up < 1) {
+    term.write(data);
+    return;
+  }
+  const before = term.getScrollbackLength();
+  const top = before - Math.floor(up);
+  const shown = viewText(term, top, up);
+  term.write(data);
+  const after = term.getScrollbackLength();
+  const pushed = after - before + droppedLines(term, top, up, shown, Math.max(0, before - after));
+  pushedLines.set(term, (pushedLines.get(term) ?? 0) + pushed);
+  term.scrollToLine(up + pushed);
+  // A wheel scroll still under way aims at lines counted from the old bottom: its target moves
+  // too, unless it heads for the bottom.
+  if (term.scrollAnimationFrame !== undefined && term.targetViewportY > 0) {
+    term.targetViewportY += pushed;
+  }
+}
+
+// The lines output pushed into each terminal's scrollback under a view kept up, for a scrollbar
+// drag to keep its lines too.
+const pushedLines = new WeakMap();
+
+// How many lines to compare to find the view's lines again.
+const VIEW_TEXT_LINES = 3;
+
+// The text of scrollback line `index`, with the cells `rowText` would show as spaces.
+function lineText(term, index) {
+  const cells = term.getScrollbackLine(index) ?? [];
+  const text = cells.map(({ codepoint: code }) => {
+    const shown = code >= 32 && code <= 0x10ffff && (code < 0xd800 || code > 0xdfff);
+    return shown ? String.fromCodePoint(code) : " ";
+  });
+  return text.join("").trimEnd();
+}
+
+// The text of the first lines the view shows, from scrollback line `top`: `VIEW_TEXT_LINES` of
+// them, or fewer when the view is fewer lines up.
+function viewText(term, top, up) {
+  const count = Math.min(VIEW_TEXT_LINES, Math.floor(up));
+  return Array.from({ length: count }, (_, line) => lineText(term, top + line));
+}
+
+// How many of the oldest lines the write dropped. ghostty-web drops them a page at a time once
+// the scrollback is full, so the view's lines are that many lines earlier. At least `least` lines
+// went: the lines the scrollback lost. Starting there, blank or repeated lines can match a wrong
+// place only within the lines the write pushed. When the view's own lines are gone too, this
+// returns `top`, all the lines before the view.
+function droppedLines(term, top, up, shown, least) {
+  for (let dropped = least; dropped <= top; dropped++) {
+    // Comparing the first line alone rules out most places, at a third of the cost.
+    if (lineText(term, top - dropped) !== shown[0]) {
+      continue;
+    }
+    const found = viewText(term, top - dropped, up);
+    if (found.every((line, index) => line === shown[index])) {
+      return dropped;
+    }
+  }
+  return top;
 }
 
 // The link under the pointer, found as ghostty-web finds the one a click opens. Its hovered
@@ -117,6 +185,10 @@ async function linkUnder(term, event) {
 function act(term, action) {
   if (action === "copy" && term.hasSelection()) {
     send({ type: "copy", text: term.getSelection() });
+  } else if (action === "clear") {
+    term.scrollToBottom();
+    // Ctrl+L.
+    term.input("\x0c", true);
   } else if (action === "select_all") {
     term.selectAll();
   } else if (action === "paste") {
@@ -195,7 +267,7 @@ function write(entry, offset, data) {
   if (end <= entry.end) {
     return;
   }
-  entry.term.write(data.subarray(Math.max(0, entry.end - offset)));
+  writeKeepingView(entry.term, data.subarray(Math.max(0, entry.end - offset)));
   entry.end = end;
   entry.scrollbar();
 }
@@ -403,6 +475,7 @@ function scrollbarFor(term, box) {
     }
     const startY = event.clientY;
     const startUp = term.getViewportY();
+    const startPushed = pushedLines.get(term) ?? 0;
     thumb.setPointerCapture(event.pointerId);
     bar.classList.add("dragging");
     const end = () => {
@@ -418,8 +491,10 @@ function scrollbarFor(term, box) {
       }
       const room = bar.clientHeight - thumb.offsetHeight;
       if (room > 0) {
+        // The lines output pushed in since the drag began stay where they are.
+        const pushed = (pushedLines.get(term) ?? 0) - startPushed;
         const lines = ((moved.clientY - startY) * term.getScrollbackLength()) / room;
-        term.scrollToLine(Math.round(startUp - lines));
+        term.scrollToLine(Math.round(startUp + pushed - lines));
       }
     };
     thumb.addEventListener("pointermove", move);
@@ -568,6 +643,19 @@ function terminalFor(agent, terminal) {
     };
   } else {
     send({ type: "problem", text: "ghostty-web has no selection copy to keep a click from copying" });
+  }
+  // What the keyboard sends the shell, keys and an input method's text, brings the view back to
+  // the bottom, where it shows what was typed. Keys that send nothing, as Cmd+C, leave the view
+  // where it is. So do the answers to the shell's queries, which ghostty-web sends another way.
+  const input = term.inputHandler;
+  if (typeof input?.onDataCallback === "function") {
+    const typed = input.onDataCallback;
+    input.onDataCallback = (data) => {
+      term.scrollToBottom();
+      typed(data);
+    };
+  } else {
+    send({ type: "problem", text: "ghostty-web has no input callback to bring the view down on" });
   }
   // While the kept output replays, the PTY keeps the pane's size. ghostty-web answers the queries
   // the output holds, such as the cursor's place, and the shell reads those answers as typed: only
@@ -1045,6 +1133,8 @@ pub enum PageAction {
     )]
     Paste,
     SelectAll,
+    /// Ctrl+L to the shell, which clears the screen, with the view at the bottom to show it.
+    Clear,
 }
 
 /// The page's terminal script, for the right-click menu.
@@ -1597,7 +1687,7 @@ mod tests {
             ToPage::Act {
                 agent,
                 terminal,
-                action: PageAction::SelectAll,
+                action: PageAction::Clear,
             },
             ToPage::Scrollback { bytes: 25_000_000 },
         ];
@@ -1642,7 +1732,7 @@ mod tests {
                 },
                 { "type": "live", "terminals": [{ "agent": 3, "terminal": 2 }] },
                 { "type": "links", "id": 5, "links": [{ "start": 0, "end": 6, "path": "a.rs", "line": 2 }] },
-                { "type": "act", "agent": 3, "terminal": 2, "action": "select_all" },
+                { "type": "act", "agent": 3, "terminal": 2, "action": "clear" },
                 { "type": "scrollback", "bytes": 25_000_000 },
             ])
         );

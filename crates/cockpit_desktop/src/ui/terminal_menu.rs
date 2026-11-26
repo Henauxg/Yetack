@@ -15,9 +15,6 @@ use crate::ui::menu::{FlatMenu, FlatRow};
 use crate::ui::presence::use_presence;
 use crate::ui::terminal_pane::{self, PageAction, TerminalScript};
 
-/// What a shell reads as "clear the screen": Ctrl+L.
-const CLEAR_SCREEN: &str = "\x0c";
-
 #[component]
 pub fn TerminalMenu() -> Element {
     let cockpit: Cockpit = use_context();
@@ -108,9 +105,7 @@ fn run(cockpit: Cockpit, script: TerminalScript, spot: &MenuSpot, item: Terminal
         TerminalItem::Copy => script.act(agent, terminal, PageAction::Copy),
         TerminalItem::Paste => paste(cockpit, script, agent, terminal),
         TerminalItem::SelectAll => script.act(agent, terminal, PageAction::SelectAll),
-        TerminalItem::Clear => {
-            cockpit.send_terminal_keys(terminals::input(agent, terminal, CLEAR_SCREEN.to_owned()))
-        }
+        TerminalItem::Clear => script.act(agent, terminal, PageAction::Clear),
         TerminalItem::NewTerminal => cockpit.change(|state| {
             let dock = docks::terminal_dock(state, agent, terminal);
             terminals::open(state, agent, None, dock)
