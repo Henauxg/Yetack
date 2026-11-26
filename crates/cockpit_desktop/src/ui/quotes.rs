@@ -33,6 +33,9 @@ pub const COMMENT_FIELD_ID: &str = "quote-comment";
 /// Covers the chat area. The script places its children.
 const LAYER_ID: &str = "quote-layer";
 const REPLY_BUTTON_ID: &str = "quote-reply";
+/// How far, in pixels, a click may move and still clear the selection, as a click on a
+/// trackpad drifts a little.
+const CLICK_SLOP_PX: u8 = 4;
 /// The lines from a passage to its note, which the script draws.
 const LINKS_ID: &str = "quote-links";
 /// Holds the "You replied" card, which the script makes.
@@ -848,6 +851,38 @@ document.addEventListener("pointerdown", (event) => {
     event.preventDefault();
   }
 }, true);
+// A click that is no drag clears the selection wherever it lands: WebKit keeps it on a press on a
+// button or a link. Reply keeps it, a click in a field moves it there, Shift extends it, and a
+// double or triple click selects a word or a line. The click's handlers run first and see the
+// selection: a call's line stays as it is when the click lands in its selection. A selection the
+// click changed stays, as the caret a click on text leaves, which Shift+click extends from.
+let selectedAtPress = null;
+const endsOf = (selection) => [selection.anchorNode, selection.anchorOffset, selection.focusNode, selection.focusOffset];
+document.addEventListener("mousedown", (event) => {
+  const selection = document.getSelection();
+  const plain = event.button === 0 && !event.shiftKey && event.detail <= 1;
+  selectedAtPress = plain && selection !== null && !selection.isCollapsed
+    ? { x: event.clientX, y: event.clientY, ends: endsOf(selection) }
+    : null;
+}, true);
+document.addEventListener("click", (event) => {
+  const press = selectedAtPress;
+  selectedAtPress = null;
+  if (press === null || !(event.target instanceof Element)) {
+    return;
+  }
+  const moved = Math.hypot(event.clientX - press.x, event.clientY - press.y) > settings.click_slop_px;
+  const keeps = event.target.closest(`#${settings.reply_button_id}, input, textarea, [contenteditable]`) !== null;
+  if (moved || keeps) {
+    return;
+  }
+  setTimeout(() => {
+    const selection = document.getSelection();
+    if (selection !== null && !selection.isCollapsed && endsOf(selection).every((end, index) => end === press.ends[index])) {
+      selection.removeAllRanges();
+    }
+  }, 0);
+}, true);
 const revealSent = (quote) => {
   const hit = sentFound.get(quote);
   if (hit !== undefined && hit.range !== undefined) {
@@ -992,6 +1027,9 @@ struct Settings {
     entry_class: &'static str,
     layer_id: &'static str,
     reply_button_id: &'static str,
+    /// How far, in pixels, the pointer may move between a press and its release for a click that
+    /// clears the selection.
+    click_slop_px: u8,
     links_id: &'static str,
     replied_host_id: &'static str,
     comment_field_id: &'static str,
@@ -1042,6 +1080,7 @@ impl Settings {
             entry_class: ENTRY_CLASS,
             layer_id: LAYER_ID,
             reply_button_id: REPLY_BUTTON_ID,
+            click_slop_px: CLICK_SLOP_PX,
             links_id: LINKS_ID,
             replied_host_id: REPLIED_HOST_ID,
             comment_field_id: COMMENT_FIELD_ID,
